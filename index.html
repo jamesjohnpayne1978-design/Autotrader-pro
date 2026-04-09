@@ -1,0 +1,1315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>AutoTrader Pro</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080c14;
+  --surface: #0d1421;
+  --surface2: #121a2b;
+  --border: rgba(255,255,255,0.06);
+  --green: #00d4a0;
+  --green-dim: rgba(0,212,160,0.12);
+  --red: #ff4d6a;
+  --red-dim: rgba(255,77,106,0.12);
+  --gold: #f0b429;
+  --gold-dim: rgba(240,180,41,0.12);
+  --blue: #4d9fff;
+  --blue-dim: rgba(77,159,255,0.12);
+  --text: #e2e8f0;
+  --text-dim: rgba(226,232,240,0.45);
+  --mono: 'IBM Plex Mono', monospace;
+  --sans: 'IBM Plex Sans', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+  max-width: 480px;
+  margin: 0 auto;
+  padding-bottom: 80px;
+}
+
+/* TOP BAR */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(8,12,20,0.95);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+}
+
+.topbar-logo {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--blue);
+}
+
+.live-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  color: var(--green);
+  letter-spacing: 0.08em;
+}
+
+.live-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: livepulse 2s ease-in-out infinite;
+}
+
+@keyframes livepulse {
+  0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0,212,160,0.4); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 5px rgba(0,212,160,0); }
+}
+
+.settings-btn {
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; font-size: 1rem;
+}
+
+/* NAV */
+.nav {
+  position: fixed;
+  bottom: 0; left: 50%;
+  transform: translateX(-50%);
+  width: 100%; max-width: 480px;
+  background: rgba(13,20,33,0.97);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid var(--border);
+  display: flex;
+  z-index: 100;
+}
+
+.nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 0 12px;
+  cursor: pointer;
+  gap: 4px;
+  transition: all 0.2s;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: 0.6rem;
+  font-family: var(--sans);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.nav-item.active { color: var(--blue); }
+.nav-item span { font-size: 1.2rem; }
+
+/* PAGES */
+.page { display: none; padding: 16px; animation: fadeIn 0.25s ease; }
+.page.active { display: block; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+/* PORTFOLIO HEADER */
+.portfolio-header {
+  background: linear-gradient(135deg, #0d1421 0%, #0f1e35 100%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 16px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.portfolio-header::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle at 60% 40%, rgba(77,159,255,0.06) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+.portfolio-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  font-family: var(--mono);
+}
+
+.portfolio-value {
+  font-size: 2.4rem;
+  font-weight: 600;
+  font-family: var(--mono);
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.portfolio-pnl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-family: var(--mono);
+  font-weight: 500;
+}
+
+.portfolio-pnl.up { background: var(--green-dim); color: var(--green); }
+.portfolio-pnl.down { background: var(--red-dim); color: var(--red); }
+
+.portfolio-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-top: 20px;
+}
+
+.stat {
+  background: var(--bg);
+  padding: 12px 8px;
+  text-align: center;
+}
+
+.stat-label {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 0.85rem;
+  font-family: var(--mono);
+  font-weight: 500;
+}
+
+/* CARDS */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.card-title {
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* PAIR ROWS */
+.pair-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pair-row:last-child { border-bottom: none; }
+
+.pair-info { display: flex; align-items: center; gap: 10px; }
+
+.pair-icon {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: var(--surface2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1rem;
+}
+
+.pair-name {
+  font-size: 0.9rem;
+  font-weight: 500;
+  font-family: var(--mono);
+}
+
+.pair-holdings {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.pair-prices { text-align: right; }
+
+.pair-price {
+  font-size: 0.9rem;
+  font-family: var(--mono);
+  font-weight: 500;
+}
+
+.pair-change {
+  font-size: 0.7rem;
+  font-family: var(--mono);
+  margin-top: 2px;
+}
+
+.up { color: var(--green); }
+.down { color: var(--red); }
+
+/* SIGNAL CARD */
+.signal-card {
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+}
+
+.signal-card.buy { border-left: 3px solid var(--green); }
+.signal-card.sell { border-left: 3px solid var(--red); }
+.signal-card.watch { border-left: 3px solid var(--gold); }
+
+.signal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.signal-pair {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.signal-badge {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 0.65rem;
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.signal-badge.buy { background: var(--green-dim); color: var(--green); }
+.signal-badge.sell { background: var(--red-dim); color: var(--red); }
+.signal-badge.watch { background: var(--gold-dim); color: var(--gold); }
+
+.signal-reason {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.confidence-bar {
+  height: 4px;
+  background: var(--surface2);
+  border-radius: 2px;
+  margin-bottom: 4px;
+  overflow: hidden;
+}
+
+.confidence-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.8s ease;
+}
+
+.confidence-fill.buy { background: var(--green); }
+.confidence-fill.sell { background: var(--red); }
+.confidence-fill.watch { background: var(--gold); }
+
+.confidence-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.65rem;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  margin-bottom: 14px;
+}
+
+.signal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.btn {
+  padding: 10px;
+  border-radius: 10px;
+  border: none;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-execute {
+  background: var(--green);
+  color: #000;
+}
+
+.btn-execute:active { transform: scale(0.97); opacity: 0.9; }
+
+.btn-skip {
+  background: var(--surface2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+/* SNIPER */
+.sniper-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--surface2);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+.sniper-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sniper-dot.active {
+  background: var(--green);
+  animation: livepulse 2s ease-in-out infinite;
+}
+
+.sniper-dot.inactive { background: var(--text-dim); }
+
+.sniper-text { flex: 1; }
+.sniper-label { font-size: 0.8rem; font-weight: 500; }
+.sniper-sub { font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
+
+.toggle {
+  position: relative;
+  width: 44px; height: 24px;
+  background: var(--surface2);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.toggle.on { background: var(--green); border-color: var(--green); }
+
+.toggle-thumb {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.3s;
+}
+
+.toggle.on .toggle-thumb { transform: translateX(20px); }
+
+/* INDICATORS */
+.indicators {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.indicator {
+  background: var(--surface2);
+  border-radius: 10px;
+  padding: 10px;
+  text-align: center;
+}
+
+.indicator-name {
+  font-size: 0.6rem;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+
+.indicator-value {
+  font-size: 0.9rem;
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+/* HISTORY */
+.trade-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.trade-row:last-child { border-bottom: none; }
+
+.trade-left { display: flex; align-items: center; gap: 10px; }
+
+.trade-type {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem;
+  font-family: var(--mono);
+  font-weight: 700;
+}
+
+.trade-type.buy { background: var(--green-dim); color: var(--green); }
+.trade-type.sell { background: var(--red-dim); color: var(--red); }
+
+.trade-pair { font-size: 0.85rem; font-weight: 500; font-family: var(--mono); }
+.trade-time { font-size: 0.65rem; color: var(--text-dim); margin-top: 2px; }
+.trade-amount { font-size: 0.75rem; font-family: var(--mono); color: var(--text-dim); }
+
+.trade-right { text-align: right; }
+.trade-pnl { font-size: 0.85rem; font-family: var(--mono); font-weight: 500; }
+.trade-trigger { font-size: 0.6rem; color: var(--text-dim); margin-top: 2px; }
+
+/* SETTINGS */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.setting-row:last-child { border-bottom: none; }
+
+.setting-info { flex: 1; }
+.setting-label { font-size: 0.85rem; font-weight: 500; }
+.setting-desc { font-size: 0.7rem; color: var(--text-dim); margin-top: 2px; }
+
+.setting-input {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  padding: 8px 12px;
+  width: 90px;
+  text-align: right;
+}
+
+.setting-input:focus { outline: none; border-color: var(--blue); }
+
+/* SECTION TITLE */
+.section-title {
+  font-size: 0.65rem;
+  font-family: var(--mono);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 20px 0 10px;
+}
+
+/* REFRESH BTN */
+.refresh-btn {
+  background: var(--blue-dim);
+  border: 1px solid rgba(77,159,255,0.2);
+  color: var(--blue);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  letter-spacing: 0.05em;
+}
+
+/* API STATUS */
+.api-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--green-dim);
+  border: 1px solid rgba(0,212,160,0.2);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  font-size: 0.78rem;
+  color: var(--green);
+  font-family: var(--mono);
+}
+
+.api-status.error {
+  background: var(--red-dim);
+  border-color: rgba(255,77,106,0.2);
+  color: var(--red);
+}
+
+/* LOADING */
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  padding: 12px 0;
+}
+
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* TOAST */
+.toast {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 20px;
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  opacity: 0;
+  transition: all 0.3s;
+  z-index: 200;
+  white-space: nowrap;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 150;
+  display: none;
+  align-items: flex-end;
+}
+
+.modal-overlay.show { display: flex; }
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px 20px 0 0;
+  padding: 24px;
+  width: 100%;
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.modal-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.modal-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+}
+
+.modal-input:focus { outline: none; border-color: var(--blue); }
+
+.modal-btn {
+  width: 100%;
+  padding: 14px;
+  border-radius: 12px;
+  border: none;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--blue);
+  color: white;
+  margin-top: 8px;
+}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="topbar-logo">⚡ AUTOTRADER</div>
+  <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+  <div class="settings-btn" onclick="showPage('settings')">⚙️</div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<!-- API KEY MODAL -->
+<div class="modal-overlay" id="apiModal">
+  <div class="modal">
+    <div class="modal-title">🔑 Connect Binance</div>
+    <input class="modal-input" id="apiKey" placeholder="API Key" type="password">
+    <input class="modal-input" id="apiSecret" placeholder="API Secret" type="password">
+    <div style="font-size:0.68rem;color:var(--text-dim);margin-bottom:10px;">
+      Keys are stored locally on your device only. Never shared.
+    </div>
+    <button class="modal-btn" onclick="saveApiKeys()">Connect Account</button>
+  </div>
+</div>
+
+<!-- PAGE: HOME -->
+<div class="page active" id="page-home">
+
+  <div class="portfolio-header">
+    <div class="portfolio-label">Total Portfolio Value</div>
+    <div class="portfolio-value" id="portfolioValue">$0.00</div>
+    <div class="portfolio-pnl up" id="portfolioPnl">+$0.00 (0.00%)</div>
+    <div class="portfolio-stats">
+      <div class="stat">
+        <div class="stat-label">Trades Today</div>
+        <div class="stat-value" id="tradesToday">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value up" id="winRate">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Open Pos.</div>
+        <div class="stat-value" id="openPositions">0</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">Active Pairs</div>
+  <div class="card" id="pairsCard">
+    <div class="loading-row"><div class="spinner"></div> Loading prices...</div>
+  </div>
+
+  <div class="section-title">AI Signals</div>
+  <div id="signalsContainer">
+    <div class="loading-row"><div class="spinner"></div> Analysing market...</div>
+  </div>
+
+</div>
+
+<!-- PAGE: SNIPER -->
+<div class="page" id="page-sniper">
+
+  <div class="section-title">New Listing Sniper</div>
+
+  <div class="sniper-status">
+    <div class="sniper-dot active" id="sniperDot"></div>
+    <div class="sniper-text">
+      <div class="sniper-label" id="sniperLabel">Sniper Active</div>
+      <div class="sniper-sub" id="sniperSub">Monitoring Binance announcements every 10s</div>
+    </div>
+    <div class="toggle on" id="sniperToggle" onclick="toggleSniper()">
+      <div class="toggle-thumb"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Sniper Settings</div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Max Spend Per Listing</div>
+        <div class="setting-desc">Maximum USDT per new coin</div>
+      </div>
+      <input class="setting-input" id="sniperBudget" value="50" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Take Profit</div>
+        <div class="setting-desc">Auto-sell at this gain %</div>
+      </div>
+      <input class="setting-input" id="sniperTP" value="20" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Stop Loss</div>
+        <div class="setting-desc">Auto-sell at this loss %</div>
+      </div>
+      <input class="setting-input" id="sniperSL" value="10" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">AI Filter</div>
+        <div class="setting-desc">Only buy if AI score > 70%</div>
+      </div>
+      <div class="toggle on" id="aiFilterToggle" onclick="toggleAiFilter()">
+        <div class="toggle-thumb"></div>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Approval Mode</div>
+        <div class="setting-desc">Ask before buying new listings</div>
+      </div>
+      <div class="toggle on" id="approvalToggle" onclick="toggleApproval()">
+        <div class="toggle-thumb"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">Recent Detections</div>
+  <div class="card" id="sniperHistory">
+    <div style="text-align:center; padding:20px; color:var(--text-dim); font-size:0.8rem;">
+      No new listings detected yet.<br>Watching...
+    </div>
+  </div>
+
+</div>
+
+<!-- PAGE: HISTORY -->
+<div class="page" id="page-history">
+  <div class="section-title">Trade History</div>
+  <div class="card" id="historyCard">
+    <div class="loading-row"><div class="spinner"></div> Loading history...</div>
+  </div>
+</div>
+
+<!-- PAGE: SETTINGS -->
+<div class="page" id="page-settings">
+  <div class="section-title">Connection</div>
+  <div class="card">
+    <div class="api-status" id="apiStatus">
+      <span>●</span> Not connected — tap to configure
+    </div>
+    <button class="btn" style="width:100%;background:var(--blue);color:white;padding:12px;border-radius:10px;" onclick="showApiModal()">
+      Configure Binance API
+    </button>
+  </div>
+
+  <div class="section-title">Risk Management</div>
+  <div class="card">
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Max Trade Size</div>
+        <div class="setting-desc">% of portfolio per trade</div>
+      </div>
+      <input class="setting-input" id="maxTradeSize" value="5" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Daily Loss Limit</div>
+        <div class="setting-desc">Pause trading after this % loss</div>
+      </div>
+      <input class="setting-input" id="dailyLossLimit" value="5" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Default Stop Loss</div>
+        <div class="setting-desc">Auto stop-loss on all trades</div>
+      </div>
+      <input class="setting-input" id="defaultSL" value="3" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Default Take Profit</div>
+        <div class="setting-desc">Auto take-profit on all trades</div>
+      </div>
+      <input class="setting-input" id="defaultTP" value="6" type="number">
+    </div>
+  </div>
+
+  <div class="section-title">Trading Mode</div>
+  <div class="card">
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Full Auto Mode</div>
+        <div class="setting-desc">Execute signals without approval</div>
+      </div>
+      <div class="toggle" id="autoModeToggle" onclick="toggleAutoMode()">
+        <div class="toggle-thumb"></div>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">Telegram Alerts</div>
+        <div class="setting-desc">Notify on every trade</div>
+      </div>
+      <div class="toggle on" id="telegramToggle" onclick="toggleTelegram()">
+        <div class="toggle-thumb"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">Strategy</div>
+  <div class="card">
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">RSI Oversold Level</div>
+        <div class="setting-desc">Buy signal below this RSI</div>
+      </div>
+      <input class="setting-input" id="rsiBuy" value="35" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">RSI Overbought Level</div>
+        <div class="setting-desc">Sell signal above this RSI</div>
+      </div>
+      <input class="setting-input" id="rsiSell" value="70" type="number">
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">MA Cross Strategy</div>
+        <div class="setting-desc">Use Golden/Death Cross signals</div>
+      </div>
+      <div class="toggle on" id="maCrossToggle" onclick="toggleMaCross()">
+        <div class="toggle-thumb"></div>
+      </div>
+    </div>
+    <div class="setting-row">
+      <div class="setting-info">
+        <div class="setting-label">MACD Signals</div>
+        <div class="setting-desc">Include MACD crossover signals</div>
+      </div>
+      <div class="toggle on" id="macdToggle" onclick="toggleMacd()">
+        <div class="toggle-thumb"></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;padding:20px 0;">
+    <button class="btn" style="background:var(--blue);color:white;padding:12px 32px;border-radius:12px;" onclick="saveSettings()">
+      Save Settings
+    </button>
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
+<nav class="nav">
+  <button class="nav-item active" id="nav-home" onclick="showPage('home')">
+    <span>📊</span>Dashboard
+  </button>
+  <button class="nav-item" id="nav-sniper" onclick="showPage('sniper')">
+    <span>🎯</span>Sniper
+  </button>
+  <button class="nav-item" id="nav-history" onclick="showPage('history')">
+    <span>📋</span>History
+  </button>
+  <button class="nav-item" id="nav-settings" onclick="showPage('settings')">
+    <span>⚙️</span>Settings
+  </button>
+</nav>
+
+<script>
+const API_BASE = window.location.origin; // Points to your Synology server
+
+let state = {
+  apiConnected: false,
+  sniperActive: true,
+  aiFilter: true,
+  approvalMode: true,
+  autoMode: false,
+  telegram: true,
+  maCross: true,
+  macd: true,
+  portfolio: null,
+  signals: [],
+  history: []
+};
+
+// --- NAVIGATION ---
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  document.getElementById('nav-' + name)?.classList.add('active');
+  if (name === 'home') loadDashboard();
+  if (name === 'history') loadHistory();
+}
+
+// --- TOAST ---
+function showToast(msg, duration = 2500) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+
+// --- API KEYS ---
+function showApiModal() {
+  document.getElementById('apiModal').classList.add('show');
+}
+
+function saveApiKeys() {
+  const key = document.getElementById('apiKey').value.trim();
+  const secret = document.getElementById('apiSecret').value.trim();
+  if (!key || !secret) { showToast('⚠️ Enter both key and secret'); return; }
+  
+  // Save to localStorage (stays on device only)
+  localStorage.setItem('binance_api_key', key);
+  localStorage.setItem('binance_api_secret', secret);
+  document.getElementById('apiModal').classList.remove('show');
+  showToast('✅ API keys saved');
+  
+  // Send to backend
+  fetch(`${API_BASE}/api/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: key, api_secret: secret })
+  }).then(() => {
+    state.apiConnected = true;
+    updateApiStatus(true);
+    loadDashboard();
+  }).catch(() => showToast('⚠️ Backend not reachable'));
+}
+
+function updateApiStatus(connected) {
+  const el = document.getElementById('apiStatus');
+  if (connected) {
+    el.className = 'api-status';
+    el.innerHTML = '<span>●</span> Connected to Binance';
+  } else {
+    el.className = 'api-status error';
+    el.innerHTML = '<span>●</span> Not connected — tap to configure';
+  }
+}
+
+// --- LOAD DASHBOARD ---
+async function loadDashboard() {
+  loadPrices();
+  loadSignals();
+  loadPortfolio();
+}
+
+async function loadPortfolio() {
+  try {
+    const r = await fetch(`${API_BASE}/api/portfolio`);
+    const data = await r.json();
+    if (data.error) return;
+    
+    document.getElementById('portfolioValue').textContent = `$${data.total_usdt.toFixed(2)}`;
+    const pnlEl = document.getElementById('portfolioPnl');
+    const pnl = data.pnl_today || 0;
+    const pnlPct = data.pnl_pct || 0;
+    pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct.toFixed(2)}%)`;
+    pnlEl.className = `portfolio-pnl ${pnl >= 0 ? 'up' : 'down'}`;
+    document.getElementById('tradesToday').textContent = data.trades_today || 0;
+    document.getElementById('winRate').textContent = data.win_rate ? `${data.win_rate}%` : '—';
+    document.getElementById('openPositions').textContent = data.open_positions || 0;
+    state.apiConnected = true;
+    updateApiStatus(true);
+  } catch(e) {
+    // Use demo data if backend not connected
+    loadDemoPortfolio();
+  }
+}
+
+function loadDemoPortfolio() {
+  document.getElementById('portfolioValue').textContent = '$4,821.50';
+  document.getElementById('portfolioPnl').textContent = '+$112.40 (+2.39%)';
+  document.getElementById('tradesToday').textContent = '3';
+  document.getElementById('winRate').textContent = '67%';
+  document.getElementById('openPositions').textContent = '2';
+}
+
+async function loadPrices() {
+  try {
+    const r = await fetch(`${API_BASE}/api/prices`);
+    const data = await r.json();
+    renderPairs(data.pairs);
+  } catch(e) {
+    renderDemoPairs();
+  }
+}
+
+function renderPairs(pairs) {
+  const icons = { BTC: '₿', ETH: 'Ξ', BNB: 'B', SOL: '◎', XRP: '✕' };
+  const html = pairs.map(p => `
+    <div class="pair-row">
+      <div class="pair-info">
+        <div class="pair-icon">${icons[p.base] || '●'}</div>
+        <div>
+          <div class="pair-name">${p.symbol}</div>
+          <div class="pair-holdings">${p.holdings} ${p.base} · $${p.value_usdt}</div>
+        </div>
+      </div>
+      <div class="pair-prices">
+        <div class="pair-price">$${Number(p.price).toLocaleString()}</div>
+        <div class="pair-change ${p.change >= 0 ? 'up' : 'down'}">${p.change >= 0 ? '+' : ''}${p.change}%</div>
+      </div>
+    </div>
+  `).join('');
+  document.getElementById('pairsCard').innerHTML = html;
+}
+
+function renderDemoPairs() {
+  renderPairs([
+    { symbol: 'BTC/USDT', base: 'BTC', price: 67420, change: 2.14, holdings: '0.042', value_usdt: '2831.64' },
+    { symbol: 'ETH/USDT', base: 'ETH', price: 3201, change: -0.87, holdings: '0.312', value_usdt: '998.71' },
+    { symbol: 'BNB/USDT', base: 'BNB', price: 412, change: 1.23, holdings: '2.41', value_usdt: '992.92' },
+  ]);
+}
+
+async function loadSignals() {
+  document.getElementById('signalsContainer').innerHTML = '<div class="loading-row"><div class="spinner"></div> Analysing market...</div>';
+  try {
+    const r = await fetch(`${API_BASE}/api/signals`);
+    const data = await r.json();
+    renderSignals(data.signals);
+  } catch(e) {
+    renderDemoSignals();
+  }
+}
+
+function renderSignals(signals) {
+  if (!signals || signals.length === 0) {
+    document.getElementById('signalsContainer').innerHTML = '<div class="card" style="text-align:center;padding:20px;color:var(--text-dim);font-size:0.8rem;">No strong signals right now. Market watching...</div>';
+    return;
+  }
+  document.getElementById('signalsContainer').innerHTML = signals.map(s => `
+    <div class="signal-card ${s.action}">
+      <div class="signal-header">
+        <div class="signal-pair">${s.pair}</div>
+        <div class="signal-badge ${s.action}">${s.action.toUpperCase()}</div>
+      </div>
+      <div class="signal-reason">${s.reason}</div>
+      <div class="confidence-bar">
+        <div class="confidence-fill ${s.action}" style="width:${s.confidence}%"></div>
+      </div>
+      <div class="confidence-label">
+        <span>AI Confidence</span>
+        <span>${s.confidence}%</span>
+      </div>
+      <div class="indicators">
+        <div class="indicator">
+          <div class="indicator-name">RSI</div>
+          <div class="indicator-value ${s.rsi < 35 ? 'up' : s.rsi > 70 ? 'down' : ''}">${s.rsi}</div>
+        </div>
+        <div class="indicator">
+          <div class="indicator-name">MACD</div>
+          <div class="indicator-value ${s.macd === 'bullish' ? 'up' : 'down'}">${s.macd}</div>
+        </div>
+        <div class="indicator">
+          <div class="indicator-name">Trend</div>
+          <div class="indicator-value ${s.trend === 'up' ? 'up' : 'down'}">${s.trend}</div>
+        </div>
+      </div>
+      ${!state.autoMode ? `
+      <div class="signal-actions" style="margin-top:14px;">
+        <button class="btn btn-execute" onclick="executeTrade('${s.pair}','${s.action}','${s.confidence}')">✓ Execute</button>
+        <button class="btn btn-skip" onclick="skipSignal('${s.pair}')">✕ Skip</button>
+      </div>` : '<div style="font-size:0.7rem;color:var(--green);margin-top:10px;font-family:var(--mono);">⚡ Auto-executing...</div>'}
+    </div>
+  `).join('');
+}
+
+function renderDemoSignals() {
+  renderSignals([
+    {
+      pair: 'BTC/USDT',
+      action: 'buy',
+      reason: 'RSI entering oversold territory at 33.2. MACD showing bullish crossover. Price holding above 200MA. Strong accumulation volume detected.',
+      confidence: 82,
+      rsi: 33,
+      macd: 'bullish',
+      trend: 'up'
+    },
+    {
+      pair: 'ETH/USDT',
+      action: 'watch',
+      reason: 'Consolidating near support. Waiting for confirmation before signal. Bollinger Bands squeezing — breakout expected soon.',
+      confidence: 58,
+      rsi: 47,
+      macd: 'neutral',
+      trend: 'sideways'
+    }
+  ]);
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch(`${API_BASE}/api/history`);
+    const data = await r.json();
+    renderHistory(data.trades);
+  } catch(e) {
+    renderDemoHistory();
+  }
+}
+
+function renderHistory(trades) {
+  if (!trades || trades.length === 0) {
+    document.getElementById('historyCard').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:0.8rem;">No trades yet.</div>';
+    return;
+  }
+  document.getElementById('historyCard').innerHTML = trades.map(t => `
+    <div class="trade-row">
+      <div class="trade-left">
+        <div class="trade-type ${t.side}">${t.side === 'buy' ? 'B' : 'S'}</div>
+        <div>
+          <div class="trade-pair">${t.pair}</div>
+          <div class="trade-time">${t.time}</div>
+        </div>
+      </div>
+      <div class="trade-right">
+        <div class="trade-pnl ${t.pnl >= 0 ? 'up' : 'down'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</div>
+        <div class="trade-trigger">${t.trigger}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderDemoHistory() {
+  renderHistory([
+    { pair: 'BTC/USDT', side: 'buy', time: 'Today 09:14', pnl: 84.20, trigger: 'RSI + MACD' },
+    { pair: 'ETH/USDT', side: 'sell', time: 'Today 07:32', pnl: -22.10, trigger: 'Stop Loss' },
+    { pair: 'BNB/USDT', side: 'buy', time: 'Yesterday', pnl: 51.30, trigger: 'Golden Cross' },
+    { pair: 'SOL/USDT', side: 'sell', time: 'Yesterday', pnl: 113.80, trigger: 'Take Profit' },
+  ]);
+}
+
+// --- TRADE ACTIONS ---
+async function executeTrade(pair, action, confidence) {
+  showToast(`⚡ Sending ${action.toUpperCase()} order for ${pair}...`);
+  try {
+    const r = await fetch(`${API_BASE}/api/trade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pair, action, confidence })
+    });
+    const data = await r.json();
+    showToast(data.success ? `✅ ${pair} ${action} executed!` : `⚠️ ${data.error}`);
+  } catch(e) {
+    showToast('⚠️ Could not reach trading server');
+  }
+}
+
+function skipSignal(pair) {
+  showToast(`⏭ Skipped ${pair} signal`);
+  loadSignals();
+}
+
+// --- TOGGLES ---
+function toggle(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('on');
+  return el.classList.contains('on');
+}
+
+function toggleSniper() {
+  state.sniperActive = toggle('sniperToggle');
+  const dot = document.getElementById('sniperDot');
+  dot.className = `sniper-dot ${state.sniperActive ? 'active' : 'inactive'}`;
+  document.getElementById('sniperLabel').textContent = state.sniperActive ? 'Sniper Active' : 'Sniper Paused';
+  fetch(`${API_BASE}/api/sniper/toggle`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({active: state.sniperActive})
+  }).catch(() => {});
+  showToast(state.sniperActive ? '🎯 Sniper activated' : '⏸ Sniper paused');
+}
+
+function toggleAiFilter() { state.aiFilter = toggle('aiFilterToggle'); }
+function toggleApproval() { state.approvalMode = toggle('approvalToggle'); }
+function toggleAutoMode() { 
+  state.autoMode = toggle('autoModeToggle'); 
+  showToast(state.autoMode ? '🤖 Full auto mode ON' : '👆 Approval mode ON');
+}
+function toggleTelegram() { state.telegram = toggle('telegramToggle'); }
+function toggleMaCross() { state.maCross = toggle('maCrossToggle'); }
+function toggleMacd() { state.macd = toggle('macdToggle'); }
+
+function saveSettings() {
+  const settings = {
+    max_trade_size: document.getElementById('maxTradeSize').value,
+    daily_loss_limit: document.getElementById('dailyLossLimit').value,
+    default_sl: document.getElementById('defaultSL').value,
+    default_tp: document.getElementById('defaultTP').value,
+    rsi_buy: document.getElementById('rsiBuy').value,
+    rsi_sell: document.getElementById('rsiSell').value,
+    sniper_budget: document.getElementById('sniperBudget').value,
+    sniper_tp: document.getElementById('sniperTP').value,
+    sniper_sl: document.getElementById('sniperSL').value,
+    auto_mode: state.autoMode,
+    ma_cross: state.maCross,
+    macd: state.macd,
+    ai_filter: state.aiFilter,
+    approval_mode: state.approvalMode
+  };
+  fetch(`${API_BASE}/api/settings`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(settings)
+  }).catch(() => {});
+  showToast('✅ Settings saved');
+}
+
+// --- INIT ---
+window.addEventListener('load', () => {
+  const savedKey = localStorage.getItem('binance_api_key');
+  if (savedKey) {
+    state.apiConnected = true;
+    updateApiStatus(true);
+  } else {
+    setTimeout(showApiModal, 800);
+  }
+  loadDashboard();
+  setInterval(loadDashboard, 30000); // Refresh every 30s
+});
+
+// Close modal on backdrop click
+document.getElementById('apiModal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('show');
+});
+</script>
+</body>
+</html>

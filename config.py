@@ -1,0 +1,147 @@
+"""
+AutoTrader Pro - Configuration Manager
+Persists all settings to disk
+"""
+
+import json
+import os
+import logging
+
+log = logging.getLogger(__name__)
+
+CONFIG_PATH = '/data/config.json'
+HISTORY_PATH = '/data/trade_history.json'
+
+
+class Config:
+    def __init__(self):
+        # Binance
+        self.api_key = os.environ.get('BINANCE_API_KEY', '')
+        self.api_secret = os.environ.get('BINANCE_API_SECRET', '')
+
+        # Trading pairs
+        self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+
+        # Strategy
+        self.rsi_buy = 35
+        self.rsi_sell = 70
+        self.ma_cross_enabled = True
+        self.macd_enabled = True
+        self.auto_mode = False
+        self.approval_mode = True
+
+        # Risk management
+        self.max_trade_pct = 5.0        # % of portfolio per trade
+        self.daily_loss_limit_pct = 5.0  # Pause if daily loss > this %
+        self.default_sl_pct = 3.0       # Default stop loss %
+        self.default_tp_pct = 6.0       # Default take profit %
+        self.max_open_positions = 5
+
+        # Sniper
+        self.sniper_active = True
+        self.sniper_budget_usdt = 50.0
+        self.sniper_tp_pct = 20.0
+        self.sniper_sl_pct = 10.0
+        self.sniper_daily_limit_usdt = 200.0
+        self.ai_filter_enabled = True
+        self.ai_min_score = 70
+
+        # Telegram
+        self.telegram_token = os.environ.get('TELEGRAM_TOKEN', '')
+        self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
+
+        self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(CONFIG_PATH):
+                with open(CONFIG_PATH, 'r') as f:
+                    data = json.load(f)
+                self.update(data)
+                log.info("Config loaded from disk.")
+        except Exception as e:
+            log.warning(f"Could not load config: {e}")
+
+    def update(self, data: dict):
+        field_map = {
+            'api_key': 'api_key',
+            'api_secret': 'api_secret',
+            'trading_pairs': 'trading_pairs',
+            'rsi_buy': ('rsi_buy', float),
+            'rsi_sell': ('rsi_sell', float),
+            'ma_cross': ('ma_cross_enabled', bool),
+            'macd': ('macd_enabled', bool),
+            'auto_mode': ('auto_mode', bool),
+            'approval_mode': ('approval_mode', bool),
+            'max_trade_size': ('max_trade_pct', float),
+            'daily_loss_limit': ('daily_loss_limit_pct', float),
+            'default_sl': ('default_sl_pct', float),
+            'default_tp': ('default_tp_pct', float),
+            'sniper_active': ('sniper_active', bool),
+            'sniper_budget': ('sniper_budget_usdt', float),
+            'sniper_tp': ('sniper_tp_pct', float),
+            'sniper_sl': ('sniper_sl_pct', float),
+            'ai_filter': ('ai_filter_enabled', bool),
+            'ai_min_score': ('ai_min_score', int),
+            'telegram_token': 'telegram_token',
+            'telegram_chat_id': 'telegram_chat_id',
+        }
+
+        for key, val in data.items():
+            if key in field_map:
+                mapping = field_map[key]
+                if isinstance(mapping, tuple):
+                    attr, cast = mapping
+                    try:
+                        setattr(self, attr, cast(val))
+                    except Exception:
+                        pass
+                else:
+                    setattr(self, mapping, val)
+
+    def save(self):
+        try:
+            os.makedirs('/data', exist_ok=True)
+            with open(CONFIG_PATH, 'w') as f:
+                json.dump(self.to_dict(), f, indent=2)
+        except Exception as e:
+            log.error(f"Config save failed: {e}")
+
+    def to_dict(self) -> dict:
+        return {
+            'api_key': self.api_key[:8] + '...' if self.api_key else '',  # Mask key
+            'trading_pairs': self.trading_pairs,
+            'rsi_buy': self.rsi_buy,
+            'rsi_sell': self.rsi_sell,
+            'ma_cross': self.ma_cross_enabled,
+            'macd': self.macd_enabled,
+            'auto_mode': self.auto_mode,
+            'approval_mode': self.approval_mode,
+            'max_trade_size': self.max_trade_pct,
+            'daily_loss_limit': self.daily_loss_limit_pct,
+            'default_sl': self.default_sl_pct,
+            'default_tp': self.default_tp_pct,
+            'sniper_active': self.sniper_active,
+            'sniper_budget': self.sniper_budget_usdt,
+            'sniper_tp': self.sniper_tp_pct,
+            'sniper_sl': self.sniper_sl_pct,
+            'ai_filter': self.ai_filter_enabled,
+            'ai_min_score': self.ai_min_score,
+        }
+
+    def load_trade_history(self) -> list:
+        try:
+            if os.path.exists(HISTORY_PATH):
+                with open(HISTORY_PATH, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return []
+
+    def save_trade_history(self, history: list):
+        try:
+            os.makedirs('/data', exist_ok=True)
+            with open(HISTORY_PATH, 'w') as f:
+                json.dump(history, f, indent=2)
+        except Exception as e:
+            log.error(f"History save failed: {e}")
