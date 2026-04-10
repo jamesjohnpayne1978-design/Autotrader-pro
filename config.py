@@ -1,6 +1,6 @@
 """
 AutoTrader Pro - Configuration Manager
-Persists all settings to disk
+Reads API keys from environment variables automatically
 """
 
 import json
@@ -15,9 +15,12 @@ HISTORY_PATH = '/data/trade_history.json'
 
 class Config:
     def __init__(self):
-        # Binance
+        # Read API keys from environment variables first
         self.api_key = os.environ.get('BINANCE_API_KEY', '')
         self.api_secret = os.environ.get('BINANCE_API_SECRET', '')
+
+        log.info(f"API Key loaded: {'YES' if self.api_key else 'NO - CHECK RAILWAY VARIABLES'}")
+        log.info(f"API Secret loaded: {'YES' if self.api_secret else 'NO - CHECK RAILWAY VARIABLES'}")
 
         # Trading pairs
         self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
@@ -31,10 +34,10 @@ class Config:
         self.approval_mode = True
 
         # Risk management
-        self.max_trade_pct = 5.0        # % of portfolio per trade
-        self.daily_loss_limit_pct = 5.0  # Pause if daily loss > this %
-        self.default_sl_pct = 3.0       # Default stop loss %
-        self.default_tp_pct = 6.0       # Default take profit %
+        self.max_trade_pct = 5.0
+        self.daily_loss_limit_pct = 5.0
+        self.default_sl_pct = 3.0
+        self.default_tp_pct = 6.0
         self.max_open_positions = 5
 
         # Sniper
@@ -57,8 +60,9 @@ class Config:
             if os.path.exists(CONFIG_PATH):
                 with open(CONFIG_PATH, 'r') as f:
                     data = json.load(f)
-                self.update(data)
-                log.info("Config loaded from disk.")
+                safe_keys = {k: v for k, v in data.items()
+                            if k not in ('api_key', 'api_secret')}
+                self.update(safe_keys)
         except Exception as e:
             log.warning(f"Could not load config: {e}")
 
@@ -86,7 +90,6 @@ class Config:
             'telegram_token': 'telegram_token',
             'telegram_chat_id': 'telegram_chat_id',
         }
-
         for key, val in data.items():
             if key in field_map:
                 mapping = field_map[key]
@@ -105,11 +108,10 @@ class Config:
             with open(CONFIG_PATH, 'w') as f:
                 json.dump(self.to_dict(), f, indent=2)
         except Exception as e:
-            log.error(f"Config save failed: {e}")
+            log.warning(f"Config save failed: {e}")
 
     def to_dict(self) -> dict:
         return {
-            'api_key': self.api_key[:8] + '...' if self.api_key else '',  # Mask key
             'trading_pairs': self.trading_pairs,
             'rsi_buy': self.rsi_buy,
             'rsi_sell': self.rsi_sell,
@@ -144,4 +146,4 @@ class Config:
             with open(HISTORY_PATH, 'w') as f:
                 json.dump(history, f, indent=2)
         except Exception as e:
-            log.error(f"History save failed: {e}")
+            log.warning(f"History save failed: {e}")
