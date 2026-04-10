@@ -1294,7 +1294,45 @@ function saveSettings() {
 }
 
 // --- INIT ---
-window.addEventListener('load', () => {
+async function loadSettings() {
+  try {
+    const r = await fetch(`${API_BASE}/api/settings`);
+    const data = await r.json();
+    if (data.auto_mode !== undefined) {
+      state.autoMode = data.auto_mode;
+      const el = document.getElementById('autoModeToggle');
+      if (state.autoMode) el.classList.add('on');
+      else el.classList.remove('on');
+    }
+    if (data.approval_mode !== undefined) {
+      state.approvalMode = data.approval_mode;
+      const el = document.getElementById('approvalToggle');
+      if (state.approvalMode) el.classList.add('on');
+      else el.classList.remove('on');
+    }
+    if (data.ma_cross !== undefined) {
+      state.maCross = data.ma_cross;
+      const el = document.getElementById('maCrossToggle');
+      if (state.maCross) el.classList.add('on');
+      else el.classList.remove('on');
+    }
+    if (data.macd !== undefined) {
+      state.macd = data.macd;
+      const el = document.getElementById('macdToggle');
+      if (state.macd) el.classList.add('on');
+      else el.classList.remove('on');
+    }
+    if (data.max_trade_size) document.getElementById('maxTradeSize').value = data.max_trade_size;
+    if (data.daily_loss_limit) document.getElementById('dailyLossLimit').value = data.daily_loss_limit;
+    if (data.default_sl) document.getElementById('defaultSL').value = data.default_sl;
+    if (data.default_tp) document.getElementById('defaultTP').value = data.default_tp;
+    if (data.rsi_buy) document.getElementById('rsiBuy').value = data.rsi_buy;
+    if (data.rsi_sell) document.getElementById('rsiSell').value = data.rsi_sell;
+  } catch(e) {
+    console.log('Settings load error:', e);
+  }
+}
+  window.addEventListener('load', () => {
   const savedKey = localStorage.getItem('binance_api_key');
   if (savedKey) {
     state.apiConnected = true;
@@ -1302,7 +1340,8 @@ window.addEventListener('load', () => {
   } else {
     setTimeout(showApiModal, 800);
   }
-  loadDashboard();
+  loadSettings();
+    loadDashboard();
   setInterval(loadDashboard, 30000); // Refresh every 30s
 });
 
