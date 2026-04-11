@@ -32,7 +32,7 @@ def init_trader():
     if config.api_key and config.api_secret:
         try:
             trader = Trader(config)
-            signal_engine = SignalEngine(config, trader)
+            signal_engine = SignalEngine(config, trader, risk_manager)
             sniper = ListingSniper(config, trader, risk_manager)
             if config.sniper_active:
                 sniper_thread = threading.Thread(target=sniper.run, daemon=True)
@@ -44,24 +44,22 @@ def init_trader():
             log.error(f"Failed to initialise trader: {e}")
 
 
-# ─── DASHBOARD ─────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return send_file('index.html')
 
 
-# ─── HEALTH ────────────────────────────────────────────────────────
 @app.route('/api/health')
 def health():
     return jsonify({
         'status': 'ok',
         'connected': trader is not None,
         'sniper': sniper.active if sniper else False,
+        'auto_mode': config.auto_mode,
         'version': '1.0.0'
     })
 
 
-# ─── CONFIG ────────────────────────────────────────────────────────
 @app.route('/api/config', methods=['POST'])
 def set_config():
     data = request.json
@@ -72,7 +70,6 @@ def set_config():
     return jsonify({'success': True})
 
 
-# ─── PORTFOLIO ─────────────────────────────────────────────────────
 @app.route('/api/portfolio')
 def get_portfolio():
     if not trader:
@@ -84,7 +81,6 @@ def get_portfolio():
         return jsonify({'error': str(e)}), 500
 
 
-# ─── PRICES ────────────────────────────────────────────────────────
 @app.route('/api/prices')
 def get_prices():
     if not trader:
@@ -95,7 +91,6 @@ def get_prices():
         return jsonify({'error': str(e)}), 500
 
 
-# ─── SIGNALS ───────────────────────────────────────────────────────
 @app.route('/api/signals')
 def get_signals():
     if not signal_engine:
@@ -106,7 +101,6 @@ def get_signals():
         return jsonify({'signals': [], 'error': str(e)})
 
 
-# ─── EXECUTE TRADE ─────────────────────────────────────────────────
 @app.route('/api/trade', methods=['POST'])
 def execute_trade():
     if not trader:
@@ -127,7 +121,6 @@ def execute_trade():
         return jsonify({'error': str(e)}), 500
 
 
-# ─── HISTORY ───────────────────────────────────────────────────────
 @app.route('/api/history')
 def get_history():
     try:
@@ -136,7 +129,6 @@ def get_history():
         return jsonify({'trades': [], 'error': str(e)})
 
 
-# ─── SNIPER ────────────────────────────────────────────────────────
 @app.route('/api/sniper/status')
 def sniper_status():
     if not sniper:
@@ -154,7 +146,6 @@ def toggle_sniper():
     return jsonify({'active': sniper.active})
 
 
-# ─── SETTINGS ──────────────────────────────────────────────────────
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     if request.method == 'POST':
