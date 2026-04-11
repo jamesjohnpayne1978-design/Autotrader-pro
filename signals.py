@@ -1,6 +1,7 @@
 """
 AutoTrader Pro - AI Signal Engine
 Uses Claude AI + technical indicators to generate trade signals
+Auto-executes trades when auto_mode is enabled
 """
 
 import time
@@ -16,9 +17,10 @@ ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 
 
 class SignalEngine:
-    def __init__(self, config: Config, trader):
+    def __init__(self, config, trader, risk_manager=None):
         self.config = config
         self.trader = trader
+        self.risk_manager = risk_manager
         self.latest_signals = []
         self.running = False
 
@@ -30,7 +32,7 @@ class SignalEngine:
                 self.refresh_signals()
             except Exception as e:
                 log.error(f"Signal refresh error: {e}")
-            time.sleep(300)  # Refresh every 5 minutes
+            time.sleep(300)
 
     def refresh_signals(self):
         signals = []
@@ -44,12 +46,40 @@ class SignalEngine:
         self.latest_signals = signals
         log.info(f"Signals refreshed: {len(signals)} signals generated")
 
-    def get_latest_signals(self) -> list:
+        # Auto execute if enabled
+        if self.config.auto_mode and self.risk_manager:
+            self._auto_execute(signals)
+
+    def _auto_execute(self, signals):
+        """Automatically execute trades when auto_mode is on"""
+        for signal in signals:
+            action = signal.get('action')
+            confidence = signal.get('confidence', 0)
+            pair = signal.get('pair')
+
+            if action not in ('buy', 'sell'):
+                continue
+            if confidence < 70:
+                log.info(f"Auto-execute skipped {pair} — confidence {confidence}% below 70%")
+                continue
+
+            approved, reason = self.risk_manager.check_trade(pair, action, confidence)
+            if not approved:
+                log.info(f"Auto-execute blocked {pair}: {reason}")
+                continue
+
+            try:
+                result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
+                log.info(f"Auto-executed: {action.upper()} {pair} — confidence {confidence}% — order {result}")
+            except Exception as e:
+                log.error(f"Auto-execute failed for {pair}: {e}")
+
+    def get_latest_signals(self):
         if not self.latest_signals:
             self.refresh_signals()
         return self.latest_signals
 
-    def analyse_pair(self, symbol: str) -> dict | None:
+    def analyse_pair(self, symbol):
         klines = self.trader.get_klines(symbol, '1h', 100)
         if len(klines) < 50:
             return None
@@ -68,11 +98,10 @@ class SignalEngine:
             'price_change_24h': ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
         }
 
-        # Use Claude AI to analyse and generate signal
         signal = self._ai_analyse(symbol, indicators)
         return signal
 
-    def _ai_analyse(self, symbol: str, indicators: dict) -> dict | None:
+    def _ai_analyse(self, symbol, indicators):
         try:
             prompt = f"""You are an expert crypto trading analyst. Analyse these technical indicators for {symbol} and generate a trading signal.
 
@@ -123,8 +152,6 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
 
             data = response.json()
             text = data['content'][0]['text'].strip()
-
-            # Parse JSON response
             start = text.find('{')
             end = text.rfind('}') + 1
             if start == -1:
@@ -138,8 +165,7 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
             log.warning(f"AI analysis failed for {symbol}: {e}")
             return self._fallback_signal(symbol, indicators)
 
-    def _fallback_signal(self, symbol: str, indicators: dict) -> dict:
-        """Rule-based fallback when AI is unavailable"""
+    def _fallback_signal(self, symbol, indicators):
         rsi = indicators['rsi']
         macd = indicators['macd']['signal']
         price = indicators['price']
@@ -187,8 +213,7 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
             'trend': 'up' if price > ma50 else 'down'
         }
 
-    # ─── TECHNICAL INDICATORS ──────────────────────────────────────
-    def _rsi(self, closes: list, period: int = 14) -> float:
+    def _rsi(self, closes, period=14):
         if len(closes) < period + 1:
             return 50.0
         deltas = np.diff(closes)
@@ -201,12 +226,12 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
         rs = avg_gain / avg_loss
         return round(100 - (100 / (1 + rs)), 2)
 
-    def _sma(self, closes: list, period: int) -> float:
+    def _sma(self, closes, period):
         if len(closes) < period:
             return closes[-1]
         return float(np.mean(closes[-period:]))
 
-    def _ema(self, closes: list, period: int) -> float:
+    def _ema(self, closes, period):
         if len(closes) < period:
             return closes[-1]
         k = 2 / (period + 1)
@@ -215,7 +240,7 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
             ema = price * k + ema * (1 - k)
         return ema
 
-    def _macd(self, closes: list) -> dict:
+    def _macd(self, closes):
         if len(closes) < 26:
             return {'signal': 'neutral', 'histogram': 0, 'macd': 0, 'signal_line': 0}
         ema12 = self._ema(closes, 12)
@@ -226,7 +251,7 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
         signal = 'bullish' if macd_line > signal_line else 'bearish' if macd_line < signal_line else 'neutral'
         return {'signal': signal, 'histogram': histogram, 'macd': macd_line, 'signal_line': signal_line}
 
-    def _bollinger(self, closes: list, period: int = 20) -> dict:
+    def _bollinger(self, closes, period=20):
         if len(closes) < period:
             return {'upper': closes[-1], 'lower': closes[-1], 'mid': closes[-1], 'position': 50}
         recent = closes[-period:]
