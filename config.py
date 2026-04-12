@@ -23,7 +23,7 @@ class Config:
         log.info(f"API Secret loaded: {'YES' if self.api_secret else 'NO - CHECK RAILWAY VARIABLES'}")
 
         # Trading pairs
-        self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT' 'RENDERUSDT']
+        self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT']
 
         # Strategy
         self.rsi_buy = 35
