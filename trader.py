@@ -1,11 +1,13 @@
 """
 AutoTrader Pro - Binance Trading Engine
+Fixed: quantity precision and minimum order handling
 """
 
 import logging
 from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
+import math
 
 log = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ class Trader:
         self.config = config
         self.client = Client(config.api_key, config.api_secret)
         self._verify_connection()
+        self._symbol_info_cache = {}
 
     def _verify_connection(self):
         try:
@@ -28,10 +31,8 @@ class Trader:
         account = self.client.get_account()
         balances = [b for b in account['balances']
                     if float(b['free']) + float(b['locked']) > 0]
-
         total_usdt = 0.0
         positions = []
-
         for b in balances:
             asset = b['asset']
             amount = float(b['free']) + float(b['locked'])
@@ -113,19 +114,29 @@ class Trader:
         if action == 'buy':
             usdt_balance = self._get_balance('USDT')
             amount_usdt = usdt_balance * (pct_of_portfolio / 100)
-            amount_usdt = max(10, min(amount_usdt, usdt_balance * 0.95))
+            amount_usdt = max(15, min(amount_usdt, usdt_balance * 0.95))
+
             price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-            quantity = self._adjust_quantity(symbol, amount_usdt / price)
+            raw_quantity = amount_usdt / price
+            quantity = self._adjust_quantity(symbol, raw_quantity)
+
+            log.info(f"BUY {symbol}: usdt={amount_usdt:.2f}, price={price}, qty={quantity}")
+
+            if quantity <= 0:
+                raise ValueError(f"Calculated quantity is zero for {symbol}")
+
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
-            log.info(f"BUY {symbol}: qty={quantity}")
+            log.info(f"BUY order placed: {order['orderId']}")
 
         elif action == 'sell':
             quantity = self._get_balance(base)
             if quantity <= 0:
                 raise ValueError(f"No {base} balance to sell")
             quantity = self._adjust_quantity(symbol, quantity * 0.999)
+            if quantity <= 0:
+                raise ValueError(f"Adjusted quantity is zero for {symbol}")
             order = self.client.order_market_sell(symbol=symbol, quantity=quantity)
-            log.info(f"SELL {symbol}: qty={quantity}")
+            log.info(f"SELL order placed: {order['orderId']}")
         else:
             raise ValueError(f"Unknown action: {action}")
 
@@ -139,11 +150,45 @@ class Trader:
                 return float(b['free'])
         return 0.0
 
+    def _get_symbol_info(self, symbol):
+        if symbol not in self._symbol_info_cache:
+            self._symbol_info_cache[symbol] = self.client.get_symbol_info(symbol)
+        return self._symbol_info_cache[symbol]
+
     def _adjust_quantity(self, symbol, quantity):
-        info = self.client.get_symbol_info(symbol)
-        step = float(next(f['stepSize'] for f in info['filters'] if f['filterType'] == 'LOT_SIZE'))
-        precision = len(str(step).rstrip('0').split('.')[-1]) if '.' in str(step) else 0
-        return round(quantity - (quantity % step), precision)
+        try:
+            info = self._get_symbol_info(symbol)
+            lot_filter = next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')
+            step_size = float(lot_filter['stepSize'])
+            min_qty = float(lot_filter['minQty'])
+
+            if step_size > 0:
+                precision = int(round(-math.log10(step_size)))
+                quantity = math.floor(quantity / step_size) * step_size
+                quantity = round(quantity, precision)
+
+            if quantity < min_qty:
+                log.warning(f"Quantity {quantity} below minimum {min_qty} for {symbol}")
+                return 0
+
+            # Check minimum notional value
+            min_notional_filter = next(
+                (f for f in info['filters'] if f['filterType'] in ('MIN_NOTIONAL', 'NOTIONAL')),
+                None
+            )
+            if min_notional_filter:
+                min_notional = float(min_notional_filter.get('minNotional', 0))
+                ticker = self.client.get_symbol_ticker(symbol=symbol)
+                price = float(ticker['price'])
+                notional = quantity * price
+                if notional < min_notional:
+                    log.warning(f"Notional {notional:.2f} below minimum {min_notional} for {symbol}")
+                    return 0
+
+            return quantity
+        except Exception as e:
+            log.error(f"Quantity adjustment error for {symbol}: {e}")
+            return round(quantity, 5)
 
     def _log_trade(self, pair, action, order):
         trade = {
@@ -164,7 +209,10 @@ class Trader:
         try:
             price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
             quantity = self._adjust_quantity(symbol, usdt_amount / price)
+            if quantity <= 0:
+                return {'success': False, 'error': 'Invalid quantity'}
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
             return {'success': True, 'orderId': order['orderId']}
         except Exception as e:
+            log.error(f"Snipe failed for {symbol}: {e}")
             return {'success': False, 'error': str(e)}
