@@ -1,7 +1,6 @@
 """
 AutoTrader Pro - AI Signal Engine
-Uses Claude AI + technical indicators to generate trade signals
-Auto-executes trades when auto_mode is enabled
+Fixed: AI analysis format error + lowered threshold to 65%
 """
 
 import time
@@ -12,7 +11,6 @@ import requests
 from config import Config
 
 log = logging.getLogger(__name__)
-
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 
 
@@ -45,32 +43,26 @@ class SignalEngine:
                 log.warning(f"Signal failed for {symbol}: {e}")
         self.latest_signals = signals
         log.info(f"Signals refreshed: {len(signals)} signals generated")
-
-        # Auto execute if enabled
         if self.config.auto_mode and self.risk_manager:
             self._auto_execute(signals)
 
     def _auto_execute(self, signals):
-        """Automatically execute trades when auto_mode is on"""
         for signal in signals:
             action = signal.get('action')
             confidence = signal.get('confidence', 0)
             pair = signal.get('pair')
-
             if action not in ('buy', 'sell'):
                 continue
-            if confidence < 70:
-                log.info(f"Auto-execute skipped {pair} — confidence {confidence}% below 70%")
+            if confidence < 65:
+                log.info(f"Auto-execute skipped {pair} - confidence {confidence}% below 65%")
                 continue
-
             approved, reason = self.risk_manager.check_trade(pair, action, confidence)
             if not approved:
                 log.info(f"Auto-execute blocked {pair}: {reason}")
                 continue
-
             try:
                 result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
-                log.info(f"Auto-executed: {action.upper()} {pair} — confidence {confidence}% — order {result}")
+                log.info(f"Auto-executed: {action.upper()} {pair} - confidence {confidence}% - order {result}")
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
 
@@ -83,57 +75,63 @@ class SignalEngine:
         klines = self.trader.get_klines(symbol, '1h', 100)
         if len(klines) < 50:
             return None
-
         closes = [k['close'] for k in klines]
         volumes = [k['volume'] for k in klines]
+        rsi = self._rsi(closes)
+        macd = self._macd(closes)
+        ma50 = self._sma(closes, 50)
+        ma200 = self._sma(closes, 200) if len(closes) >= 200 else None
+        bb = self._bollinger(closes)
+        volume_ratio = volumes[-1] / np.mean(volumes[-20:]) if volumes else 1.0
+        price = closes[-1]
+        price_change = ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
 
         indicators = {
-            'rsi': self._rsi(closes),
-            'macd': self._macd(closes),
-            'ma50': self._sma(closes, 50),
-            'ma200': self._sma(closes, 200) if len(closes) >= 200 else None,
-            'bb': self._bollinger(closes),
-            'volume_ratio': volumes[-1] / np.mean(volumes[-20:]) if volumes else 1.0,
-            'price': closes[-1],
-            'price_change_24h': ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
+            'rsi': rsi,
+            'macd': macd,
+            'ma50': ma50,
+            'ma200': ma200,
+            'bb': bb,
+            'volume_ratio': volume_ratio,
+            'price': price,
+            'price_change_24h': price_change
         }
-
         signal = self._ai_analyse(symbol, indicators)
         return signal
 
     def _ai_analyse(self, symbol, indicators):
         try:
-            prompt = f"""You are an expert crypto trading analyst. Analyse these technical indicators for {symbol} and generate a trading signal.
+            rsi = indicators['rsi']
+            macd = indicators['macd']
+            ma50 = indicators['ma50']
+            ma200 = indicators['ma200']
+            price = indicators['price']
+            bb = indicators['bb']
+            volume_ratio = indicators['volume_ratio']
+            price_change = indicators['price_change_24h']
 
-Indicators:
-- RSI (14): {indicators['rsi']:.1f}
-- MACD: {'Bullish crossover' if indicators['macd']['signal'] == 'bullish' else 'Bearish' if indicators['macd']['signal'] == 'bearish' else 'Neutral'}
-- MACD histogram: {indicators['macd']['histogram']:.4f}
-- Price: ${indicators['price']:.4f}
-- 50MA: ${indicators['ma50']:.4f}
-- 200MA: ${indicators['ma200']:.4f if indicators['ma200'] else 'N/A'}
-- Price above 50MA: {indicators['price'] > indicators['ma50']}
-- Bollinger: price at {indicators['bb']['position']:.0f}% of band
-- Volume vs 20-day avg: {indicators['volume_ratio']:.1f}x
-- 24h change: {indicators['price_change_24h']:.2f}%
+            ma200_str = str(round(ma200, 4)) if ma200 is not None else 'N/A'
+            macd_signal = macd.get('signal', 'neutral')
+            macd_hist = macd.get('histogram', 0)
+            bb_pos = bb.get('position', 50)
 
-Settings:
-- RSI buy below: {self.config.rsi_buy}
-- RSI sell above: {self.config.rsi_sell}
-- MA cross strategy: {self.config.ma_cross_enabled}
-- MACD signals: {self.config.macd_enabled}
-
-Return ONLY a JSON object with these exact fields:
-{{
-  "action": "buy" | "sell" | "watch" | "hold",
-  "confidence": 0-100,
-  "reason": "2-3 sentence explanation of the signal",
-  "rsi": {indicators['rsi']:.0f},
-  "macd": "bullish" | "bearish" | "neutral",
-  "trend": "up" | "down" | "sideways"
-}}
-
-Only generate buy/sell if confidence is above 60. Otherwise use watch or hold."""
+            prompt = (
+                f"You are an expert crypto trading analyst. Analyse these indicators for {symbol}:\n"
+                f"RSI: {round(rsi, 1)}\n"
+                f"MACD: {macd_signal}, histogram: {round(macd_hist, 4)}\n"
+                f"Price: {round(price, 4)}\n"
+                f"50MA: {round(ma50, 4)}\n"
+                f"200MA: {ma200_str}\n"
+                f"Price above 50MA: {price > ma50}\n"
+                f"Bollinger position: {round(bb_pos, 0)}%\n"
+                f"Volume ratio: {round(volume_ratio, 1)}x\n"
+                f"24h change: {round(price_change, 2)}%\n"
+                f"RSI buy below: {self.config.rsi_buy}\n"
+                f"RSI sell above: {self.config.rsi_sell}\n\n"
+                f"Return ONLY a JSON object:\n"
+                f'{{"action":"buy"|"sell"|"watch"|"hold","confidence":0-100,"reason":"2-3 sentences","rsi":{round(rsi)},"macd":"bullish"|"bearish"|"neutral","trend":"up"|"down"|"sideways"}}\n'
+                f"Only buy/sell if confidence above 60."
+            )
 
             response = requests.post(
                 ANTHROPIC_API,
@@ -158,7 +156,7 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
                 return self._fallback_signal(symbol, indicators)
 
             signal_data = json.loads(text[start:end])
-            signal_data['pair'] = f"{symbol.replace('USDT', '')}/USDT"
+            signal_data['pair'] = symbol.replace('USDT', '') + '/USDT'
             return signal_data
 
         except Exception as e:
@@ -167,28 +165,29 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
 
     def _fallback_signal(self, symbol, indicators):
         rsi = indicators['rsi']
-        macd = indicators['macd']['signal']
+        macd = indicators['macd']
         price = indicators['price']
         ma50 = indicators['ma50']
+        macd_signal = macd.get('signal', 'neutral')
 
         action = 'hold'
         confidence = 50
         reasons = []
 
         if rsi < self.config.rsi_buy:
-            reasons.append(f"RSI oversold at {rsi:.1f}")
+            reasons.append("RSI oversold at " + str(round(rsi, 1)))
             action = 'buy'
             confidence += 15
         elif rsi > self.config.rsi_sell:
-            reasons.append(f"RSI overbought at {rsi:.1f}")
+            reasons.append("RSI overbought at " + str(round(rsi, 1)))
             action = 'sell'
             confidence += 15
 
-        if macd == 'bullish' and action != 'sell':
+        if macd_signal == 'bullish' and action != 'sell':
             reasons.append("MACD bullish crossover")
             action = 'buy'
             confidence += 10
-        elif macd == 'bearish' and action != 'buy':
+        elif macd_signal == 'bearish' and action != 'buy':
             reasons.append("MACD bearish crossover")
             action = 'sell'
             confidence += 10
@@ -204,12 +203,12 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
             action = 'watch'
 
         return {
-            'pair': f"{symbol.replace('USDT', '')}/USDT",
+            'pair': symbol.replace('USDT', '') + '/USDT',
             'action': action,
             'confidence': min(confidence, 95),
-            'reason': '. '.join(reasons) + '.' if reasons else 'No strong signal detected. Monitoring market conditions.',
+            'reason': '. '.join(reasons) + '.' if reasons else 'No strong signal. Monitoring.',
             'rsi': round(rsi),
-            'macd': macd,
+            'macd': macd_signal,
             'trend': 'up' if price > ma50 else 'down'
         }
 
@@ -236,24 +235,29 @@ Only generate buy/sell if confidence is above 60. Otherwise use watch or hold.""
             return closes[-1]
         k = 2 / (period + 1)
         ema = closes[0]
-        for price in closes[1:]:
-            ema = price * k + ema * (1 - k)
+        for p in closes[1:]:
+            ema = p * k + ema * (1 - k)
         return ema
 
     def _macd(self, closes):
         if len(closes) < 26:
-            return {'signal': 'neutral', 'histogram': 0, 'macd': 0, 'signal_line': 0}
+            return {'signal': 'neutral', 'histogram': 0}
         ema12 = self._ema(closes, 12)
         ema26 = self._ema(closes, 26)
         macd_line = ema12 - ema26
         signal_line = self._ema(closes[-9:], 9)
         histogram = macd_line - signal_line
-        signal = 'bullish' if macd_line > signal_line else 'bearish' if macd_line < signal_line else 'neutral'
-        return {'signal': signal, 'histogram': histogram, 'macd': macd_line, 'signal_line': signal_line}
+        if macd_line > signal_line:
+            signal = 'bullish'
+        elif macd_line < signal_line:
+            signal = 'bearish'
+        else:
+            signal = 'neutral'
+        return {'signal': signal, 'histogram': histogram}
 
     def _bollinger(self, closes, period=20):
         if len(closes) < period:
-            return {'upper': closes[-1], 'lower': closes[-1], 'mid': closes[-1], 'position': 50}
+            return {'position': 50}
         recent = closes[-period:]
         mid = np.mean(recent)
         std = np.std(recent)
