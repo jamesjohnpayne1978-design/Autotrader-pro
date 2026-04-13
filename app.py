@@ -1,6 +1,6 @@
 """
 AutoTrader Pro - Main Flask Server
-Optimised for Railway.app deployment
+Added: portfolio chart endpoint, telegram notifications
 """
 
 from flask import Flask, jsonify, request, send_file
@@ -8,6 +8,7 @@ from flask_cors import CORS
 import threading
 import logging
 import os
+import requests as req
 from trader import Trader
 from sniper import ListingSniper
 from signals import SignalEngine
@@ -27,6 +28,19 @@ signal_engine = None
 risk_manager = RiskManager(config)
 
 
+def send_telegram(message):
+    if not config.telegram_token or not config.telegram_chat_id:
+        return
+    try:
+        req.post(
+            f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
+            json={'chat_id': config.telegram_chat_id, 'text': message, 'parse_mode': 'Markdown'},
+            timeout=5
+        )
+    except Exception as e:
+        log.warning(f"Telegram alert failed: {e}")
+
+
 def init_trader():
     global trader, sniper, signal_engine
     if config.api_key and config.api_secret:
@@ -40,6 +54,7 @@ def init_trader():
             signal_thread = threading.Thread(target=signal_engine.run, daemon=True)
             signal_thread.start()
             log.info("Trader, Sniper and Signal Engine initialised.")
+            send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
         except Exception as e:
             log.error(f"Failed to initialise trader: {e}")
 
@@ -81,6 +96,15 @@ def get_portfolio():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/portfolio/history')
+def portfolio_history():
+    try:
+        history = config.load_portfolio_history()
+        return jsonify({'history': history})
+    except Exception as e:
+        return jsonify({'history': [], 'error': str(e)})
+
+
 @app.route('/api/prices')
 def get_prices():
     if not trader:
@@ -116,6 +140,11 @@ def execute_trade():
 
     try:
         result = trader.execute_trade(pair, action, config.max_trade_pct)
+        send_telegram(
+            f"{'🟢' if action == 'buy' else '🔴'} *{action.upper()} {pair}*\n"
+            f"Confidence: {confidence}%\n"
+            f"Order: {result.get('orderId', 'N/A')}"
+        )
         return jsonify({'success': True, 'result': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
