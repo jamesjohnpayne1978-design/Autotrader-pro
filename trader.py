@@ -78,7 +78,7 @@ class Trader:
             'total_usdt': round(total_usdt, 2),
             'positions': positions,
             'trades_today': len(today_trades),
-            'open_positions': len([p for p in positions if p['asset'] != 'USDT']),
+            'open_positions': len([p for p in positions if p['asset'] != 'USDT' and p.get('value_usdt', 0) >= 1.0]),
             'win_rate': win_rate,
             'pnl_today': round(today_pnl, 2),
             'pnl_pct': 0.0,
