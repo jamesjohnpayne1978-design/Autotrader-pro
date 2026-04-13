@@ -1,6 +1,6 @@
 """
 AutoTrader Pro - Configuration Manager
-Reads API keys from environment variables automatically
+Added: portfolio history, trade cooldown, telegram config
 """
 
 import json
@@ -11,36 +11,30 @@ log = logging.getLogger(__name__)
 
 CONFIG_PATH = '/data/config.json'
 HISTORY_PATH = '/data/trade_history.json'
+PORTFOLIO_HISTORY_PATH = '/data/portfolio_history.json'
 
 
 class Config:
     def __init__(self):
-        # Read API keys from environment variables first
         self.api_key = os.environ.get('BINANCE_API_KEY', '')
         self.api_secret = os.environ.get('BINANCE_API_SECRET', '')
 
-        log.info(f"API Key loaded: {'YES' if self.api_key else 'NO - CHECK RAILWAY VARIABLES'}")
-        log.info(f"API Secret loaded: {'YES' if self.api_secret else 'NO - CHECK RAILWAY VARIABLES'}")
+        log.info(f"API Key loaded: {'YES' if self.api_key else 'NO'}")
+        log.info(f"API Secret loaded: {'YES' if self.api_secret else 'NO'}")
 
-        # Trading pairs
         self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT']
-
-        # Strategy
         self.rsi_buy = 35
         self.rsi_sell = 70
         self.ma_cross_enabled = True
         self.macd_enabled = True
-        self.auto_mode = False
+        self.auto_mode = os.environ.get('AUTO_MODE', 'false').lower() == 'true'
         self.approval_mode = True
-
-        # Risk management
         self.max_trade_pct = 5.0
         self.daily_loss_limit_pct = 5.0
         self.default_sl_pct = 3.0
         self.default_tp_pct = 6.0
         self.max_open_positions = 5
-
-        # Sniper
+        self.trade_cooldown_minutes = int(os.environ.get('TRADE_COOLDOWN_MINUTES', '60'))
         self.sniper_active = True
         self.sniper_budget_usdt = 50.0
         self.sniper_tp_pct = 20.0
@@ -48,8 +42,6 @@ class Config:
         self.sniper_daily_limit_usdt = 200.0
         self.ai_filter_enabled = True
         self.ai_min_score = 70
-
-        # Telegram
         self.telegram_token = os.environ.get('TELEGRAM_TOKEN', '')
         self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', '')
 
@@ -60,9 +52,9 @@ class Config:
             if os.path.exists(CONFIG_PATH):
                 with open(CONFIG_PATH, 'r') as f:
                     data = json.load(f)
-                safe_keys = {k: v for k, v in data.items()
-                            if k not in ('api_key', 'api_secret')}
-                self.update(safe_keys)
+                safe = {k: v for k, v in data.items()
+                        if k not in ('api_key', 'api_secret')}
+                self.update(safe)
         except Exception as e:
             log.warning(f"Could not load config: {e}")
 
@@ -87,6 +79,7 @@ class Config:
             'sniper_sl': ('sniper_sl_pct', float),
             'ai_filter': ('ai_filter_enabled', bool),
             'ai_min_score': ('ai_min_score', int),
+            'trade_cooldown_minutes': ('trade_cooldown_minutes', int),
             'telegram_token': 'telegram_token',
             'telegram_chat_id': 'telegram_chat_id',
         }
@@ -110,7 +103,7 @@ class Config:
         except Exception as e:
             log.warning(f"Config save failed: {e}")
 
-    def to_dict(self) -> dict:
+    def to_dict(self):
         return {
             'trading_pairs': self.trading_pairs,
             'rsi_buy': self.rsi_buy,
@@ -129,9 +122,10 @@ class Config:
             'sniper_sl': self.sniper_sl_pct,
             'ai_filter': self.ai_filter_enabled,
             'ai_min_score': self.ai_min_score,
+            'trade_cooldown_minutes': self.trade_cooldown_minutes,
         }
 
-    def load_trade_history(self) -> list:
+    def load_trade_history(self):
         try:
             if os.path.exists(HISTORY_PATH):
                 with open(HISTORY_PATH, 'r') as f:
@@ -140,10 +134,27 @@ class Config:
             pass
         return []
 
-    def save_trade_history(self, history: list):
+    def save_trade_history(self, history):
         try:
             os.makedirs('/data', exist_ok=True)
             with open(HISTORY_PATH, 'w') as f:
                 json.dump(history, f, indent=2)
         except Exception as e:
-            log.warning(f"History save failed: {e}")
+            log.error(f"History save failed: {e}")
+
+    def load_portfolio_history(self):
+        try:
+            if os.path.exists(PORTFOLIO_HISTORY_PATH):
+                with open(PORTFOLIO_HISTORY_PATH, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return []
+
+    def save_portfolio_history(self, history):
+        try:
+            os.makedirs('/data', exist_ok=True)
+            with open(PORTFOLIO_HISTORY_PATH, 'w') as f:
+                json.dump(history, f, indent=2)
+        except Exception as e:
+            log.error(f"Portfolio history save failed: {e}")
