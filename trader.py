@@ -81,7 +81,8 @@ class Trader:
             'open_positions': len([p for p in positions if p['asset'] != 'USDT']),
             'win_rate': win_rate,
             'pnl_today': round(today_pnl, 2),
-            'pnl_pct': 0.0
+            'pnl_pct': 0.0,
+            'free_usdt': round(next((float(b['free']) for b in account['balances'] if b['asset']=='USDT'), 0.0), 2)
         }
 
     def _save_portfolio_snapshot(self, value):
