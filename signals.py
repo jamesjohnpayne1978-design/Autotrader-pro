@@ -1,6 +1,6 @@
 """
 AutoTrader Pro - AI Signal Engine
-Fixed: AI analysis format error + lowered threshold to 65%
+Added: Market regime detection + dynamic take profit adjustment
 """
 
 import time
@@ -20,6 +20,9 @@ class SignalEngine:
         self.trader = trader
         self.risk_manager = risk_manager
         self.latest_signals = []
+        self.market_regime = 'neutral'
+        self.regime_reason = 'Analysing market conditions...'
+        self.regime_tp = 6.0
         self.running = False
 
     def run(self):
@@ -27,10 +30,109 @@ class SignalEngine:
         log.info("Signal engine started.")
         while self.running:
             try:
+                self.detect_market_regime()
                 self.refresh_signals()
             except Exception as e:
                 log.error(f"Signal refresh error: {e}")
             time.sleep(300)
+
+    def detect_market_regime(self):
+        """Analyse overall market to determine bull/bear/neutral regime"""
+        try:
+            klines = self.trader.get_klines('BTCUSDT', '1d', 14)
+            if len(klines) < 7:
+                return
+
+            closes = [k['close'] for k in klines]
+            volumes = [k['volume'] for k in klines]
+
+            rsi = self._rsi(closes)
+            ma7 = np.mean(closes[-7:])
+            ma14 = np.mean(closes)
+            price = closes[-1]
+            price_7d_change = ((closes[-1] - closes[-7]) / closes[-7]) * 100
+            volume_trend = np.mean(volumes[-3:]) / np.mean(volumes[-14:])
+
+            prompt = (
+                f"You are a crypto market analyst. Determine the current market regime based on these Bitcoin indicators:\n\n"
+                f"Current price: ${round(price, 0)}\n"
+                f"7-day price change: {round(price_7d_change, 2)}%\n"
+                f"RSI (14): {round(rsi, 1)}\n"
+                f"Price vs 7-day MA: {'above' if price > ma7 else 'below'}\n"
+                f"Price vs 14-day MA: {'above' if price > ma14 else 'below'}\n"
+                f"Volume trend (3d vs 14d avg): {round(volume_trend, 2)}x\n\n"
+                f"Based on these indicators, determine:\n"
+                f"1. Market regime: bullish, bearish, or neutral\n"
+                f"2. Recommended take profit %:\n"
+                f"   - bullish = 8%\n"
+                f"   - neutral = 6%\n"
+                f"   - bearish = 4%\n\n"
+                f"Return ONLY this JSON:\n"
+                f'{{"regime":"bullish"|"bearish"|"neutral","take_profit":4|6|8,"reason":"one sentence explanation"}}'
+            )
+
+            response = requests.post(
+                ANTHROPIC_API,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 200,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                text = data['content'][0]['text'].strip()
+                start = text.find('{')
+                end = text.rfind('}') + 1
+                if start != -1:
+                    result = json.loads(text[start:end])
+                    self.market_regime = result.get('regime', 'neutral')
+                    self.regime_tp = float(result.get('take_profit', 6.0))
+                    self.regime_reason = result.get('reason', '')
+                    self.config.dynamic_tp = self.regime_tp
+                    log.info(f"Market regime: {self.market_regime} — TP set to {self.regime_tp}%")
+                    return
+
+            # Fallback rule-based regime detection
+            self._fallback_regime(rsi, price_7d_change, price, ma7)
+
+        except Exception as e:
+            log.warning(f"Regime detection failed: {e}")
+            self._fallback_regime_simple()
+
+    def _fallback_regime(self, rsi, price_change_7d, price, ma7):
+        """Rule-based regime detection when AI unavailable"""
+        if rsi > 55 and price_change_7d > 3 and price > ma7:
+            self.market_regime = 'bullish'
+            self.regime_tp = 8.0
+            self.regime_reason = f"RSI {round(rsi)} above 55, price up {round(price_change_7d, 1)}% in 7 days and above 7MA."
+        elif rsi < 45 and price_change_7d < -3 and price < ma7:
+            self.market_regime = 'bearish'
+            self.regime_tp = 4.0
+            self.regime_reason = f"RSI {round(rsi)} below 45, price down {round(abs(price_change_7d), 1)}% in 7 days and below 7MA."
+        else:
+            self.market_regime = 'neutral'
+            self.regime_tp = 6.0
+            self.regime_reason = f"Mixed signals — RSI {round(rsi)}, 7-day change {round(price_change_7d, 1)}%."
+
+        self.config.dynamic_tp = self.regime_tp
+        log.info(f"Fallback regime: {self.market_regime} — TP {self.regime_tp}%")
+
+    def _fallback_regime_simple(self):
+        self.market_regime = 'neutral'
+        self.regime_tp = 6.0
+        self.regime_reason = "Using default settings."
+        self.config.dynamic_tp = self.regime_tp
+
+    def get_regime(self):
+        return {
+            'regime': self.market_regime,
+            'take_profit': self.regime_tp,
+            'reason': self.regime_reason
+        }
 
     def refresh_signals(self):
         signals = []
@@ -42,7 +144,7 @@ class SignalEngine:
             except Exception as e:
                 log.warning(f"Signal failed for {symbol}: {e}")
         self.latest_signals = signals
-        log.info(f"Signals refreshed: {len(signals)} signals generated")
+        log.info(f"Signals refreshed: {len(signals)} signals — regime: {self.market_regime} — TP: {self.regime_tp}%")
         if self.config.auto_mode and self.risk_manager:
             self._auto_execute(signals)
 
@@ -54,7 +156,7 @@ class SignalEngine:
             if action not in ('buy', 'sell'):
                 continue
             if confidence < 65:
-                log.info(f"Auto-execute skipped {pair} - confidence {confidence}% below 65%")
+                log.info(f"Auto-execute skipped {pair} — confidence {confidence}% below 65%")
                 continue
             approved, reason = self.risk_manager.check_trade(pair, action, confidence)
             if not approved:
@@ -62,7 +164,7 @@ class SignalEngine:
                 continue
             try:
                 result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
-                log.info(f"Auto-executed: {action.upper()} {pair} - confidence {confidence}% - order {result}")
+                log.info(f"Auto-executed: {action.upper()} {pair} — confidence {confidence}% — {result}")
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
 
@@ -87,17 +189,11 @@ class SignalEngine:
         price_change = ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
 
         indicators = {
-            'rsi': rsi,
-            'macd': macd,
-            'ma50': ma50,
-            'ma200': ma200,
-            'bb': bb,
-            'volume_ratio': volume_ratio,
-            'price': price,
+            'rsi': rsi, 'macd': macd, 'ma50': ma50, 'ma200': ma200,
+            'bb': bb, 'volume_ratio': volume_ratio, 'price': price,
             'price_change_24h': price_change
         }
-        signal = self._ai_analyse(symbol, indicators)
-        return signal
+        return self._ai_analyse(symbol, indicators)
 
     def _ai_analyse(self, symbol, indicators):
         try:
@@ -109,28 +205,22 @@ class SignalEngine:
             bb = indicators['bb']
             volume_ratio = indicators['volume_ratio']
             price_change = indicators['price_change_24h']
-
             ma200_str = str(round(ma200, 4)) if ma200 is not None else 'N/A'
             macd_signal = macd.get('signal', 'neutral')
             macd_hist = macd.get('histogram', 0)
             bb_pos = bb.get('position', 50)
 
             prompt = (
-                f"You are an expert crypto trading analyst. Analyse these indicators for {symbol}:\n"
-                f"RSI: {round(rsi, 1)}\n"
-                f"MACD: {macd_signal}, histogram: {round(macd_hist, 4)}\n"
-                f"Price: {round(price, 4)}\n"
-                f"50MA: {round(ma50, 4)}\n"
-                f"200MA: {ma200_str}\n"
-                f"Price above 50MA: {price > ma50}\n"
-                f"Bollinger position: {round(bb_pos, 0)}%\n"
-                f"Volume ratio: {round(volume_ratio, 1)}x\n"
-                f"24h change: {round(price_change, 2)}%\n"
-                f"RSI buy below: {self.config.rsi_buy}\n"
-                f"RSI sell above: {self.config.rsi_sell}\n\n"
-                f"Return ONLY a JSON object:\n"
-                f'{{"action":"buy"|"sell"|"watch"|"hold","confidence":0-100,"reason":"2-3 sentences","rsi":{round(rsi)},"macd":"bullish"|"bearish"|"neutral","trend":"up"|"down"|"sideways"}}\n'
-                f"Only buy/sell if confidence above 60."
+                f"Analyse {symbol} for trading signal. Market regime: {self.market_regime}.\n"
+                f"RSI: {round(rsi, 1)}, MACD: {macd_signal} ({round(macd_hist, 4)})\n"
+                f"Price: {round(price, 4)}, 50MA: {round(ma50, 4)}, 200MA: {ma200_str}\n"
+                f"Above 50MA: {price > ma50}, BB position: {round(bb_pos, 0)}%\n"
+                f"Volume ratio: {round(volume_ratio, 1)}x, 24h change: {round(price_change, 2)}%\n"
+                f"RSI buy below: {self.config.rsi_buy}, sell above: {self.config.rsi_sell}\n"
+                f"Recommended TP for this regime: {self.regime_tp}%\n\n"
+                f"Return ONLY JSON: "
+                f'{{"action":"buy"|"sell"|"watch"|"hold","confidence":0-100,"reason":"2-3 sentences",'
+                f'"rsi":{round(rsi)},"macd":"bullish"|"bearish"|"neutral","trend":"up"|"down"|"sideways"}}'
             )
 
             response = requests.post(
@@ -145,7 +235,6 @@ class SignalEngine:
             )
 
             if response.status_code != 200:
-                log.warning(f"Claude API error: {response.status_code}")
                 return self._fallback_signal(symbol, indicators)
 
             data = response.json()
@@ -169,7 +258,6 @@ class SignalEngine:
         price = indicators['price']
         ma50 = indicators['ma50']
         macd_signal = macd.get('signal', 'neutral')
-
         action = 'hold'
         confidence = 50
         reasons = []
@@ -193,10 +281,8 @@ class SignalEngine:
             confidence += 10
 
         if price > ma50 and action == 'buy':
-            reasons.append("Price above 50MA")
             confidence += 10
         elif price < ma50 and action == 'sell':
-            reasons.append("Price below 50MA")
             confidence += 10
 
         if not reasons:
@@ -222,8 +308,7 @@ class SignalEngine:
         avg_loss = np.mean(losses[-period:])
         if avg_loss == 0:
             return 100.0
-        rs = avg_gain / avg_loss
-        return round(100 - (100 / (1 + rs)), 2)
+        return round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
 
     def _sma(self, closes, period):
         if len(closes) < period:
@@ -242,17 +327,10 @@ class SignalEngine:
     def _macd(self, closes):
         if len(closes) < 26:
             return {'signal': 'neutral', 'histogram': 0}
-        ema12 = self._ema(closes, 12)
-        ema26 = self._ema(closes, 26)
-        macd_line = ema12 - ema26
+        macd_line = self._ema(closes, 12) - self._ema(closes, 26)
         signal_line = self._ema(closes[-9:], 9)
         histogram = macd_line - signal_line
-        if macd_line > signal_line:
-            signal = 'bullish'
-        elif macd_line < signal_line:
-            signal = 'bearish'
-        else:
-            signal = 'neutral'
+        signal = 'bullish' if macd_line > signal_line else 'bearish' if macd_line < signal_line else 'neutral'
         return {'signal': signal, 'histogram': histogram}
 
     def _bollinger(self, closes, period=20):
@@ -263,7 +341,6 @@ class SignalEngine:
         std = np.std(recent)
         upper = mid + 2 * std
         lower = mid - 2 * std
-        price = closes[-1]
         band_range = upper - lower
-        position = ((price - lower) / band_range * 100) if band_range > 0 else 50
+        position = ((closes[-1] - lower) / band_range * 100) if band_range > 0 else 50
         return {'upper': upper, 'lower': lower, 'mid': mid, 'position': position}
