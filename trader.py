@@ -1,6 +1,6 @@
 """
 AutoTrader Pro - Binance Trading Engine
-Fixed: P&L calculation, trade cooldown, quantity precision
+Added: OCO orders for hard take profit and stop loss on Binance
 """
 
 import logging
@@ -19,6 +19,7 @@ class Trader:
         self._verify_connection()
         self._symbol_info_cache = {}
         self._last_trade_time = {}
+        self._open_oco_orders = {}
 
     def _verify_connection(self):
         try:
@@ -70,8 +71,8 @@ class Trader:
         wins = [t for t in history if t.get('pnl', 0) > 0]
         win_rate = round(len(wins) / len(history) * 100) if history else None
         today_pnl = sum(t.get('pnl', 0) for t in today_trades)
+        free_usdt = next((float(b['free']) for b in account['balances'] if b['asset'] == 'USDT'), 0.0)
 
-        # Save portfolio snapshot for chart
         self._save_portfolio_snapshot(round(total_usdt, 2))
 
         return {
@@ -82,14 +83,13 @@ class Trader:
             'win_rate': win_rate,
             'pnl_today': round(today_pnl, 2),
             'pnl_pct': 0.0,
-            'free_usdt': round(next((float(b['free']) for b in account['balances'] if b['asset']=='USDT'), 0.0), 2)
+            'free_usdt': round(free_usdt, 2)
         }
 
     def _save_portfolio_snapshot(self, value):
         try:
             snapshots = self.config.load_portfolio_history()
             now = datetime.now()
-            # Only save one snapshot per hour
             if snapshots:
                 last = snapshots[-1]
                 last_time = datetime.fromisoformat(last['time'])
@@ -100,7 +100,6 @@ class Trader:
                 'value': value,
                 'date': now.strftime('%Y-%m-%d %H:%M')
             })
-            # Keep last 90 days of hourly snapshots
             snapshots = snapshots[-2160:]
             self.config.save_portfolio_history(snapshots)
         except Exception as e:
@@ -147,7 +146,6 @@ class Trader:
         } for k in raw]
 
     def execute_trade(self, pair, action, pct_of_portfolio):
-        # Check cooldown
         if self.is_on_cooldown(pair):
             raise ValueError(f"Trade cooldown active for {pair}")
 
@@ -163,13 +161,21 @@ class Trader:
             quantity = self._adjust_quantity(symbol, raw_quantity)
             if quantity <= 0:
                 raise ValueError(f"Calculated quantity is zero for {symbol}")
+
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
             buy_price = float(order.get('fills', [{}])[0].get('price', price)) if order.get('fills') else price
             log.info(f"BUY {symbol}: qty={quantity} at ${buy_price:.4f}")
+
             self._last_trade_time[pair] = datetime.now()
             self._log_trade(pair, 'buy', order, buy_price, quantity)
 
+            # Place OCO order for take profit and stop loss
+            self._place_oco_order(symbol, pair, quantity, buy_price)
+
         elif action == 'sell':
+            # Cancel any existing OCO orders first
+            self._cancel_oco_orders(symbol, pair)
+
             quantity = self._get_balance(base)
             if quantity <= 0:
                 raise ValueError(f"No {base} balance to sell")
@@ -188,10 +194,80 @@ class Trader:
 
         return {'orderId': order['orderId'], 'status': order['status']}
 
+    def _place_oco_order(self, symbol, pair, quantity, buy_price):
+        """Place OCO order with take profit and stop loss on Binance"""
+        try:
+            # Get dynamic take profit from config (set by regime detection)
+            tp_pct = getattr(self.config, 'dynamic_tp', self.config.default_tp_pct)
+            sl_pct = self.config.default_sl_pct
+
+            tp_price = buy_price * (1 + tp_pct / 100)
+            sl_price = buy_price * (1 - sl_pct / 100)
+            sl_limit_price = sl_price * 0.995  # slightly below stop for limit
+
+            # Round prices to correct precision
+            tp_price = self._round_price(symbol, tp_price)
+            sl_price = self._round_price(symbol, sl_price)
+            sl_limit_price = self._round_price(symbol, sl_limit_price)
+
+            log.info(f"Placing OCO for {symbol}: TP=${tp_price} SL=${sl_price} qty={quantity}")
+
+            oco = self.client.create_oco_order(
+                symbol=symbol,
+                side='SELL',
+                quantity=quantity,
+                price=str(tp_price),
+                stopPrice=str(sl_price),
+                stopLimitPrice=str(sl_limit_price),
+                stopLimitTimeInForce='GTC'
+            )
+
+            # Store OCO order IDs for later cancellation if needed
+            self._open_oco_orders[pair] = {
+                'orderListId': oco.get('orderListId'),
+                'symbol': symbol,
+                'tp_price': tp_price,
+                'sl_price': sl_price
+            }
+
+            log.info(f"OCO placed for {symbol} — TP: ${tp_price} ({tp_pct}%) | SL: ${sl_price} ({sl_pct}%)")
+
+        except BinanceAPIException as e:
+            log.warning(f"OCO order failed for {symbol}: {e} — position open without hard TP/SL")
+        except Exception as e:
+            log.warning(f"OCO setup error for {symbol}: {e}")
+
+    def _cancel_oco_orders(self, symbol, pair):
+        """Cancel any open OCO orders before manual sell"""
+        if pair in self._open_oco_orders:
+            try:
+                order_info = self._open_oco_orders[pair]
+                self.client.cancel_order_list(
+                    symbol=symbol,
+                    orderListId=order_info['orderListId']
+                )
+                del self._open_oco_orders[pair]
+                log.info(f"Cancelled OCO orders for {symbol}")
+            except Exception as e:
+                log.warning(f"Could not cancel OCO for {symbol}: {e}")
+
+    def _round_price(self, symbol, price):
+        """Round price to correct tick size for symbol"""
+        try:
+            info = self._get_symbol_info(symbol)
+            price_filter = next(f for f in info['filters'] if f['filterType'] == 'PRICE_FILTER')
+            tick_size = float(price_filter['tickSize'])
+            if tick_size > 0:
+                precision = int(round(-math.log10(tick_size)))
+                price = math.floor(price / tick_size) * tick_size
+                return round(price, precision)
+        except Exception:
+            pass
+        return round(price, 2)
+
     def _calculate_pnl(self, pair, sell_price, quantity):
         try:
             history = self.config.load_trade_history()
-            # Find most recent buy for this pair
             for trade in history:
                 if trade.get('pair') == pair and trade.get('side') == 'buy':
                     buy_price = trade.get('price', 0)
