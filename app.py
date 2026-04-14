@@ -1,6 +1,6 @@
 """
 AutoTrader Pro - Main Flask Server
-Added: portfolio chart endpoint, telegram notifications
+Added: market regime endpoint
 """
 
 from flask import Flask, jsonify, request, send_file
@@ -125,6 +125,16 @@ def get_signals():
         return jsonify({'signals': [], 'error': str(e)})
 
 
+@app.route('/api/regime')
+def get_regime():
+    if not signal_engine:
+        return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': 'Bot not initialised'})
+    try:
+        return jsonify(signal_engine.get_regime())
+    except Exception as e:
+        return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': str(e)})
+
+
 @app.route('/api/trade', methods=['POST'])
 def execute_trade():
     if not trader:
@@ -143,6 +153,7 @@ def execute_trade():
         send_telegram(
             f"{'🟢' if action == 'buy' else '🔴'} *{action.upper()} {pair}*\n"
             f"Confidence: {confidence}%\n"
+            f"Market: {signal_engine.market_regime if signal_engine else 'unknown'}\n"
             f"Order: {result.get('orderId', 'N/A')}"
         )
         return jsonify({'success': True, 'result': result})
