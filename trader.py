@@ -110,6 +110,9 @@ class Trader:
 
     def get_prices(self):
         results = []
+        history = self.config.load_trade_history()
+        tp_pct = getattr(self.config, 'dynamic_tp', self.config.default_tp_pct)
+        sl_pct = self.config.default_sl_pct
         for symbol in self.config.trading_pairs:
             try:
                 ticker = self.client.get_symbol_ticker(symbol=symbol)
@@ -121,14 +124,33 @@ class Trader:
                      for b in account['balances'] if b['asset'] == base), 0.0
                 )
                 price = float(ticker['price'])
+                pair_name = f"{base}/USDT"
+                buy_price = None
+                for trade in history:
+                    if trade.get('pair') == pair_name and trade.get('side') == 'buy':
+                        buy_price = trade.get('price', 0)
+                        if buy_price and buy_price > 0:
+                            break
+                gain_pct = None
+                to_tp = None
+                to_sl = None
+                if buy_price and buy_price > 0 and holding > 0.000001:
+                    gain_pct = round(((price - buy_price) / buy_price) * 100, 2)
+                    to_tp = round(tp_pct - gain_pct, 2)
+                    to_sl = round(gain_pct + sl_pct, 2)
                 results.append({
-                    'symbol': f"{base}/USDT",
+                    'symbol': pair_name,
                     'base': base,
                     'price': round(price, 4),
                     'change': round(float(stats['priceChangePercent']), 2),
                     'volume': float(stats['volume']),
                     'holdings': round(holding, 6),
-                    'value_usdt': round(holding * price, 2)
+                    'value_usdt': round(holding * price, 2),
+                    'buy_price': round(buy_price, 4) if buy_price else None,
+                    'gain_pct': gain_pct,
+                    'to_tp': to_tp,
+                    'tp_pct': tp_pct,
+                    'sl_pct': sl_pct
                 })
             except Exception as e:
                 log.warning(f"Could not fetch {symbol}: {e}")
