@@ -240,7 +240,38 @@ async function loadChart(){try{const r=await fetch(API_BASE+'/api/portfolio/hist
 async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime()}
 async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const el=document.getElementById('portfolioPnl');const pnl=d.pnl_today||0;el.textContent=(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+(d.pnl_pct||0).toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');document.getElementById('tradesToday').textContent=d.trades_today||0;document.getElementById('winRate').textContent=d.win_rate?d.win_rate+'%':'-';document.getElementById('openPositions').textContent=d.open_positions||0;document.getElementById('freeUsdt').textContent='$'+(d.free_usdt||0).toFixed(2);state.apiConnected=true;updateApiStatus(true)}catch(e){}}
 async function loadPrices(){try{const r=await fetch(API_BASE+'/api/prices');const d=await r.json();renderPairs(d.pairs)}catch(e){}}
-function renderPairs(pairs){if(!pairs||!pairs.length){document.getElementById('pairsCard').innerHTML='<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:0.8rem;">No pairs loaded.</div>';return}const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',XRP:'✕',RENDER:'R',LINK:'🔗'};document.getElementById('pairsCard').innerHTML=pairs.map(p=>'<div class="pair-row"><div class="pair-info"><div class="pair-icon">'+(icons[p.base]||'●')+'</div><div><div class="pair-name">'+p.symbol+'</div><div class="pair-holdings">'+p.holdings+' '+p.base+' · $'+p.value_usdt+'</div></div></div><div class="pair-prices"><div class="pair-price">$'+Number(p.price).toLocaleString()+'</div><div class="pair-change '+(p.change>=0?'up':'down')+'">'+(p.change>=0?'+':'')+p.change+'%</div></div></div>').join('')}
+function renderPairs(pairs){
+  if(!pairs||!pairs.length){document.getElementById('pairsCard').innerHTML='<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:0.8rem;">No pairs loaded.</div>';return}
+  const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',XRP:'✕',RENDER:'R',LINK:'🔗'};
+  document.getElementById('pairsCard').innerHTML=pairs.map(p=>{
+    let gainHtml='';
+    if(p.gain_pct!==null&&p.gain_pct!==undefined&&p.holdings>0.000001){
+      const g=p.gain_pct;
+      const toTp=p.to_tp;
+      const gainCls=g>=0?'up':'down';
+      const tpColor=toTp<=1?'var(--green)':toTp<=3?'var(--gold)':'var(--text-dim)';
+      gainHtml='<div style="font-size:0.62rem;margin-top:3px;font-family:var(--mono);display:flex;gap:6px;">'
+        +'<span class="'+gainCls+'">'+(g>=0?'+':'')+g.toFixed(2)+'%</span>'
+        +'<span style="color:var(--text-dim)">·</span>'
+        +'<span style="color:'+tpColor+'">TP in '+toTp.toFixed(2)+'%</span>'
+        +'</div>';
+    }
+    return '<div class="pair-row">'
+      +'<div class="pair-info">'
+        +'<div class="pair-icon">'+(icons[p.base]||'●')+'</div>'
+        +'<div>'
+          +'<div class="pair-name">'+p.symbol+'</div>'
+          +'<div class="pair-holdings">'+p.holdings+' '+p.base+' · $'+p.value_usdt+'</div>'
+          +gainHtml
+        +'</div>'
+      +'</div>'
+      +'<div class="pair-prices">'
+        +'<div class="pair-price">$'+Number(p.price).toLocaleString()+'</div>'
+        +'<div class="pair-change '+(p.change>=0?'up':'down')+'">'+(p.change>=0?'+':'')+p.change+'%</div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+}
 async function loadSignals(){document.getElementById('signalsContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Analysing market...</div>';try{const r=await fetch(API_BASE+'/api/signals');const d=await r.json();renderSignals(d.signals)}catch(e){}}
 function renderSignals(signals){if(!signals||!signals.length){document.getElementById('signalsContainer').innerHTML='<div class="card" style="text-align:center;padding:20px;color:var(--text-dim);font-size:0.8rem;">No strong signals. Watching...</div>';return}document.getElementById('signalsContainer').innerHTML=signals.map(s=>'<div class="signal-card '+s.action+'"><div class="signal-header"><div class="signal-pair">'+s.pair+'</div><div class="signal-badge '+s.action+'">'+s.action.toUpperCase()+'</div></div><div class="signal-reason">'+s.reason+'</div><div class="confidence-bar"><div class="confidence-fill '+s.action+'" style="width:'+s.confidence+'%"></div></div><div class="confidence-label"><span>AI Confidence</span><span>'+s.confidence+'%</span></div><div class="indicators"><div class="indicator"><div class="indicator-name">RSI</div><div class="indicator-value '+(s.rsi<35?'up':s.rsi>70?'down':'')+'">'+s.rsi+'</div></div><div class="indicator"><div class="indicator-name">MACD</div><div class="indicator-value '+(s.macd==='bullish'?'up':'down')+'">'+s.macd+'</div></div><div class="indicator"><div class="indicator-name">Trend</div><div class="indicator-value '+(s.trend==='up'?'up':'down')+'">'+s.trend+'</div></div></div>'+(!state.autoMode?'<div class="signal-actions" style="margin-top:14px;"><button class="btn btn-execute" onclick="executeTrade(\''+s.pair+'\',\''+s.action+'\','+s.confidence+')">✓ Execute</button><button class="btn btn-skip" onclick="skipSignal(\''+s.pair+'\')">✕ Skip</button></div>':'<div style="font-size:0.7rem;color:var(--green);margin-top:10px;font-family:var(--mono);">⚡ Auto-executing...</div>')+'</div>').join('')}
 async function loadHistory(){try{const r=await fetch(API_BASE+'/api/history');const d=await r.json();renderHistory(d.trades)}catch(e){}}
