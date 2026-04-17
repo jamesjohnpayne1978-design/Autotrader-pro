@@ -68,8 +68,10 @@ class Trader:
         history = self.config.load_trade_history()
         today = datetime.now().strftime('%Y-%m-%d')
         today_trades = [t for t in history if t.get('date') == today]
-        wins = [t for t in history if t.get('pnl', 0) > 0]
-        win_rate = round(len(wins) / len(history) * 100) if history else None
+        # Only count trades that have a recorded PnL (ignore $0.00 legacy trades)
+        closed_trades = [t for t in history if t.get('side') == 'sell' and t.get('pnl', 0) != 0]
+        wins = [t for t in closed_trades if t.get('pnl', 0) > 0]
+        win_rate = round(len(wins) / len(closed_trades) * 100) if closed_trades else None
         today_pnl = sum(t.get('pnl', 0) for t in today_trades)
         free_usdt = next((float(b['free']) for b in account['balances'] if b['asset'] == 'USDT'), 0.0)
 
