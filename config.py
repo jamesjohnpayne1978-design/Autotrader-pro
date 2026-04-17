@@ -38,7 +38,7 @@ class Config:
         self.daily_loss_limit_pct = 5.0
         self.default_sl_pct = 3.0
         self.default_tp_pct = 6.0
-        self.max_open_positions = 5
+        self.max_open_positions = 6
         self.trade_cooldown_minutes = int(os.environ.get('TRADE_COOLDOWN_MINUTES', '60'))
         self.sniper_active = True
         self.sniper_budget_usdt = 50.0
