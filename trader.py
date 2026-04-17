@@ -1,7 +1,7 @@
-“””
+"""
 AutoTrader Pro - Binance Trading Engine
 Added: OCO orders for hard take profit and stop loss on Binance
-“””
+"""
 
 import logging
 import math
