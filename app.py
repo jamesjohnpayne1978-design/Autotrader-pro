@@ -164,6 +164,8 @@ def execute_trade():
 @app.route('/api/history')
 def get_history():
     try:
+        if trader:
+            return jsonify({'trades': trader.get_real_trade_history()})
         return jsonify({'trades': config.load_trade_history()})
     except Exception as e:
         return jsonify({'trades': [], 'error': str(e)})
