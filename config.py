@@ -22,7 +22,12 @@ class Config:
         log.info(f"API Key loaded: {'YES' if self.api_key else 'NO'}")
         log.info(f"API Secret loaded: {'YES' if self.api_secret else 'NO'}")
 
-        self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT', 'SOLUSDT', 'LINKUSDT', 'ARBUSDT']
+        # Read trading pairs from environment variable if set, otherwise use defaults
+        pairs_env = os.environ.get('TRADING_PAIRS', '')
+        if pairs_env:
+            self.trading_pairs = [p.strip() for p in pairs_env.split(',') if p.strip()]
+        else:
+            self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT', 'SOLUSDT', 'LINKUSDT', 'ARBUSDT']
         self.rsi_buy = 35
         self.rsi_sell = 70
         self.ma_cross_enabled = True
