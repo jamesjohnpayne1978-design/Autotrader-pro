@@ -22,7 +22,7 @@ class Config:
         log.info(f"API Key loaded: {'YES' if self.api_key else 'NO'}")
         log.info(f"API Secret loaded: {'YES' if self.api_secret else 'NO'}")
 
-        self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT', 'SOLUSDT', 'LINKUSDT']
+        self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT', 'SOLUSDT', 'LINKUSDT', 'ARBUSDT']
         self.rsi_buy = 35
         self.rsi_sell = 70
         self.ma_cross_enabled = True
