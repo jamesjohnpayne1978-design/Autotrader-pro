@@ -329,7 +329,7 @@ function renderPairs(pairs){
   const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',XRP:'✕',RENDER:'R',LINK:'🔗'};
   document.getElementById('pairsCard').innerHTML=pairs.map(p=>{
     let gainHtml='';
-    if(p.gain_pct!==null&&p.gain_pct!==undefined){
+    if(p.gain_pct!==null&&p.gain_pct!==undefined&&p.value_usdt>=1.0){
       const g=p.gain_pct;
       const toTp=p.to_tp;
       const gainCls=g>=0?'up':'down';
