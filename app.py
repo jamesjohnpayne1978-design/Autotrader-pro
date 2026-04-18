@@ -150,6 +150,7 @@ def execute_trade():
 
     try:
         result = trader.execute_trade(pair, action, config.max_trade_pct)
+        risk_manager.record_trade(pair)  # Start cooldown after trade
         send_telegram(
             f"{'🟢' if action == 'buy' else '🔴'} *{action.upper()} {pair}*\n"
             f"Confidence: {confidence}%\n"
