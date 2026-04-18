@@ -271,8 +271,11 @@ class Trader:
             self._place_oco_order(symbol, pair, quantity, buy_price)
 
         elif action == 'sell':
-            self._cancel_oco_orders(symbol, pair)
-            quantity = self._get_balance(base)
+            # Cancel any open OCO orders first (releases locked balance)
+            self._cancel_all_open_orders(symbol)
+            import time; time.sleep(1)  # Wait for cancellation to process
+            # Use free + locked balance since OCO is now cancelled
+            quantity = self._get_total_balance(base)
             if quantity <= 0:
                 raise ValueError(f"No {base} balance to sell")
             quantity = self._adjust_quantity(symbol, quantity * 0.999)
@@ -312,6 +315,26 @@ class Trader:
             log.warning(f"OCO order failed for {symbol}: {e}")
         except Exception as e:
             log.warning(f"OCO setup error for {symbol}: {e}")
+
+    def _cancel_all_open_orders(self, symbol):
+        """Cancel ALL open orders for a symbol — releases locked balance"""
+        try:
+            open_orders = self.client.get_open_orders(symbol=symbol)
+            if not open_orders:
+                log.info(f"No open orders to cancel for {symbol}")
+                return
+            self.client.cancel_open_orders(symbol=symbol)
+            log.info(f"Cancelled all open orders for {symbol} ({len(open_orders)} orders)")
+        except Exception as e:
+            log.warning(f"Could not cancel orders for {symbol}: {e}")
+
+    def _get_total_balance(self, asset):
+        """Get free + locked balance (use after cancelling orders)"""
+        account = self.client.get_account()
+        for b in account['balances']:
+            if b['asset'] == asset:
+                return float(b['free']) + float(b['locked'])
+        return 0.0
 
     def _cancel_oco_orders(self, symbol, pair):
         if pair in self._open_oco_orders:
