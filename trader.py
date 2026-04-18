@@ -69,9 +69,12 @@ class Trader:
 
         self._save_portfolio_snapshot(round(total_usdt, 2))
 
-        # Real daily PnL from portfolio snapshots
+        # Daily PnL from first snapshot today
         pnl_today = 0.0
         pnl_pct = 0.0
+        # Total PnL since bot started
+        pnl_total = 0.0
+        pnl_total_pct = 0.0
         try:
             snapshots = self.config.load_portfolio_history()
             today_str = datetime.now().strftime('%Y-%m-%d')
@@ -80,6 +83,11 @@ class Trader:
                 start_val = today_snaps[0]['value']
                 pnl_today = round(total_usdt - start_val, 2)
                 pnl_pct = round((pnl_today / start_val) * 100, 2)
+            # Total since very first snapshot ever
+            if snapshots and snapshots[0]['value'] > 0:
+                first_val = snapshots[0]['value']
+                pnl_total = round(total_usdt - first_val, 2)
+                pnl_total_pct = round((pnl_total / first_val) * 100, 2)
         except Exception:
             pass
 
@@ -99,6 +107,8 @@ class Trader:
             'win_rate': win_rate,
             'pnl_today': pnl_today,
             'pnl_pct': pnl_pct,
+            'pnl_total': pnl_total,
+            'pnl_total_pct': pnl_total_pct,
             'free_usdt': round(free_usdt, 2)
         }
 
