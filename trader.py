@@ -69,27 +69,29 @@ class Trader:
 
         self._save_portfolio_snapshot(round(total_usdt, 2))
 
-        # Daily PnL from first snapshot today
+        # Daily PnL from actual closed Binance trades today
         pnl_today = 0.0
         pnl_pct = 0.0
-        # Total PnL since bot started
         pnl_total = 0.0
         pnl_total_pct = 0.0
         try:
-            snapshots = self.config.load_portfolio_history()
+            real_trades = self.get_real_trade_history()
             today_str = datetime.now().strftime('%Y-%m-%d')
-            today_snaps = [s for s in snapshots if s.get('date', '').startswith(today_str)]
-            if today_snaps and today_snaps[0]['value'] > 0:
-                start_val = today_snaps[0]['value']
-                pnl_today = round(total_usdt - start_val, 2)
-                pnl_pct = round((pnl_today / start_val) * 100, 2)
-            # Total since very first snapshot ever
+            # Sum PnL from all closed (sell) trades today
+            today_sells = [t for t in real_trades if t.get('side') == 'sell' and t.get('date', '') == today_str and t.get('pnl', 0) != 0]
+            pnl_today = round(sum(t.get('pnl', 0) for t in today_sells), 2)
+            if total_usdt > 0 and pnl_today != 0:
+                pnl_pct = round((pnl_today / (total_usdt - pnl_today)) * 100, 2)
+            # Total PnL from all closed trades ever
+            all_sells = [t for t in real_trades if t.get('side') == 'sell' and t.get('pnl', 0) != 0]
+            pnl_total = round(sum(t.get('pnl', 0) for t in all_sells), 2)
+            # Total % vs first snapshot
+            snapshots = self.config.load_portfolio_history()
             if snapshots and snapshots[0]['value'] > 0:
                 first_val = snapshots[0]['value']
-                pnl_total = round(total_usdt - first_val, 2)
-                pnl_total_pct = round((pnl_total / first_val) * 100, 2)
-        except Exception:
-            pass
+                pnl_total_pct = round(((total_usdt - first_val) / first_val) * 100, 2)
+        except Exception as e:
+            log.debug(f"PnL calc error: {e}")
 
         # Trade counts
         history = self.get_real_trade_history()
