@@ -164,6 +164,7 @@ class SignalEngine:
                 continue
             try:
                 result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
+                self.risk_manager.record_trade(pair)  # Start cooldown
                 log.info(f"Auto-executed: {action.upper()} {pair} — confidence {confidence}% — {result}")
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
