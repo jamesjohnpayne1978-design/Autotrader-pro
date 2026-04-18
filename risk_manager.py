@@ -36,6 +36,12 @@ class RiskManager:
             log.warning(f"Risk check failed for {pair}: {reason}")
             return False, reason
 
+        # Check if already holding this specific pair
+        if self._already_holding(pair):
+            reason = f"Already holding {pair} — will not buy more"
+            log.info(f"Risk check failed for {pair}: {reason}")
+            return False, reason
+
         # Check open positions — only count positions worth $1 or more
         open_count = self._count_open_positions()
         max_positions = getattr(self.config, 'max_open_positions', 6)
@@ -46,6 +52,28 @@ class RiskManager:
 
         log.info(f"Risk check passed: {action} {pair} (confidence: {confidence}%)")
         return True, "Approved"
+
+    def _already_holding(self, pair):
+        """Returns True if we already have a meaningful position in this pair"""
+        try:
+            from binance.client import Client
+            client = Client(self.config.api_key, self.config.api_secret)
+            base = pair.replace('/USDT', '').replace('USDT', '')
+            account = client.get_account()
+            for b in account['balances']:
+                if b['asset'] == base:
+                    amount = float(b['free']) + float(b['locked'])
+                    if amount <= 0:
+                        return False
+                    ticker = client.get_symbol_ticker(symbol=f"{base}USDT")
+                    value = amount * float(ticker['price'])
+                    if value >= 1.0:
+                        log.info(f"Already holding {base} worth ${value:.2f} — skipping buy")
+                        return True
+            return False
+        except Exception as e:
+            log.debug(f"Holdings check error: {e}")
+            return False
 
     def _count_open_positions(self):
         """Count positions worth $1 or more — ignores dust amounts"""
