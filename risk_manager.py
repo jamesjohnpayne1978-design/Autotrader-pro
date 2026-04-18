@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 
 
 class RiskManager:
+    _trade_times = {}  # Class-level cooldown tracking persists across calls
     def __init__(self, config):
         self.config = config
 
@@ -23,6 +24,12 @@ class RiskManager:
         # Only check risk on buys
         if action == 'sell':
             return True, "Sell approved"
+
+        # Check cooldown applies to buys too — prevent re-buying right after a sell
+        if self._is_on_cooldown(pair):
+            reason = f"Cooldown active for {pair} — preventing immediate re-buy"
+            log.info(f"Risk check failed: {reason}")
+            return False, reason
 
         # Check confidence threshold
         if confidence < 65:
@@ -52,6 +59,23 @@ class RiskManager:
 
         log.info(f"Risk check passed: {action} {pair} (confidence: {confidence}%)")
         return True, "Approved"
+
+    def _is_on_cooldown(self, pair):
+        """Check if pair is within cooldown period after last trade (buy OR sell)"""
+        from datetime import datetime
+        cooldown = getattr(self.config, 'trade_cooldown_minutes', 60)
+        last = RiskManager._trade_times.get(pair)
+        if last:
+            elapsed = (datetime.now() - last).total_seconds() / 60
+            if elapsed < cooldown:
+                log.info(f"Cooldown: {pair} traded {elapsed:.1f} mins ago, need {cooldown} mins")
+                return True
+        return False
+
+    def record_trade(self, pair):
+        """Call this after any trade to start cooldown"""
+        from datetime import datetime
+        RiskManager._trade_times[pair] = datetime.now()
 
     def _already_holding(self, pair):
         """Returns True if we already have a meaningful position in this pair"""
