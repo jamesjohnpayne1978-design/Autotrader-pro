@@ -146,27 +146,39 @@ class Trader:
                 ticker = self.client.get_symbol_ticker(symbol=symbol)
                 stats = self.client.get_ticker(symbol=symbol)
                 base = symbol.replace('USDT', '')
-                account = self.client.get_account()
-                holding = next(
-                    (float(b['free']) + float(b['locked'])
-                     for b in account['balances'] if b['asset'] == base), 0.0
-                )
+                # Get account balance once per symbol safely
+                try:
+                    account = self.client.get_account()
+                    holding = next(
+                        (float(b['free']) + float(b['locked'])
+                         for b in account['balances'] if b['asset'] == base), 0.0
+                    )
+                except Exception:
+                    holding = 0.0
+
                 price = float(ticker['price'])
                 pair_name = f"{base}/USDT"
 
-                # Find last buy price from real history
+                # Find last buy price from saved history
                 buy_price = None
-                for trade in history:
-                    if trade.get('pair') == pair_name and trade.get('side') == 'buy':
-                        buy_price = trade.get('price', 0)
-                        if buy_price and buy_price > 0:
-                            break
+                try:
+                    for trade in history:
+                        if trade.get('pair') == pair_name and trade.get('side') == 'buy':
+                            bp = trade.get('price', 0)
+                            if bp and float(bp) > 0:
+                                buy_price = float(bp)
+                                break
+                except Exception:
+                    buy_price = None
 
                 gain_pct = None
                 to_tp = None
-                if buy_price and buy_price > 0 and holding * price >= 1.0:
-                    gain_pct = round(((price - buy_price) / buy_price) * 100, 2)
-                    to_tp = round(tp_pct - gain_pct, 2)
+                try:
+                    if buy_price and buy_price > 0 and holding * price >= 1.0:
+                        gain_pct = round(((price - buy_price) / buy_price) * 100, 2)
+                        to_tp = round(tp_pct - gain_pct, 2)
+                except Exception:
+                    pass
 
                 results.append({
                     'symbol': pair_name,
@@ -184,6 +196,25 @@ class Trader:
                 })
             except Exception as e:
                 log.warning(f"Could not fetch {symbol}: {e}")
+                # Add basic entry so pair still shows on dashboard
+                try:
+                    base = symbol.replace('USDT', '')
+                    results.append({
+                        'symbol': f"{base}/USDT",
+                        'base': base,
+                        'price': 0,
+                        'change': 0,
+                        'volume': 0,
+                        'holdings': 0,
+                        'value_usdt': 0,
+                        'buy_price': None,
+                        'gain_pct': None,
+                        'to_tp': None,
+                        'tp_pct': tp_pct,
+                        'sl_pct': sl_pct
+                    })
+                except Exception:
+                    pass
         return results
 
     def get_real_trade_history(self):
