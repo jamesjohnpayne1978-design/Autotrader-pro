@@ -108,11 +108,14 @@ def portfolio_history():
 @app.route('/api/prices')
 def get_prices():
     if not trader:
-        return jsonify({'error': 'Not connected'}), 400
+        return jsonify({'pairs': []}), 200
     try:
-        return jsonify({'pairs': trader.get_prices()})
+        pairs = trader.get_prices()
+        return jsonify({'pairs': pairs if pairs else []})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log.error(f"Prices error: {e}")
+        # Return empty list instead of 500 so dashboard shows something
+        return jsonify({'pairs': [], 'error': str(e)}), 200
 
 
 @app.route('/api/signals')
