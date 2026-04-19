@@ -226,7 +226,10 @@ def execute_trade():
         return jsonify({'error': f'Risk manager blocked: {reason}'}), 400
 
     try:
-        result = trader.execute_trade(pair, action, config.max_trade_pct)
+        try:
+            result = trader.execute_trade(pair, action, config.max_trade_pct)
+        finally:
+            risk_manager.release_lock(pair)  # Always release lock
         risk_manager.record_trade(pair)  # Start cooldown after trade
         send_telegram(
             f"{'🟢' if action == 'buy' else '🔴'} *{action.upper()} {pair}*\n"
