@@ -137,18 +137,22 @@ def get_insights():
         regime_tp = signal_engine.regime_tp if signal_engine else 6.0
         today = datetime.now().strftime('%Y-%m-%d')
 
+        current_pairs = ','.join([p.replace('USDT','') for p in getattr(config, 'trading_pairs', ['BTC','ETH','BNB','SOL','RENDER','LINK','ARB'])])
         prompt = (
-            "You are a crypto market analyst. Date: " + today + ". "
-            "Market regime: " + regime + ". Take profit: " + str(regime_tp) + "%. "
-            "Bot pairs: BTC, ETH, BNB, SOL, RENDER, LINK, ARB. "
-            "Provide market analysis. Return ONLY JSON: "
+            "You are a crypto market analyst assistant for an automated Binance spot trading bot. Date: " + today + ". "
+            "Market regime: " + regime + ". Auto take profit: " + str(regime_tp) + "%. "
+            "Bot is currently trading: " + current_pairs + ". "
+            "Analyse the current crypto market and respond ONLY with this exact JSON structure, no other text: "
             '{"insights":[{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
             '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
             '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"}],'
             '"watchlist":[{"symbol":"BTCUSDT","name":"Bitcoin","reason":"1 sentence","signal":"buy|watch|avoid"},'
             '{"symbol":"ETHUSDT","name":"Ethereum","reason":"1 sentence","signal":"buy|watch|avoid"},'
             '{"symbol":"SOLUSDT","name":"Solana","reason":"1 sentence","signal":"buy|watch|avoid"}],'
-            '"risk_warning":"1 sentence risk warning"}'
+            '"pair_recommendations":[{"symbol":"XRPUSDT","name":"XRP","action":"add|remove|keep","reason":"1 sentence why"},'
+            '{"symbol":"DOGEUSDT","name":"Dogecoin","action":"add|remove|keep","reason":"1 sentence why"},'
+            '{"symbol":"AVAXUSDT","name":"Avalanche","action":"add|remove|keep","reason":"1 sentence why"}],'
+            '"risk_warning":"1 sentence risk warning for today"}'
         )
 
         response = req_lib.post(
@@ -168,6 +172,7 @@ def get_insights():
                 result = json.loads(text[start:end])
                 result["regime"] = regime
                 result["updated"] = datetime.now().strftime("%H:%M")
+                result.setdefault("pair_recommendations", [])
                 return jsonify(result)
 
         return jsonify({
