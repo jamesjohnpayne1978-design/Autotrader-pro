@@ -136,7 +136,8 @@ class Trader:
 
     def get_prices(self):
         results = []
-        history = self.get_real_trade_history()
+        # Use saved history (fast) not real-time Binance history (slow/times out)
+        history = self.config.load_trade_history()
         tp_pct = getattr(self.config, 'dynamic_tp', self.config.default_tp_pct)
         sl_pct = self.config.default_sl_pct
 
