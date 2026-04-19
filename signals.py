@@ -163,7 +163,10 @@ class SignalEngine:
                 log.info(f"Auto-execute blocked {pair}: {reason}")
                 continue
             try:
-                result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
+                try:
+                    result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
+                finally:
+                    self.risk_manager.release_lock(pair)  # Always release lock
                 self.risk_manager.record_trade(pair)  # Start cooldown
                 log.info(f"Auto-executed: {action.upper()} {pair} — confidence {confidence}% — {result}")
             except Exception as e:
