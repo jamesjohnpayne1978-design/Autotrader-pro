@@ -30,6 +30,16 @@ class Config:
             self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT', 'SOLUSDT', 'LINKUSDT', 'ARBUSDT']
         self.rsi_buy = 35
         self.rsi_sell = 70
+        # Per-pair RSI overrides — format: {'BTCUSDT': (buy, sell)}
+        self.pair_rsi = {
+            'BTCUSDT':   (25, 80),
+            'ETHUSDT':   (25, 80),
+            'SOLUSDT':   (30, 75),
+            'LINKUSDT':  (30, 75),
+            'BNBUSDT':   (30, 75),
+            'ARBUSDT':   (32, 80),
+            'RENDERUSDT':(32, 80),
+        }
         self.ma_cross_enabled = True
         self.macd_enabled = True
         self.auto_mode = os.environ.get('AUTO_MODE', 'false').lower() == 'true'
