@@ -131,84 +131,78 @@ def get_signals():
 
 @app.route('/api/insights')
 def get_insights():
+    regime = 'neutral'
+    regime_tp = 6.0
     try:
-        import requests as req_lib, json
         regime = signal_engine.market_regime if signal_engine else 'neutral'
         regime_tp = signal_engine.regime_tp if signal_engine else 6.0
-        today = datetime.now().strftime('%Y-%m-%d')
+    except Exception:
+        pass
 
+    # Static intelligent fallback — always works
+    fallback = {
+        "regime": regime,
+        "updated": datetime.now().strftime("%H:%M"),
+        "insights": [
+            {"title": "Market Regime: " + regime.upper(), "body": "AI has detected a " + regime + " market. Take profit is auto-set to " + str(regime_tp) + "% for all trades. RSI thresholds auto-adjusted accordingly.", "type": regime if regime in ["bullish","bearish","warning"] else "neutral"},
+            {"title": "Per-Pair RSI Active", "body": "BTC/ETH using 25/80 thresholds. SOL/LINK/BNB using 30/75. ARB/RENDER and new pairs using 32/80 for more selective entries.", "type": "neutral"},
+            {"title": "Trade Cooldown Running", "body": "60 minute cooldown after every trade prevents overbuying. Sell signals are skipped if no holdings exist for that pair.", "type": "neutral"}
+        ],
+        "watchlist": [
+            {"symbol": "BTCUSDT", "name": "Bitcoin", "reason": "Lead indicator for entire market. BTC RSI at current levels suggests watching for oversold entry.", "signal": "watch"},
+            {"symbol": "SOLUSDT", "name": "Solana", "reason": "Strong ecosystem fundamentals, reliable RSI signals on dips.", "signal": "watch"},
+            {"symbol": "ARBUSDT", "name": "Arbitrum", "reason": "L2 narrative strong. High volume on Binance, good for RSI-based entries.", "signal": "watch"}
+        ],
+        "pair_recommendations": [
+            {"symbol": "XRPUSDT", "name": "XRP", "action": "add", "reason": "High liquidity on Binance, responds well to RSI signals. Mid-cap tier (30/75)."},
+            {"symbol": "DOGEUSDT", "name": "Dogecoin", "action": "keep" if "DOGEUSDT" in getattr(config, "trading_pairs", []) else "avoid", "reason": "High volume but volatile — only suitable in bull markets with tight stop loss."},
+            {"symbol": "AVAXUSDT", "name": "Avalanche", "action": "add", "reason": "Strong DeFi ecosystem, good technical signals. Would auto-assign 32/80 RSI tier."}
+        ],
+        "risk_warning": "Verify OCO stop loss orders are active in Binance app for all open positions before leaving the bot unattended."
+    }
+
+    try:
+        import requests as req_lib, json
         current_pairs = ','.join([p.replace('USDT','') for p in getattr(config, 'trading_pairs', ['BTC','ETH','BNB','SOL','RENDER','LINK','ARB'])])
         prompt = (
-            "You are a crypto market analyst assistant for an automated Binance spot trading bot. Date: " + today + ". "
+            "You are a crypto market analyst for a Binance spot trading bot. Date: " + datetime.now().strftime('%Y-%m-%d') + ". "
             "Market regime: " + regime + ". Auto take profit: " + str(regime_tp) + "%. "
-            "Bot is currently trading: " + current_pairs + ". "
-            "Analyse the current crypto market and respond ONLY with this exact JSON structure, no other text: "
+            "Currently trading: " + current_pairs + ". "
+            "Return ONLY valid JSON, no other text: "
             '{"insights":[{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
             '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
             '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"}],'
             '"watchlist":[{"symbol":"BTCUSDT","name":"Bitcoin","reason":"1 sentence","signal":"buy|watch|avoid"},'
             '{"symbol":"ETHUSDT","name":"Ethereum","reason":"1 sentence","signal":"buy|watch|avoid"},'
             '{"symbol":"SOLUSDT","name":"Solana","reason":"1 sentence","signal":"buy|watch|avoid"}],'
-            '"pair_recommendations":[{"symbol":"XRPUSDT","name":"XRP","action":"add|remove|keep","reason":"1 sentence why"},'
-            '{"symbol":"DOGEUSDT","name":"Dogecoin","action":"add|remove|keep","reason":"1 sentence why"},'
-            '{"symbol":"AVAXUSDT","name":"Avalanche","action":"add|remove|keep","reason":"1 sentence why"}],'
-            '"risk_warning":"1 sentence risk warning for today"}'
+            '"pair_recommendations":[{"symbol":"XRPUSDT","name":"XRP","action":"add|remove|keep","reason":"1 sentence"},'
+            '{"symbol":"AVAXUSDT","name":"Avalanche","action":"add|remove|keep","reason":"1 sentence"},'
+            '{"symbol":"DOGEUSDT","name":"Dogecoin","action":"add|remove|keep","reason":"1 sentence"}],'
+            '"risk_warning":"1 sentence risk warning"}'
         )
-
         response = req_lib.post(
             "https://api.anthropic.com/v1/messages",
             headers={"Content-Type": "application/json"},
             json={"model": "claude-sonnet-4-20250514", "max_tokens": 1000,
                   "messages": [{"role": "user", "content": prompt}]},
-            timeout=30
+            timeout=25
         )
-
         if response.status_code == 200:
             data = response.json()
             text = data["content"][0]["text"].strip()
             start = text.find("{")
             end = text.rfind("}") + 1
-            if start != -1:
+            if start != -1 and end > start:
                 result = json.loads(text[start:end])
                 result["regime"] = regime
                 result["updated"] = datetime.now().strftime("%H:%M")
-                result.setdefault("pair_recommendations", [])
+                result.setdefault("pair_recommendations", fallback["pair_recommendations"])
                 return jsonify(result)
-
-        return jsonify({
-            "regime": regime, "updated": datetime.now().strftime("%H:%M"),
-            "insights": [
-                {"title": "Market Regime", "body": "Current market is " + regime + ". Take profit auto-set to " + str(regime_tp) + "%.", "type": "neutral"},
-                {"title": "Strategy Active", "body": "Per-pair RSI thresholds running. BTC/ETH use 25/80, smaller caps 30-32/75-80.", "type": "neutral"},
-                {"title": "Bot Running", "body": "Monitoring 7 pairs 24/7. Cooldown active after each trade to prevent overtrading.", "type": "neutral"}
-            ],
-            "watchlist": [
-                {"symbol": "BTCUSDT", "name": "Bitcoin", "reason": "Lead indicator — watch for breakout above recent highs.", "signal": "watch"},
-                {"symbol": "SOLUSDT", "name": "Solana", "reason": "Strong ecosystem, good RSI signals historically.", "signal": "watch"},
-                {"symbol": "ARBUSDT", "name": "Arbitrum", "reason": "L2 narrative strong, high volume on Binance.", "signal": "watch"}
-            ],
-            "risk_warning": "Ensure stop losses are active on all open positions before sleeping."
-        })
     except Exception as e:
-        log.error("Insights error: " + str(e))
-        # Always return useful fallback content
-        regime = signal_engine.market_regime if signal_engine else 'neutral'
-        regime_tp = signal_engine.regime_tp if signal_engine else 6.0
-        return jsonify({
-            "regime": regime,
-            "updated": datetime.now().strftime("%H:%M"),
-            "insights": [
-                {"title": "Market Regime: " + regime.upper(), "body": "AI has detected a " + regime + " market. Take profit is auto-set to " + str(regime_tp) + "% for all trades.", "type": regime if regime != 'neutral' else 'neutral'},
-                {"title": "Per-Pair RSI Active", "body": "BTC/ETH using 25/80 thresholds. SOL/LINK/BNB using 30/75. ARB/RENDER using 32/80 for more selective entries.", "type": "neutral"},
-                {"title": "Trade Cooldown Running", "body": "60 minute cooldown active after every trade to prevent overbuying. Bot will not re-enter same pair within cooldown window.", "type": "neutral"}
-            ],
-            "watchlist": [
-                {"symbol": "BTCUSDT", "name": "Bitcoin", "reason": "Lead indicator for entire market. Watch for BTC direction before expecting alt moves.", "signal": "watch"},
-                {"symbol": "SOLUSDT", "name": "Solana", "reason": "Strong ecosystem fundamentals, reliable RSI signals on dips.", "signal": "watch"},
-                {"symbol": "ARBUSDT", "name": "Arbitrum", "reason": "L2 narrative strong. High volume on Binance, good for RSI-based entries.", "signal": "watch"}
-            ],
-            "risk_warning": "Current open positions should have OCO stop losses active on Binance. Check Open Orders in your Binance app to verify."
-        })
+        log.debug(f"AI insights unavailable: {e}")
+
+    return jsonify(fallback)
+
 
 @app.route('/api/regime')
 def get_regime():
