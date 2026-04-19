@@ -98,6 +98,22 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .toggle.on{background:var(--green);border-color:var(--green)}
 .toggle-thumb{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:white;transition:transform 0.3s}
 .toggle.on .toggle-thumb{transform:translateX(22px)}
+.insight-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.insight-card.bullish{border-left:4px solid var(--green)}
+.insight-card.bearish{border-left:4px solid var(--red)}
+.insight-card.warning{border-left:4px solid var(--gold)}
+.insight-card.neutral{border-left:4px solid var(--blue)}
+.insight-title{font-size:0.95rem;font-weight:700;margin-bottom:6px}
+.insight-body{font-size:0.82rem;color:var(--text-2);line-height:1.6}
+.watch-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+.watch-info{flex:1}
+.watch-name{font-size:0.95rem;font-weight:700;font-family:var(--mono)}
+.watch-reason{font-size:0.75rem;color:var(--text-2);margin-top:3px;line-height:1.4}
+.watch-signal{padding:5px 12px;border-radius:20px;font-size:0.72rem;font-family:var(--mono);font-weight:700;letter-spacing:0.06em;flex-shrink:0;margin-left:10px}
+.watch-signal.buy{background:var(--green-dim);color:var(--green);border:1px solid rgba(13,255,170,0.25)}
+.watch-signal.watch{background:var(--blue-dim);color:var(--blue-bright);border:1px solid rgba(77,159,255,0.25)}
+.watch-signal.avoid{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,68,102,0.25)}
+.risk-box{background:var(--gold-dim);border:1px solid rgba(255,179,64,0.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:14px;font-size:0.85rem;color:var(--gold);line-height:1.5}
 .trade-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
 .trade-row:last-child{border-bottom:none}
 .trade-left{display:flex;align-items:center;gap:12px}
@@ -193,6 +209,20 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div class="section-title">Trade History</div>
   <div class="card" id="historyCard"><div class="loading-row"><div class="spinner"></div> Loading history...</div></div>
 </div>
+<div class="page" id="page-insights">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+    <div class="section-title" style="margin:0">AI Market Insights</div>
+    <div style="font-size:0.7rem;color:var(--text-3);font-family:var(--mono)" id="insightsUpdated">Loading...</div>
+  </div>
+  <div id="insightsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
+  <div class="section-title">Watchlist</div>
+  <div id="watchlistContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div class="section-title">Risk Warning</div>
+  <div class="risk-box" id="riskWarning">Loading market analysis...</div>
+  <div style="text-align:center;padding:16px 0">
+    <button class="btn" style="background:var(--blue-dim);color:var(--blue-bright);border:1px solid var(--border2);padding:12px 28px;border-radius:var(--radius-sm);font-size:0.9rem;font-weight:700;" onclick="loadInsights()">Refresh Insights</button>
+  </div>
+</div>
 <div class="page" id="page-settings">
   <div class="section-title">Connection</div>
   <div class="card"><div class="api-status" id="apiStatus"><span>●</span> Not connected</div><button class="btn" style="width:100%;background:var(--blue);color:white;padding:14px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="showApiModal()">Configure Binance API</button></div>
@@ -218,9 +248,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div style="text-align:center;padding:24px 0;"><button class="btn" style="background:var(--blue);color:white;padding:14px 40px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="saveSettings()">Save Settings</button></div>
 </div>
 <nav class="nav">
-  <button class="nav-item active" id="nav-home" onclick="showPage('home')"><span>📊</span>Dashboard</button>
-  <button class="nav-item" id="nav-sniper" onclick="showPage('sniper')"><span>🎯</span>Sniper</button>
+  <button class="nav-item active" id="nav-home" onclick="showPage('home')"><span>📊</span>Home</button>
+  <button class="nav-item" id="nav-insights" onclick="showPage('insights')"><span>💡</span>Insights</button>
   <button class="nav-item" id="nav-history" onclick="showPage('history')"><span>📋</span>History</button>
+  <button class="nav-item" id="nav-sniper" onclick="showPage('sniper')"><span>🎯</span>Sniper</button>
   <button class="nav-item" id="nav-settings" onclick="showPage('settings')"><span>⚙️</span>Settings</button>
 </nav>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
@@ -228,7 +259,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 const API_BASE=window.location.origin;
 let portfolioChart=null,chartRange='24h',allSnapshots=[];
 let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true};
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory()}
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights()}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
 function showApiModal(){document.getElementById('apiModal').classList.add('show')}
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
@@ -261,6 +292,25 @@ function toggleMaCross(){state.maCross=toggle('maCrossToggle')}
 function toggleMacd(){state.macd=toggle('macdToggle')}
 function saveSettings(){const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,rsi_buy:document.getElementById('rsiBuy').value,rsi_sell:document.getElementById('rsiSell').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode};fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)}).catch(()=>{});showToast('Settings saved')}
 async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.rsi_buy)document.getElementById('rsiBuy').value=d.rsi_buy;if(d.rsi_sell)document.getElementById('rsiSell').value=d.rsi_sell}catch(e){}}
+async function loadInsights(){
+  document.getElementById('insightsContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Analysing market with AI...</div>';
+  document.getElementById('watchlistContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Loading...</div>';
+  try{
+    const r=await fetch(API_BASE+'/api/insights');
+    const d=await r.json();
+    if(d.updated)document.getElementById('insightsUpdated').textContent='Updated '+d.updated;
+    if(d.insights&&d.insights.length){
+      document.getElementById('insightsContainer').innerHTML=d.insights.map(i=>'<div class="insight-card '+i.type+'"><div class="insight-title">'+i.title+'</div><div class="insight-body">'+i.body+'</div></div>').join('');
+    }
+    if(d.watchlist&&d.watchlist.length){
+      document.getElementById('watchlistContainer').innerHTML=d.watchlist.map(w=>'<div class="watch-card"><div class="watch-info"><div class="watch-name">'+w.name+' <span style="color:var(--text-3);font-size:0.75rem;">('+w.symbol.replace('USDT','/USDT')+')</span></div><div class="watch-reason">'+w.reason+'</div></div><div class="watch-signal '+w.signal+'">'+w.signal.toUpperCase()+'</div></div>').join('');
+    }
+    if(d.risk_warning)document.getElementById('riskWarning').textContent=d.risk_warning;
+  }catch(e){
+    document.getElementById('insightsContainer').innerHTML='<div class="card" style="text-align:center;padding:20px;color:var(--text-2);">Could not load insights. Check back later.</div>';
+  }
+}
+
 window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000)});
 document.getElementById('apiModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show')});
 </script>
