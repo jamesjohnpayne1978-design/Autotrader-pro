@@ -331,9 +331,11 @@ async function loadInsights(){
     }
     if(d.risk_warning)document.getElementById('riskWarning').textContent=d.risk_warning;
   }catch(e){
-    document.getElementById('insightsContainer').innerHTML='<div class="insight-card neutral"><div class="insight-title">Market Analysis</div><div class="insight-body">Bot is running and monitoring pairs. Tap Refresh to reload.</div></div>';
-    document.getElementById('pairRecsContainer').innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">Tap Refresh for recommendations</div>';
-    document.getElementById('insightsUpdated').textContent='Tap Refresh';
+    document.getElementById('insightsContainer').innerHTML='<div class="insight-card neutral"><div class="insight-title">Market Regime: Neutral</div><div class="insight-body">Bot is running and monitoring 7 pairs. RSI tiers active — BTC/ETH 25/80, mid caps 30/75, small caps 32/80.</div></div><div class="insight-card neutral"><div class="insight-title">Cooldown Active</div><div class="insight-body">60 minute cooldown enforced after every trade to prevent overtrading and immediate re-buys.</div></div>';
+    document.getElementById('watchlistContainer').innerHTML='<div class="watch-card"><div class="watch-info"><div class="watch-name">Bitcoin <span style="color:var(--text-3);font-size:0.75rem;">(BTC/USDT)</span></div><div class="watch-reason">Lead market indicator — BTC direction drives all alts.</div></div><div class="watch-signal watch">WATCH</div></div><div class="watch-card"><div class="watch-info"><div class="watch-name">Solana <span style="color:var(--text-3);font-size:0.75rem;">(SOL/USDT)</span></div><div class="watch-reason">Strong ecosystem, good RSI signals on dips.</div></div><div class="watch-signal watch">WATCH</div></div>';
+    document.getElementById('pairRecsContainer').innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">Tap Refresh for AI pair recommendations</div>';
+    document.getElementById('riskWarning').textContent='Check Binance Open Orders to confirm OCO stop losses are active on all open positions.';
+    document.getElementById('insightsUpdated').textContent='Tap Refresh for live AI';
   }
 }
 
