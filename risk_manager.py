@@ -73,15 +73,35 @@ class RiskManager:
         RiskManager._trading_now.discard(pair)
 
     def _is_on_cooldown(self, pair):
-        """Check if pair is within cooldown period after last trade (buy OR sell)"""
+        """Check cooldown using both memory AND saved trade history (survives restarts)"""
         from datetime import datetime
         cooldown = getattr(self.config, 'trade_cooldown_minutes', 60)
+
+        # Check in-memory first (fastest)
         last = RiskManager._trade_times.get(pair)
         if last:
             elapsed = (datetime.now() - last).total_seconds() / 60
             if elapsed < cooldown:
-                log.info(f"Cooldown: {pair} traded {elapsed:.1f} mins ago, need {cooldown} mins")
+                log.info(f"Cooldown (memory): {pair} traded {elapsed:.1f} mins ago")
                 return True
+
+        # Check saved trade history (survives restarts)
+        try:
+            history = self.config.load_trade_history()
+            pair_name = pair.replace('USDT', '/USDT')
+            recent = [t for t in history if t.get('pair') == pair_name]
+            if recent:
+                last_trade = recent[0]
+                last_time_str = last_trade.get('time', '')
+                if last_time_str:
+                    last_dt = datetime.strptime(last_time_str, '%Y-%m-%d %H:%M')
+                    elapsed = (datetime.now() - last_dt).total_seconds() / 60
+                    if elapsed < cooldown:
+                        log.info(f"Cooldown (history): {pair} traded {elapsed:.1f} mins ago")
+                        RiskManager._trade_times[pair] = last_dt  # cache it
+                        return True
+        except Exception as e:
+            log.debug(f"History cooldown check error: {e}")
         return False
 
     def record_trade(self, pair):
