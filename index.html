@@ -113,6 +113,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .watch-signal.buy{background:var(--green-dim);color:var(--green);border:1px solid rgba(13,255,170,0.25)}
 .watch-signal.watch{background:var(--blue-dim);color:var(--blue-bright);border:1px solid rgba(77,159,255,0.25)}
 .watch-signal.avoid{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,68,102,0.25)}
+.pair-rec{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+.pair-rec-info{flex:1}
+.pair-rec-name{font-size:0.95rem;font-weight:700;font-family:var(--mono)}
+.pair-rec-reason{font-size:0.75rem;color:var(--text-2);margin-top:3px;line-height:1.4}
+.pair-rec-action{padding:5px 12px;border-radius:20px;font-size:0.72rem;font-family:var(--mono);font-weight:700;letter-spacing:0.06em;flex-shrink:0;margin-left:10px}
+.pair-rec-action.add{background:var(--green-dim);color:var(--green);border:1px solid rgba(13,255,170,0.25)}
+.pair-rec-action.remove{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,68,102,0.25)}
+.pair-rec-action.keep{background:var(--blue-dim);color:var(--blue-bright);border:1px solid rgba(77,159,255,0.25)}
 .risk-box{background:var(--gold-dim);border:1px solid rgba(255,179,64,0.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:14px;font-size:0.85rem;color:var(--gold);line-height:1.5}
 .trade-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
 .trade-row:last-child{border-bottom:none}
@@ -217,6 +225,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div id="insightsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
   <div class="section-title">Watchlist</div>
   <div id="watchlistContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div class="section-title">Pair Recommendations</div>
+  <div id="pairRecsContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:14px;font-size:0.75rem;color:var(--text-2);line-height:1.5">
+    To add/remove pairs: Railway → Variables → <span style="font-family:var(--mono);color:var(--blue-bright)">TRADING_PAIRS</span>
+  </div>
   <div class="section-title">Risk Warning</div>
   <div class="risk-box" id="riskWarning">Loading market analysis...</div>
   <div style="text-align:center;padding:16px 0">
@@ -419,6 +432,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .watch-signal.buy{background:var(--green-dim);color:var(--green);border:1px solid rgba(13,255,170,0.25)}
 .watch-signal.watch{background:var(--blue-dim);color:var(--blue-bright);border:1px solid rgba(77,159,255,0.25)}
 .watch-signal.avoid{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,68,102,0.25)}
+.pair-rec{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+.pair-rec-info{flex:1}
+.pair-rec-name{font-size:0.95rem;font-weight:700;font-family:var(--mono)}
+.pair-rec-reason{font-size:0.75rem;color:var(--text-2);margin-top:3px;line-height:1.4}
+.pair-rec-action{padding:5px 12px;border-radius:20px;font-size:0.72rem;font-family:var(--mono);font-weight:700;letter-spacing:0.06em;flex-shrink:0;margin-left:10px}
+.pair-rec-action.add{background:var(--green-dim);color:var(--green);border:1px solid rgba(13,255,170,0.25)}
+.pair-rec-action.remove{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,68,102,0.25)}
+.pair-rec-action.keep{background:var(--blue-dim);color:var(--blue-bright);border:1px solid rgba(77,159,255,0.25)}
 .risk-box{background:var(--gold-dim);border:1px solid rgba(255,179,64,0.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:14px;font-size:0.85rem;color:var(--gold);line-height:1.5}
 .trade-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
 .trade-row:last-child{border-bottom:none}
@@ -523,6 +544,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div id="insightsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
   <div class="section-title">Watchlist</div>
   <div id="watchlistContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div class="section-title">Pair Recommendations</div>
+  <div id="pairRecsContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:14px;font-size:0.75rem;color:var(--text-2);line-height:1.5">
+    To add/remove pairs: Railway → Variables → <span style="font-family:var(--mono);color:var(--blue-bright)">TRADING_PAIRS</span>
+  </div>
   <div class="section-title">Risk Warning</div>
   <div class="risk-box" id="riskWarning">Loading market analysis...</div>
   <div style="text-align:center;padding:16px 0">
@@ -616,6 +642,13 @@ async function loadInsights(){
       document.getElementById('watchlistContainer').innerHTML=d.watchlist.map(w=>'<div class="watch-card"><div class="watch-info"><div class="watch-name">'+w.name+' <span style="color:var(--text-3);font-size:0.75rem;">('+w.symbol.replace('USDT','/USDT')+')</span></div><div class="watch-reason">'+w.reason+'</div></div><div class="watch-signal '+w.signal+'">'+w.signal.toUpperCase()+'</div></div>').join('');
     }
     if(d.risk_warning)document.getElementById('riskWarning').textContent=d.risk_warning;
+    const prc=document.getElementById('pairRecsContainer');
+    if(prc&&d.pair_recommendations&&d.pair_recommendations.length){
+      prc.innerHTML=d.pair_recommendations.map(r=>{
+        const actionLabel=r.action==='add'?'ADD':'remove'===r.action?'REMOVE':'KEEP';
+        return '<div class="pair-rec"><div class="pair-rec-info"><div class="pair-rec-name">'+r.name+' <span style="color:var(--text-3);font-size:0.75rem;">('+r.symbol.replace('USDT','/USDT')+')</span></div><div class="pair-rec-reason">'+r.reason+'</div></div><div class="pair-rec-action '+r.action+'">'+actionLabel+'</div></div>';
+      }).join('');
+    }
   }catch(e){
     document.getElementById('insightsContainer').innerHTML='<div class="insight-card neutral"><div class="insight-title">Market Regime</div><div class="insight-body">Bot is running and monitoring 7 pairs. Tap Refresh to reload analysis.</div></div>';
     document.getElementById('watchlistContainer').innerHTML='<div class="watch-card"><div class="watch-info"><div class="watch-name">BTC/USDT</div><div class="watch-reason">Lead market indicator — watch direction before trading alts.</div></div><div class="watch-signal watch">WATCH</div></div>';
