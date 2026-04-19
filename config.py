@@ -116,6 +116,38 @@ class Config:
             log.error(f"Could not save settings: {e}")
             return False
 
+    def update(self, data):
+        """Update config from settings dict"""
+        if not data:
+            return
+        if 'max_trade_size' in data:
+            self.max_trade_pct = float(data['max_trade_size'])
+        if 'daily_loss_limit' in data:
+            self.daily_loss_limit_pct = float(data['daily_loss_limit'])
+        if 'default_sl' in data:
+            self.default_sl_pct = float(data['default_sl'])
+        if 'default_tp' in data:
+            self.default_tp_pct = float(data['default_tp'])
+        if 'auto_mode' in data:
+            self.auto_mode = bool(data['auto_mode'])
+        if 'ma_cross' in data:
+            self.ma_cross_enabled = bool(data['ma_cross'])
+        if 'macd' in data:
+            self.macd_enabled = bool(data['macd'])
+        if 'sniper_budget' in data:
+            self.sniper_budget_usdt = float(data['sniper_budget'])
+        if 'sniper_tp' in data:
+            self.sniper_tp_pct = float(data['sniper_tp'])
+        if 'sniper_sl' in data:
+            self.sniper_sl_pct = float(data['sniper_sl'])
+        if 'trade_cooldown_minutes' in data:
+            self.trade_cooldown_minutes = int(data['trade_cooldown_minutes'])
+        self.save()
+
+    def save(self):
+        """Save current settings to disk"""
+        self.save_settings(self.to_dict())
+
     def to_dict(self):
         """Return current config as dict for API"""
         return {
