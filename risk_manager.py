@@ -94,12 +94,20 @@ class RiskManager:
                 last_trade = recent[0]
                 last_time_str = last_trade.get('time', '')
                 if last_time_str:
-                    last_dt = datetime.strptime(last_time_str, '%Y-%m-%d %H:%M')
-                    elapsed = (datetime.now() - last_dt).total_seconds() / 60
-                    if elapsed < cooldown:
-                        log.info(f"Cooldown (history): {pair} traded {elapsed:.1f} mins ago")
-                        RiskManager._trade_times[pair] = last_dt  # cache it
-                        return True
+                    # Try multiple datetime formats
+                    last_dt = None
+                    for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S']:
+                        try:
+                            last_dt = datetime.strptime(last_time_str[:19], fmt)
+                            break
+                        except Exception:
+                            continue
+                    if last_dt:
+                        elapsed = (datetime.now() - last_dt).total_seconds() / 60
+                        if elapsed < cooldown:
+                            log.info(f"Cooldown (history): {pair} traded {elapsed:.1f} mins ago, need {cooldown} mins")
+                            RiskManager._trade_times[pair] = last_dt  # cache it
+                            return True
         except Exception as e:
             log.debug(f"History cooldown check error: {e}")
         return False
