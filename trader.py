@@ -357,8 +357,14 @@ class Trader:
             if not open_orders:
                 log.info(f"No open orders to cancel for {symbol}")
                 return
-            self.client.cancel_open_orders(symbol=symbol)
-            log.info(f"Cancelled all open orders for {symbol} ({len(open_orders)} orders)")
+            # Cancel each order individually (python-binance compatible)
+            for order in open_orders:
+                try:
+                    self.client.cancel_order(symbol=symbol, orderId=order['orderId'])
+                    log.info(f"Cancelled order {order['orderId']} for {symbol}")
+                except Exception as e:
+                    log.warning(f"Could not cancel order {order['orderId']}: {e}")
+            log.info(f"Cancelled {len(open_orders)} orders for {symbol}")
         except Exception as e:
             log.warning(f"Could not cancel orders for {symbol}: {e}")
 
