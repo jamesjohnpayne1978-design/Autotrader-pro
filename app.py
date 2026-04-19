@@ -125,6 +125,66 @@ def get_signals():
         return jsonify({'signals': [], 'error': str(e)})
 
 
+
+@app.route('/api/insights')
+def get_insights():
+    try:
+        import requests as req_lib, json
+        regime = signal_engine.market_regime if signal_engine else 'neutral'
+        regime_tp = signal_engine.regime_tp if signal_engine else 6.0
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        prompt = (
+            "You are a crypto market analyst. Date: " + today + ". "
+            "Market regime: " + regime + ". Take profit: " + str(regime_tp) + "%. "
+            "Bot pairs: BTC, ETH, BNB, SOL, RENDER, LINK, ARB. "
+            "Provide market analysis. Return ONLY JSON: "
+            '{"insights":[{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
+            '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
+            '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"}],'
+            '"watchlist":[{"symbol":"BTCUSDT","name":"Bitcoin","reason":"1 sentence","signal":"buy|watch|avoid"},'
+            '{"symbol":"ETHUSDT","name":"Ethereum","reason":"1 sentence","signal":"buy|watch|avoid"},'
+            '{"symbol":"SOLUSDT","name":"Solana","reason":"1 sentence","signal":"buy|watch|avoid"}],'
+            '"risk_warning":"1 sentence risk warning"}'
+        )
+
+        response = req_lib.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"Content-Type": "application/json"},
+            json={"model": "claude-sonnet-4-20250514", "max_tokens": 1000,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            text = data["content"][0]["text"].strip()
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start != -1:
+                result = json.loads(text[start:end])
+                result["regime"] = regime
+                result["updated"] = datetime.now().strftime("%H:%M")
+                return jsonify(result)
+
+        return jsonify({
+            "regime": regime, "updated": datetime.now().strftime("%H:%M"),
+            "insights": [
+                {"title": "Market Regime", "body": "Current market is " + regime + ". Take profit auto-set to " + str(regime_tp) + "%.", "type": "neutral"},
+                {"title": "Strategy Active", "body": "Per-pair RSI thresholds running. BTC/ETH use 25/80, smaller caps 30-32/75-80.", "type": "neutral"},
+                {"title": "Bot Running", "body": "Monitoring 7 pairs 24/7. Cooldown active after each trade to prevent overtrading.", "type": "neutral"}
+            ],
+            "watchlist": [
+                {"symbol": "BTCUSDT", "name": "Bitcoin", "reason": "Lead indicator — watch for breakout above recent highs.", "signal": "watch"},
+                {"symbol": "SOLUSDT", "name": "Solana", "reason": "Strong ecosystem, good RSI signals historically.", "signal": "watch"},
+                {"symbol": "ARBUSDT", "name": "Arbitrum", "reason": "L2 narrative strong, high volume on Binance.", "signal": "watch"}
+            ],
+            "risk_warning": "Ensure stop losses are active on all open positions before sleeping."
+        })
+    except Exception as e:
+        log.error("Insights error: " + str(e))
+        return jsonify({"error": str(e), "insights": [], "watchlist": []}), 500
+
 @app.route('/api/regime')
 def get_regime():
     if not signal_engine:
