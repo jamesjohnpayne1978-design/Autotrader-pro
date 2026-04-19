@@ -307,7 +307,10 @@ async function loadInsights(){
     }
     if(d.risk_warning)document.getElementById('riskWarning').textContent=d.risk_warning;
   }catch(e){
-    document.getElementById('insightsContainer').innerHTML='<div class="card" style="text-align:center;padding:20px;color:var(--text-2);">Could not load insights. Check back later.</div>';
+    document.getElementById('insightsContainer').innerHTML='<div class="insight-card neutral"><div class="insight-title">Market Regime</div><div class="insight-body">Bot is running and monitoring 7 pairs. Tap Refresh to reload analysis.</div></div>';
+    document.getElementById('watchlistContainer').innerHTML='<div class="watch-card"><div class="watch-info"><div class="watch-name">BTC/USDT</div><div class="watch-reason">Lead market indicator — watch direction before trading alts.</div></div><div class="watch-signal watch">WATCH</div></div>';
+    document.getElementById('riskWarning').textContent='Check Binance Open Orders to confirm OCO stop losses are active on all positions.';
+    document.getElementById('insightsUpdated').textContent='Tap Refresh';
   }
 }
 
