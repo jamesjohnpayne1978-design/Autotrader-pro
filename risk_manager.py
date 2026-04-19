@@ -10,7 +10,8 @@ log = logging.getLogger(__name__)
 
 
 class RiskManager:
-    _trade_times = {}  # Class-level cooldown tracking persists across calls
+    _trade_times = {}   # Class-level cooldown tracking persists across calls
+    _trading_now = set()  # Pairs currently being traded (prevents simultaneous orders)
     def __init__(self, config):
         self.config = config
 
@@ -24,6 +25,13 @@ class RiskManager:
         # Only check risk on buys
         if action == 'sell':
             return True, "Sell approved"
+
+        # Prevent simultaneous orders for same pair
+        if pair in RiskManager._trading_now:
+            reason = f"Trade already in progress for {pair}"
+            log.info(f"Risk check failed: {reason}")
+            return False, reason
+        RiskManager._trading_now.add(pair)
 
         # Check cooldown applies to buys too — prevent re-buying right after a sell
         if self._is_on_cooldown(pair):
@@ -59,6 +67,10 @@ class RiskManager:
 
         log.info(f"Risk check passed: {action} {pair} (confidence: {confidence}%)")
         return True, "Approved"
+
+    def release_lock(self, pair):
+        """Release trading lock after trade completes or fails"""
+        RiskManager._trading_now.discard(pair)
 
     def _is_on_cooldown(self, pair):
         """Check if pair is within cooldown period after last trade (buy OR sell)"""
