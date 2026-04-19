@@ -153,7 +153,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .pair-rec-action{padding:5px 12px;border-radius:20px;font-size:0.72rem;font-family:var(--mono);font-weight:700;flex-shrink:0;margin-left:10px}
 .pair-rec-action.add{background:var(--green-dim);color:var(--green)}
 .pair-rec-action.remove{background:var(--red-dim);color:var(--red)}
-.pair-rec-action.keep{background:var(--blue-dim);color:var(--blue-bright)}
+.pair-rec-action.keep{background:var(--blue-dim);color:var(--blue-bright)}.pair-rec-action.avoid{background:var(--red-dim);color:var(--red)}
 .risk-box{background:var(--gold-dim);border:1px solid rgba(255,179,64,0.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:14px;font-size:0.85rem;color:var(--gold);line-height:1.5}
 </style>
 </head>
@@ -321,10 +321,13 @@ async function loadInsights(){
     if(d.updated)document.getElementById('insightsUpdated').textContent='Updated '+d.updated;
     if(d.insights&&d.insights.length){document.getElementById('insightsContainer').innerHTML=d.insights.map(i=>'<div class="insight-card '+i.type+'"><div class="insight-title">'+i.title+'</div><div class="insight-body">'+i.body+'</div></div>').join('');}
     if(d.watchlist&&d.watchlist.length){document.getElementById('watchlistContainer').innerHTML=d.watchlist.map(w=>'<div class="watch-card"><div class="watch-info"><div class="watch-name">'+w.name+' <span style="color:var(--text-3);font-size:0.75rem;">('+w.symbol.replace('USDT','/USDT')+')</span></div><div class="watch-reason">'+w.reason+'</div></div><div class="watch-signal '+w.signal+'">'+w.signal.toUpperCase()+'</div></div>').join('');}
-    if(d.pair_recommendations&&d.pair_recommendations.length){
-      document.getElementById('pairRecsContainer').innerHTML=d.pair_recommendations.map(r=>{
-        const label={'add':'ADD','remove':'REMOVE','keep':'KEEP'}[r.action]||r.action.toUpperCase();
-        return'<div class="pair-rec"><div class="pair-rec-info"><div class="pair-rec-name">'+r.name+' <span style="color:var(--text-3);font-size:0.75rem;">('+r.symbol.replace('USDT','/USDT')+')</span></div><div class="pair-rec-reason">'+r.reason+'</div></div><div class="pair-rec-action '+r.action+'">'+label+'</div></div>';
+    const recs=d.pair_recommendations||[];
+    if(recs.length){
+      document.getElementById('pairRecsContainer').innerHTML=recs.map(r=>{
+        const labels={'add':'ADD','remove':'REMOVE','keep':'KEEP','avoid':'AVOID'};
+        const label=labels[r.action]||r.action.toUpperCase();
+        const cls=r.action==='avoid'?'remove':r.action;
+        return'<div class="pair-rec"><div class="pair-rec-info"><div class="pair-rec-name">'+r.name+' <span style="color:var(--text-3);font-size:0.75rem;">('+r.symbol.replace('USDT','/USDT')+')</span></div><div class="pair-rec-reason">'+r.reason+'</div></div><div class="pair-rec-action '+cls+'">'+label+'</div></div>';
       }).join('');
     } else {
       document.getElementById('pairRecsContainer').innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">Tap Refresh for AI pair recommendations</div>';
