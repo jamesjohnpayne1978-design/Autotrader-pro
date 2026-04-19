@@ -189,10 +189,29 @@ class SignalEngine:
         price = closes[-1]
         price_change = ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
 
+        # Get per-pair RSI thresholds using tier-based auto-assignment
+        if hasattr(self.config, 'get_pair_rsi'):
+            base_buy, base_sell = self.config.get_pair_rsi(symbol)
+        else:
+            base_buy, base_sell = self.config.rsi_buy, self.config.rsi_sell
+
+        # Auto-adapt for market regime
+        if self.market_regime == 'bearish':
+            rsi_buy_threshold = base_buy - 3
+            rsi_sell_threshold = base_sell - 5
+        elif self.market_regime == 'bullish':
+            rsi_buy_threshold = base_buy + 3
+            rsi_sell_threshold = base_sell + 3
+        else:
+            rsi_buy_threshold = base_buy
+            rsi_sell_threshold = base_sell
+
         indicators = {
             'rsi': rsi, 'macd': macd, 'ma50': ma50, 'ma200': ma200,
             'bb': bb, 'volume_ratio': volume_ratio, 'price': price,
-            'price_change_24h': price_change
+            'price_change_24h': price_change,
+            'rsi_buy_threshold': rsi_buy_threshold,
+            'rsi_sell_threshold': rsi_sell_threshold
         }
         return self._ai_analyse(symbol, indicators)
 
