@@ -44,8 +44,6 @@ class Config:
         else:
             return (32, 80)   # Small/speculative — tighter buy, hold for bigger move
 
-    def _dummy(self):
-        pass  # spacer
         self.ma_cross_enabled = True
         self.macd_enabled = True
         self.auto_mode = os.environ.get('AUTO_MODE', 'false').lower() == 'true'
