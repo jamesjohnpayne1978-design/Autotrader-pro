@@ -4,6 +4,7 @@ Added: market regime endpoint
 """
 
 from flask import Flask, jsonify, request, send_file
+from datetime import datetime
 from flask_cors import CORS
 import threading
 import logging
@@ -155,7 +156,7 @@ def get_insights():
         ],
         "pair_recommendations": [
             {"symbol": "XRPUSDT", "name": "XRP", "action": "add", "reason": "High liquidity on Binance, responds well to RSI signals. Mid-cap tier (30/75)."},
-            {"symbol": "DOGEUSDT", "name": "Dogecoin", "action": "keep" if "DOGEUSDT" in getattr(config, "trading_pairs", []) else "avoid", "reason": "High volume but volatile — only suitable in bull markets with tight stop loss."},
+            {"symbol": "DOGEUSDT", "name": "Dogecoin", "action": "remove", "reason": "High volume but volatile — only suitable in bull markets with tight stop loss."},
             {"symbol": "AVAXUSDT", "name": "Avalanche", "action": "add", "reason": "Strong DeFi ecosystem, good technical signals. Would auto-assign 32/80 RSI tier."}
         ],
         "risk_warning": "Verify OCO stop loss orders are active in Binance app for all open positions before leaving the bot unattended."
