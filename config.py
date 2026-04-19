@@ -30,16 +30,22 @@ class Config:
             self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT', 'SOLUSDT', 'LINKUSDT', 'ARBUSDT']
         self.rsi_buy = 35
         self.rsi_sell = 70
-        # Per-pair RSI overrides — format: {'BTCUSDT': (buy, sell)}
-        self.pair_rsi = {
-            'BTCUSDT':   (25, 80),
-            'ETHUSDT':   (25, 80),
-            'SOLUSDT':   (30, 75),
-            'LINKUSDT':  (30, 75),
-            'BNBUSDT':   (30, 75),
-            'ARBUSDT':   (32, 80),
-            'RENDERUSDT':(32, 80),
-        }
+        # RSI tiers by market cap category — auto-assigns to any pair
+        self._rsi_large_caps  = {'BTCUSDT', 'ETHUSDT'}
+        self._rsi_mid_caps    = {'BNBUSDT', 'SOLUSDT', 'LINKUSDT', 'XRPUSDT', 'ADAUSDT', 'DOTUSDT'}
+        # All other pairs default to small cap thresholds
+
+    def get_pair_rsi(self, symbol):
+        """Auto-assign RSI thresholds based on pair tier. Works for any pair."""
+        if symbol in self._rsi_large_caps:
+            return (25, 80)   # Large cap — patient entries, hold longer
+        elif symbol in self._rsi_mid_caps:
+            return (30, 75)   # Mid cap — moderate thresholds
+        else:
+            return (32, 80)   # Small/speculative — tighter buy, hold for bigger move
+
+    def _dummy(self):
+        pass  # spacer
         self.ma_cross_enabled = True
         self.macd_enabled = True
         self.auto_mode = os.environ.get('AUTO_MODE', 'false').lower() == 'true'
