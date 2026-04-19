@@ -217,7 +217,7 @@ class SignalEngine:
                 f"Price: {round(price, 4)}, 50MA: {round(ma50, 4)}, 200MA: {ma200_str}\n"
                 f"Above 50MA: {price > ma50}, BB position: {round(bb_pos, 0)}%\n"
                 f"Volume ratio: {round(volume_ratio, 1)}x, 24h change: {round(price_change, 2)}%\n"
-                f"RSI buy below: {self.config.rsi_buy}, sell above: {self.config.rsi_sell}\n"
+                f"RSI buy threshold: {indicators.get('rsi_buy_threshold', self.config.rsi_buy)}, sell threshold: {indicators.get('rsi_sell_threshold', self.config.rsi_sell)} (auto-adjusted for {self.market_regime} regime)\n"
                 f"Recommended TP for this regime: {self.regime_tp}%\n\n"
                 f"Return ONLY JSON: "
                 f'{{"action":"buy"|"sell"|"watch"|"hold","confidence":0-100,"reason":"2-3 sentences",'
@@ -259,15 +259,17 @@ class SignalEngine:
         price = indicators['price']
         ma50 = indicators['ma50']
         macd_signal = macd.get('signal', 'neutral')
+        rsi_buy_threshold = indicators.get('rsi_buy_threshold', self.config.rsi_buy)
+        rsi_sell_threshold = indicators.get('rsi_sell_threshold', self.config.rsi_sell)
         action = 'hold'
         confidence = 50
         reasons = []
 
-        if rsi < self.config.rsi_buy:
+        if rsi < rsi_buy_threshold:
             reasons.append("RSI oversold at " + str(round(rsi, 1)))
             action = 'buy'
             confidence += 15
-        elif rsi > self.config.rsi_sell:
+        elif rsi > rsi_sell_threshold:
             reasons.append("RSI overbought at " + str(round(rsi, 1)))
             action = 'sell'
             confidence += 15
