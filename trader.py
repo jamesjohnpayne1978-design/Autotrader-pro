@@ -244,13 +244,27 @@ class Trader:
                 except Exception as e:
                     log.debug(f"Could not fetch trades for {symbol}: {e}")
 
-            # Sort by time
+            # Consolidate partial fills with same orderId into single trades
+            consolidated = {}
+            for t in all_trades:
+                key = t['orderId']
+                if key not in consolidated:
+                    consolidated[key] = t.copy()
+                else:
+                    # Merge fills: add quantity and value, average price
+                    existing = consolidated[key]
+                    total_qty = existing['quantity'] + t['quantity']
+                    total_val = existing['usdt_value'] + t['usdt_value']
+                    existing['price'] = round(total_val / total_qty, 6) if total_qty > 0 else existing['price']
+                    existing['quantity'] = round(total_qty, 6)
+                    existing['usdt_value'] = round(total_val, 2)
+
+            all_trades = list(consolidated.values())
             all_trades.sort(key=lambda x: x['time_ms'], reverse=True)
 
             # Calculate PnL by matching sells to most recent buys per pair
             buy_prices = {}
             result = []
-            # Process in chronological order for matching
             for trade in sorted(all_trades, key=lambda x: x['time_ms']):
                 symbol = trade['symbol']
                 if trade['side'] == 'buy':
@@ -265,7 +279,6 @@ class Trader:
                         trade['pnl'] = 0.0
                     trade['trigger'] = 'AI Signal'
 
-            # Return newest first
             for trade in sorted(all_trades, key=lambda x: x['time_ms'], reverse=True):
                 result.append(trade)
 
