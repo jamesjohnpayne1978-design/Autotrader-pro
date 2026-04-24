@@ -155,7 +155,7 @@ class SignalEngine:
             pair = signal.get('pair')
             if action not in ('buy', 'sell'):
                 continue
-            if confidence < 65:
+            if confidence < 72:
                 log.info(f"Auto-execute skipped {pair} — confidence {confidence}% below 65%")
                 continue
             approved, reason = self.risk_manager.check_trade(pair, action, confidence)
@@ -307,8 +307,16 @@ class SignalEngine:
 
         if rsi < rsi_buy_threshold:
             reasons.append("RSI oversold at " + str(round(rsi, 1)))
-            action = 'buy'
-            confidence += 15
+            # Trend filter: block buy if price is well below 50MA (still falling)
+            if ma50 > 0 and price < ma50 * 0.985:
+                log.info(f"Trend filter: {symbol} in downtrend (price {price:.4f} vs 50MA {ma50:.4f}), skipping buy")
+                action = 'hold'
+                confidence = 40
+            else:
+                action = 'buy'
+                confidence += 15
+                if price > ma50:
+                    confidence += 10  # Extra confidence if above 50MA
         elif rsi > rsi_sell_threshold:
             reasons.append("RSI overbought at " + str(round(rsi, 1)))
             action = 'sell'
