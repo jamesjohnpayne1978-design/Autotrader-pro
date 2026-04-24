@@ -228,11 +228,11 @@ def execute_trade():
     if not approved:
         return jsonify({'error': f'Risk manager blocked: {reason}'}), 400
 
+    is_manual = data.get('manual', False)
+    if is_manual:
+        log.info(f"Manual trade: {action} {pair}")
     try:
-        try:
-            result = trader.execute_trade(pair, action, config.max_trade_pct)
-        finally:
-            risk_manager.release_lock(pair)  # Always release lock
+        result = trader.execute_trade(pair, action, config.max_trade_pct)
         risk_manager.record_trade(pair)  # Start cooldown after trade
         send_telegram(
             f"{'🟢' if action == 'buy' else '🔴'} *{action.upper()} {pair}*\n"
@@ -243,6 +243,8 @@ def execute_trade():
         return jsonify({'success': True, 'result': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    finally:
+        risk_manager.release_lock(pair)  # Always release lock
 
 
 @app.route('/api/history')
