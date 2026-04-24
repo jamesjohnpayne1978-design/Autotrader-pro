@@ -195,7 +195,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <canvas id="portfolioChart" height="160"></canvas>
     <div class="loading-row" id="chartLoading"><div class="spinner"></div> Loading chart...</div>
   </div>
-  <div class="section-title">Active Pairs</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+    <div class="section-title" style="margin:0">Active Pairs</div>
+    <button onclick="document.getElementById('tradeModal').classList.add('show')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--blue-bright);font-family:var(--sans);font-size:0.75rem;font-weight:600;padding:7px 14px;cursor:pointer">+ Manual Trade</button>
+  </div>
   <div class="card" id="pairsCard"><div class="loading-row"><div class="spinner"></div> Loading prices...</div></div>
   <div class="section-title">AI Signals</div>
   <div id="signalsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
@@ -280,6 +283,25 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <button class="nav-item" id="nav-settings" onclick="showPage('settings')"><span>⚙️</span>Settings</button>
 </nav>
 
+<div class="modal-overlay" id="tradeModal">
+  <div class="modal">
+    <div class="modal-title" id="tradeModalTitle">Manual Trade</div>
+    <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px">
+      <div style="font-size:0.75rem;color:var(--text-2);margin-bottom:6px">Pair</div>
+      <select id="tradePairSelect" style="width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--mono);font-size:1rem;padding:10px 14px">
+        <option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option>
+        <option>SOLUSDT</option><option>XRPUSDT</option><option>LINKUSDT</option>
+        <option>ARBUSDT</option><option>RENDERUSDT</option><option>AVAXUSDT</option>
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+      <button class="btn" style="background:var(--green);color:#000;padding:16px;font-size:1rem;" onclick="submitManualTrade('buy')">✓ BUY</button>
+      <button class="btn" style="background:var(--red);color:white;padding:16px;font-size:1rem;" onclick="submitManualTrade('sell')">✕ SELL</button>
+    </div>
+    <div style="font-size:0.72rem;color:var(--text-3);text-align:center;line-height:1.5">Buy uses 5% of portfolio. Sell closes full position and cancels OCO orders.</div>
+    <button class="btn btn-skip" style="width:100%;margin-top:12px;padding:12px" onclick="document.getElementById('tradeModal').classList.remove('show')">Cancel</button>
+  </div>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <script>
 const API_BASE=window.location.origin;
@@ -359,6 +381,19 @@ function saveSettings(){
 }
 
 async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
+
+async function submitManualTrade(side){
+  const pair=document.getElementById('tradePairSelect').value;
+  const pairName=pair.replace('USDT','/USDT');
+  document.getElementById('tradeModal').classList.remove('show');
+  showToast('Sending manual '+side.toUpperCase()+' for '+pairName+'...');
+  try{
+    const r=await fetch(API_BASE+'/api/trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pair:pairName,action:side,confidence:99,manual:true})});
+    const d=await r.json();
+    if(d.success){showToast(pairName+' '+side.toUpperCase()+' executed!');setTimeout(loadDashboard,2000)}
+    else showToast('Error: '+(d.error||'Unknown error'));
+  }catch(e){showToast('Could not reach trading server')}
+}
 
 window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000)});
 document.getElementById('apiModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show')});
