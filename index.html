@@ -340,7 +340,10 @@ async function loadInsights(){
   try{
     const r=await fetch(API_BASE+'/api/insights');
     const d=await r.json();
-    if(d.updated)document.getElementById('insightsUpdated').textContent='Updated '+d.updated;
+    const aiPowered = d.ai_powered || false;
+    const updatedEl = document.getElementById('insightsUpdated');
+    if(updatedEl) updatedEl.textContent = (aiPowered ? '🤖 AI Live · ' : '⚡ Static · ') + (d.updated||'');
+    if(d.updated)document.getElementById('insightsUpdated').textContent=(aiPowered?'🤖 AI Live · ':'⚡ Tap Refresh · ')+(d.updated||'');
     if(d.insights&&d.insights.length){document.getElementById('insightsContainer').innerHTML=d.insights.map(i=>'<div class="insight-card '+i.type+'"><div class="insight-title">'+i.title+'</div><div class="insight-body">'+i.body+'</div></div>').join('');}
     if(d.watchlist&&d.watchlist.length){document.getElementById('watchlistContainer').innerHTML=d.watchlist.map(w=>'<div class="watch-card"><div class="watch-info"><div class="watch-name">'+w.name+' <span style="color:var(--text-3);font-size:0.75rem;">('+w.symbol.replace('USDT','/USDT')+')</span></div><div class="watch-reason">'+w.reason+'</div></div><div class="watch-signal '+w.signal+'">'+w.signal.toUpperCase()+'</div></div>').join('');}
     const recs=d.pair_recommendations||[];
