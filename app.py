@@ -140,69 +140,123 @@ def get_insights():
     except Exception:
         pass
 
-    # Static intelligent fallback — always works
-    fallback = {
-        "regime": regime,
-        "updated": datetime.now().strftime("%H:%M"),
-        "insights": [
-            {"title": "Market Regime: " + regime.upper(), "body": "AI has detected a " + regime + " market. Take profit is auto-set to " + str(regime_tp) + "% for all trades. RSI thresholds auto-adjusted accordingly.", "type": regime if regime in ["bullish","bearish","warning"] else "neutral"},
-            {"title": "Per-Pair RSI Active", "body": "BTC/ETH using 25/80 thresholds. SOL/LINK/BNB using 30/75. ARB/RENDER and new pairs using 32/80 for more selective entries.", "type": "neutral"},
-            {"title": "Trade Cooldown Running", "body": "60 minute cooldown after every trade prevents overbuying. Sell signals are skipped if no holdings exist for that pair.", "type": "neutral"}
-        ],
-        "watchlist": [
-            {"symbol": "BTCUSDT", "name": "Bitcoin", "reason": "Lead indicator for entire market. BTC RSI at current levels suggests watching for oversold entry.", "signal": "watch"},
-            {"symbol": "SOLUSDT", "name": "Solana", "reason": "Strong ecosystem fundamentals, reliable RSI signals on dips.", "signal": "watch"},
-            {"symbol": "ARBUSDT", "name": "Arbitrum", "reason": "L2 narrative strong. High volume on Binance, good for RSI-based entries.", "signal": "watch"}
-        ],
-        "pair_recommendations": [
-            {"symbol": "XRPUSDT", "name": "XRP", "action": "add", "reason": "High liquidity on Binance, responds well to RSI signals. Mid-cap tier (30/75)."},
-            {"symbol": "DOGEUSDT", "name": "Dogecoin", "action": "remove", "reason": "High volume but volatile — only suitable in bull markets with tight stop loss."},
-            {"symbol": "AVAXUSDT", "name": "Avalanche", "action": "add", "reason": "Strong DeFi ecosystem, good technical signals. Would auto-assign 32/80 RSI tier."}
-        ],
-        "risk_warning": "Verify OCO stop loss orders are active in Binance app for all open positions before leaving the bot unattended."
-    }
-
     try:
         import requests as req_lib, json
+
+        # Get current prices for context
+        price_context = ""
+        if trader:
+            try:
+                prices = trader.get_prices()
+                price_lines = []
+                for p in prices:
+                    price_lines.append(f"{p['symbol']}: ${p['price']} ({p['change']:+.1f}% 24h)")
+                price_context = "\n".join(price_lines)
+            except Exception:
+                pass
+
         current_pairs = ','.join([p.replace('USDT','') for p in getattr(config, 'trading_pairs', ['BTC','ETH','BNB','SOL','RENDER','LINK','ARB'])])
+        today = datetime.now().strftime('%Y-%m-%d %H:%M')
+
         prompt = (
-            "You are a crypto market analyst for a Binance spot trading bot. Date: " + datetime.now().strftime('%Y-%m-%d') + ". "
-            "Market regime: " + regime + ". Auto take profit: " + str(regime_tp) + "%. "
-            "Currently trading: " + current_pairs + ". "
-            "Return ONLY valid JSON, no other text: "
-            '{"insights":[{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
-            '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"},'
-            '{"title":"str","body":"2 sentences","type":"bullish|bearish|neutral|warning"}],'
-            '"watchlist":[{"symbol":"BTCUSDT","name":"Bitcoin","reason":"1 sentence","signal":"buy|watch|avoid"},'
-            '{"symbol":"ETHUSDT","name":"Ethereum","reason":"1 sentence","signal":"buy|watch|avoid"},'
-            '{"symbol":"SOLUSDT","name":"Solana","reason":"1 sentence","signal":"buy|watch|avoid"}],'
-            '"pair_recommendations":[{"symbol":"XRPUSDT","name":"XRP","action":"add|remove|keep","reason":"1 sentence"},'
-            '{"symbol":"AVAXUSDT","name":"Avalanche","action":"add|remove|keep","reason":"1 sentence"},'
-            '{"symbol":"DOGEUSDT","name":"Dogecoin","action":"add|remove|keep","reason":"1 sentence"}],'
-            '"risk_warning":"1 sentence risk warning"}'
+            "You are a professional crypto trading analyst with access to real-time market data. "
+            "Today is " + today + ". Market regime detected: " + regime + ". Auto take-profit: " + str(regime_tp) + "%. "
+            "Bot is currently trading: " + current_pairs + ". "
+            "Current live prices:\n" + price_context + "\n\n"
+            "Use your knowledge of current crypto market conditions, recent news, BTC dominance trends, "
+            "macro factors (Fed rates, ETF flows, institutional activity), and on-chain signals to provide "
+            "SPECIFIC, ACTIONABLE, and CURRENT analysis. Do NOT give generic advice. "
+            "Reference actual current market conditions, specific price levels, and real catalysts. "
+            "For pair recommendations, suggest specific coins that are genuinely interesting RIGHT NOW "
+            "based on current narratives (e.g. AI tokens, L2s, DeFi, memecoins, RWA, etc). "
+            "Be direct and specific like a professional trader would be. "
+            "Return ONLY this JSON with no other text:\n"
+            '{"insights":['
+            '{"title":"string under 8 words","body":"2-3 specific sentences with real data points","type":"bullish|bearish|neutral|warning"},'
+            '{"title":"string under 8 words","body":"2-3 specific sentences with real data points","type":"bullish|bearish|neutral|warning"},'
+            '{"title":"string under 8 words","body":"2-3 specific sentences with real data points","type":"bullish|bearish|neutral|warning"}'
+            '],'
+            '"watchlist":['
+            '{"symbol":"XYZUSDT","name":"Name","reason":"1 specific sentence with current catalyst","signal":"buy|watch|avoid"},'
+            '{"symbol":"XYZUSDT","name":"Name","reason":"1 specific sentence with current catalyst","signal":"buy|watch|avoid"},'
+            '{"symbol":"XYZUSDT","name":"Name","reason":"1 specific sentence with current catalyst","signal":"buy|watch|avoid"}'
+            '],'
+            '"pair_recommendations":['
+            '{"symbol":"XYZUSDT","name":"Name","action":"add|remove|keep","reason":"specific current reason"},'
+            '{"symbol":"XYZUSDT","name":"Name","action":"add|remove|keep","reason":"specific current reason"},'
+            '{"symbol":"XYZUSDT","name":"Name","action":"add|remove|keep","reason":"specific current reason"}'
+            '],'
+            '"risk_warning":"1 specific sentence about a real current risk to watch"}'
         )
+
+        api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+        if not api_key:
+            raise Exception("No ANTHROPIC_API_KEY set")
+
         response = req_lib.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"Content-Type": "application/json"},
-            json={"model": "claude-sonnet-4-20250514", "max_tokens": 1000,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=25
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01"
+            },
+            json={
+                "model": "claude-opus-4-6",
+                "max_tokens": 1500,
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=45
         )
+
         if response.status_code == 200:
             data = response.json()
-            text = data["content"][0]["text"].strip()
+            # Extract text from content blocks (may include tool use blocks)
+            text = ""
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    text += block.get("text", "")
+            text = text.strip()
             start = text.find("{")
             end = text.rfind("}") + 1
             if start != -1 and end > start:
                 result = json.loads(text[start:end])
                 result["regime"] = regime
                 result["updated"] = datetime.now().strftime("%H:%M")
-                result.setdefault("pair_recommendations", fallback["pair_recommendations"])
+                result["ai_powered"] = True
+                result.setdefault("pair_recommendations", [])
+                log.info("AI insights generated successfully with web search")
                 return jsonify(result)
-    except Exception as e:
-        log.debug(f"AI insights unavailable: {e}")
+            else:
+                log.warning(f"Could not parse AI response: {text[:200]}")
+        else:
+            log.warning(f"Anthropic API error: {response.status_code} {response.text[:200]}")
 
-    return jsonify(fallback)
+    except Exception as e:
+        log.warning(f"AI insights failed: {e}")
+
+    # Fallback — still useful but clearly marked
+    return jsonify({
+        "regime": regime,
+        "updated": datetime.now().strftime("%H:%M"),
+        "ai_powered": False,
+        "insights": [
+            {"title": "Add API Key For Live AI", "body": "Add ANTHROPIC_API_KEY to Railway Variables to unlock real-time AI market analysis with web search. The bot will then pull live news, price action and macro data to generate fresh insights every time you refresh.", "type": "warning"},
+            {"title": "Market Regime: " + regime.upper(), "body": "Bot has detected a " + regime + " market. Take profit auto-set to " + str(regime_tp) + "%. RSI thresholds adjusted per tier — BTC/ETH 25/80, mid caps 30/75, small caps 32/80.", "type": "neutral"},
+            {"title": "Strategy Update Active", "body": "Confidence threshold raised to 72%. Trend filter now blocks buys when price is more than 1.5% below 50MA — prevents buying into falling coins.", "type": "neutral"}
+        ],
+        "watchlist": [
+            {"symbol": "BTCUSDT", "name": "Bitcoin", "reason": "Add API key for live AI watchlist recommendations based on current market data.", "signal": "watch"},
+            {"symbol": "ETHUSDT", "name": "Ethereum", "reason": "Add ANTHROPIC_API_KEY to Railway for fresh AI-driven watchlist every refresh.", "signal": "watch"},
+            {"symbol": "SOLUSDT", "name": "Solana", "reason": "Live AI analysis will suggest specific coins based on current narratives and catalysts.", "signal": "watch"}
+        ],
+        "pair_recommendations": [
+            {"symbol": "ANTHROPIC_API_KEY", "name": "Setup Required", "action": "add", "reason": "Go to Railway → Variables → add ANTHROPIC_API_KEY to get real AI pair recommendations"},
+            {"symbol": "AVAXUSDT", "name": "Avalanche", "action": "add", "reason": "Strong DeFi ecosystem, auto-assigned 30/75 RSI tier as mid-cap."},
+            {"symbol": "RENDERUSDT", "name": "Render", "action": "keep", "reason": "AI/GPU narrative remains strong. Currently on 32/80 small-cap RSI tier."}
+        ],
+        "risk_warning": "Add ANTHROPIC_API_KEY to Railway Variables for live AI risk analysis based on current market conditions."
+    })
 
 
 @app.route('/api/regime')
