@@ -1,20 +1,20 @@
 """
 AutoTrader Pro - New Listing Sniper
-Monitors Binance for new coin listings and executes sniping strategy
+Detects new Binance listings via exchange info polling (most reliable method)
 """
 
 import time
 import logging
-import requests
 import json
+import requests
 from datetime import datetime
-from bs4 import BeautifulSoup
-from binance.client import Client
+from threading import Thread
 
 log = logging.getLogger(__name__)
 
-BINANCE_ANNOUNCEMENTS = "https://www.binance.com/en/support/announcement/new-cryptocurrency-listing"
-
+# Binance public API - no scraping needed
+BINANCE_API = "https://api.binance.com/api/v3"
+BINANCE_NEWS_API = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=20"
 
 class ListingSniper:
     def __init__(self, config, trader, risk_manager):
@@ -22,276 +22,258 @@ class ListingSniper:
         self.trader = trader
         self.risk_manager = risk_manager
         self.active = config.sniper_active
-        self.seen_listings = set()
+        self.seen_symbols = set()
+        self.seen_news_ids = set()
         self.recent_detections = []
         self._load_seen()
+        log.info("Sniper initialised — watching for new listings")
 
     def _load_seen(self):
         try:
             with open('/data/seen_listings.json', 'r') as f:
-                self.seen_listings = set(json.load(f))
+                data = json.load(f)
+                self.seen_symbols = set(data.get('symbols', []))
+                self.seen_news_ids = set(data.get('news_ids', []))
         except Exception:
-            self.seen_listings = set()
+            self.seen_symbols = set()
+            self.seen_news_ids = set()
 
     def _save_seen(self):
         try:
             with open('/data/seen_listings.json', 'w') as f:
-                json.dump(list(self.seen_listings), f)
+                json.dump({
+                    'symbols': list(self.seen_symbols),
+                    'news_ids': list(self.seen_news_ids)
+                }, f)
         except Exception:
             pass
 
     def run(self):
-        log.info("Listing sniper started.")
+        log.info("Sniper thread started — checking every 15s")
+        # Seed initial known symbols on first run
+        self._seed_known_symbols()
+        check_count = 0
         while True:
             if self.active:
                 try:
-                    self._check_announcements()
-                    self._check_new_pairs()
+                    # Check exchange info every cycle (most reliable)
+                    self._check_new_exchange_symbols()
+                    # Check Binance news API every 4 cycles (~60s)
+                    if check_count % 4 == 0:
+                        self._check_binance_news()
+                    check_count += 1
                 except Exception as e:
                     log.error(f"Sniper check error: {e}")
-            time.sleep(10)  # Check every 10 seconds
+            time.sleep(15)
 
-    def _check_announcements(self):
-        """Scrape Binance announcement page for new listings"""
+    def _seed_known_symbols(self):
+        """Load all current symbols so we only alert on NEW ones"""
+        try:
+            info = self.trader.client.get_exchange_info()
+            current = {s['symbol'] for s in info['symbols']
+                      if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'}
+            if not self.seen_symbols:
+                self.seen_symbols = current
+                self._save_seen()
+                log.info(f"Sniper seeded with {len(current)} existing USDT pairs")
+        except Exception as e:
+            log.warning(f"Could not seed symbols: {e}")
+
+    def _check_new_exchange_symbols(self):
+        """Most reliable method - directly polls Binance exchange info"""
+        try:
+            info = self.trader.client.get_exchange_info()
+            current = {s['symbol'] for s in info['symbols']
+                      if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'}
+
+            if not self.seen_symbols:
+                self.seen_symbols = current
+                self._save_seen()
+                return
+
+            new_symbols = current - self.seen_symbols
+            if new_symbols:
+                for symbol in new_symbols:
+                    # Filter out stablecoin pairs and obvious test tokens
+                    base = symbol.replace('USDT', '')
+                    if any(x in base for x in ['USD', 'EUR', 'GBP', 'BUSD', 'USDC', 'TUSD', 'TEST']):
+                        continue
+                    log.info(f"🎯 NEW SYMBOL DETECTED: {symbol}")
+                    self._handle_new_listing(symbol, f"New pair listed on Binance: {symbol}", 'exchange_api')
+                self.seen_symbols = current
+                self._save_seen()
+        except Exception as e:
+            log.debug(f"Exchange check error: {e}")
+
+    def _check_binance_news(self):
+        """Check Binance official news API for listing announcements"""
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (compatible; AutoTrader/1.0)',
-                'Accept-Language': 'en-US,en;q=0.9'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json',
             }
-            resp = requests.get(BINANCE_ANNOUNCEMENTS, headers=headers, timeout=10)
+            resp = requests.get(BINANCE_NEWS_API, headers=headers, timeout=10)
             if resp.status_code != 200:
                 return
 
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            articles = soup.find_all('a', href=True)
+            data = resp.json()
+            articles = data.get('data', {}).get('articles', [])
 
             for article in articles:
-                title = article.get_text(strip=True)
-                href = article['href']
-                if 'listing' in title.lower() or 'will list' in title.lower():
-                    listing_id = href.split('/')[-1] if href else title[:50]
-                    if listing_id not in self.seen_listings:
-                        self.seen_listings.add(listing_id)
-                        self._save_seen()
-                        symbol = self._extract_symbol(title)
-                        if symbol:
-                            log.info(f"New listing detected: {symbol} — {title}")
-                            self._handle_new_listing(symbol, title, 'announcement')
+                article_id = str(article.get('id', ''))
+                title = article.get('title', '')
+
+                if article_id in self.seen_news_ids:
+                    continue
+
+                self.seen_news_ids.add(article_id)
+
+                # Check if it's a listing announcement
+                title_lower = title.lower()
+                if any(kw in title_lower for kw in ['will list', 'lists', 'listing', 'new listing', 'adds']):
+                    symbol = self._extract_symbol(title)
+                    if symbol and symbol not in self.seen_symbols:
+                        log.info(f"📰 LISTING ANNOUNCEMENT: {title} → {symbol}")
+                        self._handle_new_listing(symbol, title, 'news_api')
+
+            # Keep seen_news_ids manageable
+            if len(self.seen_news_ids) > 500:
+                self.seen_news_ids = set(list(self.seen_news_ids)[-200:])
+            self._save_seen()
 
         except Exception as e:
-            log.debug(f"Announcement check failed: {e}")
+            log.debug(f"News check error: {e}")
 
-    def _check_new_pairs(self):
-        """Check Binance exchange info for brand new trading pairs"""
-        try:
-            info = self.trader.client.get_exchange_info()
-            current_symbols = {s['symbol'] for s in info['symbols'] if 'USDT' in s['symbol']}
-
-            if not hasattr(self, '_known_symbols'):
-                self._known_symbols = current_symbols
-                return
-
-            new_symbols = current_symbols - self._known_symbols
-            if new_symbols:
-                for symbol in new_symbols:
-                    log.info(f"New trading pair detected on Binance: {symbol}")
-                    self._handle_new_listing(symbol, f"New pair listed: {symbol}", 'websocket')
-                self._known_symbols = current_symbols
-
-        except Exception as e:
-            log.debug(f"Pair check failed: {e}")
-
-    def _extract_symbol(self, title: str) -> str | None:
+    def _extract_symbol(self, title: str):
         """Extract coin symbol from announcement title"""
         import re
-        # Look for patterns like (BTC), (ETH), (NEWCOIN)
-        match = re.search(r'\(([A-Z]{2,10})\)', title)
-        if match:
-            symbol = match.group(1) + 'USDT'
-            return symbol
-        # Look for "will list X" patterns
-        match = re.search(r'(?:list|listing)\s+([A-Z]{2,10})', title, re.IGNORECASE)
-        if match:
-            return match.group(1).upper() + 'USDT'
+        # Patterns: (BTC), (NEWCOIN/USDT), "will list ABC"
+        patterns = [
+            r'\(([A-Z]{2,10})(?:/USDT)?\)',
+            r'(?:list|listing|lists|adds?)\s+([A-Z]{2,10})(?:\s|/|$)',
+            r'([A-Z]{3,10})\s+(?:to|on)\s+Binance',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, title, re.IGNORECASE)
+            if match:
+                coin = match.group(1).upper()
+                # Skip known stablecoins and common false positives
+                if coin not in {'USD', 'USDT', 'USDC', 'BUSD', 'EUR', 'GBP', 'BTC', 'ETH', 'BNB', 'THE', 'FOR', 'AND'}:
+                    return coin + 'USDT'
         return None
 
     def _handle_new_listing(self, symbol: str, title: str, source: str):
         """Process a detected new listing"""
         detection = {
             'symbol': symbol,
-            'title': title,
+            'title': title[:100],
             'source': source,
             'time': datetime.now().strftime('%H:%M:%S'),
             'date': datetime.now().strftime('%Y-%m-%d'),
             'status': 'detected',
-            'ai_score': None,
-            'action': None
+            'action': 'Detected — evaluating...'
         }
-
-        # AI score the listing
-        if self.config.ai_filter_enabled:
-            score = self._ai_score_listing(symbol, title)
-            detection['ai_score'] = score
-
-            if score < self.config.ai_min_score:
-                detection['status'] = 'filtered'
-                detection['action'] = f'Skipped (AI score {score}% < {self.config.ai_min_score}%)'
-                log.info(f"Sniper filtered {symbol} — AI score {score}% too low")
-                self.recent_detections.insert(0, detection)
-                return
+        self.recent_detections.insert(0, detection)
+        log.info(f"Processing new listing: {symbol} via {source}")
 
         # Risk check
         approved, reason = self.risk_manager.check_snipe(symbol)
         if not approved:
             detection['status'] = 'blocked'
             detection['action'] = f'Risk blocked: {reason}'
-            self.recent_detections.insert(0, detection)
+            log.info(f"Sniper blocked {symbol}: {reason}")
             return
 
-        # Approval mode — send Telegram alert and wait
+        # Approval mode — log and notify only
         if self.config.approval_mode:
-            self._send_telegram_alert(symbol, detection.get('ai_score', '?'), title)
-            detection['status'] = 'pending_approval'
-            detection['action'] = 'Telegram alert sent — awaiting approval'
-            self.recent_detections.insert(0, detection)
+            detection['status'] = 'pending'
+            detection['action'] = 'Waiting — approval mode ON'
+            self._send_telegram(symbol, title)
+            log.info(f"Sniper found {symbol} — approval mode ON, not auto-buying")
             return
 
-        # Auto mode — execute immediately
-        self._execute_snipe(symbol, detection)
+        # Auto mode — execute in background thread
+        detection['status'] = 'buying'
+        detection['action'] = f'Auto-buying ${self.config.sniper_budget_usdt}'
+        t = Thread(target=self._execute_snipe, args=(symbol, detection), daemon=True)
+        t.start()
 
     def _execute_snipe(self, symbol: str, detection: dict):
         """Execute the snipe trade"""
         try:
-            # Wait for trading to open
-            self._wait_for_trading(symbol)
+            # Wait up to 30s for trading to open
+            for _ in range(30):
+                try:
+                    self.trader.client.get_symbol_ticker(symbol=symbol)
+                    break
+                except Exception:
+                    time.sleep(1)
 
             result = self.trader.snipe_listing(symbol, self.config.sniper_budget_usdt)
-            if result['success']:
+            if result.get('success'):
                 detection['status'] = 'bought'
-                detection['action'] = f"Bought ${self.config.sniper_budget_usdt} worth"
+                detection['action'] = f"Bought ${self.config.sniper_budget_usdt:.0f}"
                 log.info(f"Snipe executed: {symbol}")
-
-                # Set stop loss and take profit monitoring
-                from threading import Thread
-                monitor = Thread(
-                    target=self._monitor_snipe_position,
-                    args=(symbol, result),
-                    daemon=True
-                )
-                monitor.start()
+                # Monitor in background
+                Thread(target=self._monitor_position, args=(symbol,), daemon=True).start()
             else:
                 detection['status'] = 'failed'
-                detection['action'] = f"Trade failed: {result.get('error')}"
-
+                detection['action'] = f"Failed: {result.get('error', 'unknown')}"
         except Exception as e:
             detection['status'] = 'error'
             detection['action'] = str(e)
-            log.error(f"Snipe execution error for {symbol}: {e}")
+            log.error(f"Snipe error for {symbol}: {e}")
 
-        self.recent_detections.insert(0, detection)
-
-    def _wait_for_trading(self, symbol: str, max_wait: int = 60):
-        """Wait until the symbol is tradeable"""
-        for _ in range(max_wait):
-            try:
-                self.trader.client.get_symbol_ticker(symbol=symbol)
-                return
-            except Exception:
-                time.sleep(1)
-
-    def _monitor_snipe_position(self, symbol: str, order: dict):
-        """Monitor a sniped position for TP/SL"""
+    def _monitor_position(self, symbol: str):
+        """Monitor sniped position for TP/SL"""
+        tp = self.config.sniper_tp_pct / 100
+        sl = self.config.sniper_sl_pct / 100
         buy_price = None
-        tp_pct = self.config.sniper_tp_pct / 100
-        sl_pct = self.config.sniper_sl_pct / 100
-        max_hold_minutes = 30
-
         start = time.time()
-        while time.time() - start < max_hold_minutes * 60:
+        max_hold = 30 * 60  # 30 minutes
+
+        while time.time() - start < max_hold:
             try:
-                ticker = self.trader.client.get_symbol_ticker(symbol=symbol)
-                current_price = float(ticker['price'])
-
+                price = float(self.trader.client.get_symbol_ticker(symbol=symbol)['price'])
                 if buy_price is None:
-                    buy_price = current_price
-                    log.info(f"Snipe {symbol} — buy price: ${buy_price:.6f}")
+                    buy_price = price
                     continue
-
-                change = (current_price - buy_price) / buy_price
-                log.debug(f"Snipe {symbol} — change: {change*100:.2f}%")
-
-                if change >= tp_pct:
-                    log.info(f"Snipe TP hit for {symbol}: +{change*100:.1f}%")
-                    self.trader.execute_trade(f"{symbol.replace('USDT', '')}/USDT", 'sell', 100)
+                change = (price - buy_price) / buy_price
+                if change >= tp:
+                    log.info(f"Snipe TP hit {symbol}: +{change*100:.1f}%")
+                    self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
                     return
-
-                if change <= -sl_pct:
-                    log.info(f"Snipe SL hit for {symbol}: {change*100:.1f}%")
-                    self.trader.execute_trade(f"{symbol.replace('USDT', '')}/USDT", 'sell', 100)
+                if change <= -sl:
+                    log.info(f"Snipe SL hit {symbol}: {change*100:.1f}%")
+                    self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
                     return
-
             except Exception as e:
-                log.warning(f"Snipe monitor error: {e}")
-
+                log.debug(f"Monitor error {symbol}: {e}")
             time.sleep(5)
 
-        # Time limit reached — force sell
-        log.info(f"Snipe time limit reached for {symbol} — force selling")
+        # Time limit — force sell
+        log.info(f"Snipe time limit {symbol} — selling")
         try:
-            self.trader.execute_trade(f"{symbol.replace('USDT', '')}/USDT", 'sell', 100)
+            self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
         except Exception as e:
             log.error(f"Force sell failed: {e}")
 
-    def _ai_score_listing(self, symbol: str, title: str) -> int:
-        """Use Claude to score a new listing's potential"""
-        try:
-            response = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 200,
-                    "messages": [{
-                        "role": "user",
-                        "content": f"""Rate this new Binance listing from 0-100 based on sniping potential:
-Symbol: {symbol}
-Announcement: {title}
-
-Consider: liquidity risk, pump potential, rug pull risk, project legitimacy signals.
-Return ONLY a JSON: {{"score": 0-100, "reason": "brief reason"}}"""
-                    }]
-                },
-                timeout=15
-            )
-            data = response.json()
-            text = data['content'][0]['text']
-            result = json.loads(text[text.find('{'):text.rfind('}')+1])
-            return int(result.get('score', 50))
-        except Exception:
-            return 50  # Default neutral score
-
-    def _send_telegram_alert(self, symbol: str, ai_score, title: str):
-        """Send Telegram notification for approval"""
+    def _send_telegram(self, symbol: str, title: str):
         if not self.config.telegram_token or not self.config.telegram_chat_id:
             return
-        msg = (
-            f"🎯 *New Listing Detected!*\n\n"
-            f"Symbol: `{symbol}`\n"
-            f"AI Score: *{ai_score}/100*\n"
-            f"Source: {title[:80]}\n\n"
-            f"Max spend: ${self.config.sniper_budget_usdt}\n"
-            f"TP: +{self.config.sniper_tp_pct}% | SL: -{self.config.sniper_sl_pct}%\n\n"
-            f"Reply /buy_{symbol} to execute or /skip to ignore"
-        )
         try:
+            msg = (
+                f"🎯 *New Listing Detected!*\n\n"
+                f"Symbol: `{symbol}`\n"
+                f"Source: {title[:80]}\n\n"
+                f"Budget: ${self.config.sniper_budget_usdt} | "
+                f"TP: +{self.config.sniper_tp_pct}% | SL: -{self.config.sniper_sl_pct}%\n\n"
+                f"⚠️ Approval mode ON — not auto-buying"
+            )
             requests.post(
                 f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
-                json={
-                    'chat_id': self.config.telegram_chat_id,
-                    'text': msg,
-                    'parse_mode': 'Markdown'
-                },
+                json={'chat_id': self.config.telegram_chat_id, 'text': msg, 'parse_mode': 'Markdown'},
                 timeout=5
             )
         except Exception as e:
-            log.warning(f"Telegram alert failed: {e}")
+            log.debug(f"Telegram failed: {e}")
