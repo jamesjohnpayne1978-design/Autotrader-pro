@@ -272,6 +272,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="setting-row"><div class="setting-info"><div class="setting-label">MA Cross</div><div class="setting-desc">Use Golden/Death Cross signals</div></div><div class="toggle on" id="maCrossToggle" onclick="toggleMaCross()"><div class="toggle-thumb"></div></div></div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">MACD Signals</div><div class="setting-desc">Include MACD crossover signals</div></div><div class="toggle on" id="macdToggle" onclick="toggleMacd()"><div class="toggle-thumb"></div></div></div>
   </div>
+  <div class="section-title">Pyramiding</div>
+  <div class="card">
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Pyramid Mode</div><div class="setting-desc">Add to winning positions on dips</div></div><div class="toggle on" id="pyramidToggle" onclick="togglePyramid()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Adds Per Pair</div><div class="setting-desc">Max extra buys per position (2 = 3 total)</div></div><input class="setting-input" id="pyramidMaxAdds" value="2" type="number" min="1" max="3"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Add Trigger</div><div class="setting-desc">% drop from last buy to trigger add</div></div><input class="setting-input" id="pyramidTrigger" value="4" type="number"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Drawdown</div><div class="setting-desc">Never add if down more than this %</div></div><input class="setting-input" id="pyramidMaxDrop" value="10" type="number"></div>
+  </div>
   <div style="text-align:center;padding:24px 0;"><button class="btn" style="background:var(--blue);color:white;padding:14px 40px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="saveSettings()">Save Settings</button></div>
 </div>
 
@@ -329,7 +336,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <script>
 const API_BASE=window.location.origin;
 let portfolioChart=null,chartRange='24h',allSnapshots=[];
-let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true};
+let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true};
 
 function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights()}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
@@ -399,10 +406,11 @@ function toggleApproval(){state.approvalMode=toggle('approvalToggle')}
 function toggleAutoMode(){state.autoMode=toggle('autoModeToggle');showToast(state.autoMode?'Full auto mode ON':'Approval mode ON')}
 function toggleTelegram(){state.telegram=toggle('telegramToggle')}
 function toggleMaCross(){state.maCross=toggle('maCrossToggle')}
+function togglePyramid(){state.pyramid=toggle('pyramidToggle');showToast(state.pyramid?'Pyramiding ON':'Pyramiding OFF')}
 function toggleMacd(){state.macd=toggle('macdToggle')}
 
 function saveSettings(){
-  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode};
+  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode,pyramid_enabled:state.pyramid,pyramid_max_adds:document.getElementById('pyramidMaxAdds').value,pyramid_drop_trigger:document.getElementById('pyramidTrigger').value,pyramid_max_drop:document.getElementById('pyramidMaxDrop').value};
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)}).then(r=>r.json()).then(d=>{showToast(d.success?'Settings saved!':'Save failed')}).catch(()=>showToast('Save failed'));
 }
 
