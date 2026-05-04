@@ -163,6 +163,30 @@ class SignalEngine:
                 log.info(f"Auto-execute blocked {pair}: {reason}")
                 continue
             try:
+                # Check if we should pyramid (add to existing position)
+                if action == 'buy' and getattr(self.config, 'pyramid_enabled', False):
+                    try:
+                        sym = pair.replace('/', '')
+                        prices = self.trader.client.get_symbol_ticker(symbol=sym)
+                        current_price = float(prices['price'])
+                        should_add, reason = self.trader.should_pyramid(sym, current_price)
+                        if should_add:
+                            # Extra safety: only pyramid if signal confidence is decent
+                            if confidence < 68:
+                                log.info(f"Pyramid skipped for {pair}: confidence {confidence}% too low")
+                                self.risk_manager.release_lock(pair)
+                                continue
+                            log.info(f"Pyramid opportunity for {pair}: {reason}")
+                            # Use smaller pyramid size
+                            pyramid_pct = getattr(self.config, 'pyramid_size_pct', 3.0)
+                            result = self.trader.execute_trade(pair, 'buy', pyramid_pct)
+                            self.risk_manager.record_trade(pair)
+                            log.info(f"Pyramid buy executed for {pair}: {result}")
+                            self.risk_manager.release_lock(pair)
+                            continue
+                    except Exception as e:
+                        log.debug(f"Pyramid check error for {pair}: {e}")
+
                 # Skip sell if we have no holdings
                 if action == 'sell':
                     try:
