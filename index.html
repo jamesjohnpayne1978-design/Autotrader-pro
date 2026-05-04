@@ -283,6 +283,31 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <button class="nav-item" id="nav-settings" onclick="showPage('settings')"><span>⚙️</span>Settings</button>
 </nav>
 
+<div class="modal-overlay" id="pairModal">
+  <div class="modal" style="padding:0;border-radius:var(--radius) var(--radius) 0 0;overflow:hidden;max-height:85vh;display:flex;flex-direction:column">
+    <div style="padding:20px 20px 0;background:var(--surface)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div style="font-size:1.1rem;font-weight:700;font-family:var(--mono)" id="pairModalTitle">BTC/USDT</div>
+        <button onclick="document.getElementById('pairModal').classList.remove('show')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:8px;color:var(--text-2);font-size:0.85rem;padding:6px 12px;cursor:pointer">✕ Close</button>
+      </div>
+      <div style="display:flex;gap:16px;margin-bottom:16px">
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">Price</div><div style="font-family:var(--mono);font-weight:700;font-size:1.1rem" id="pairModalPrice">-</div></div>
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">24h</div><div style="font-family:var(--mono);font-weight:600;font-size:1.1rem" id="pairModalChange">-</div></div>
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">Holdings</div><div style="font-family:var(--mono);font-weight:600;font-size:1.1rem" id="pairModalHoldings">-</div></div>
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">P&L</div><div style="font-family:var(--mono);font-weight:600;font-size:1.1rem" id="pairModalPnl">-</div></div>
+      </div>
+      <canvas id="pairChart" height="140" style="width:100%"></canvas>
+    </div>
+    <div style="padding:16px 20px;overflow-y:auto;flex:1">
+      <div style="font-size:0.7rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px">Trade History</div>
+      <div id="pairModalTrades"><div style="color:var(--text-2);font-size:0.85rem;padding:8px 0">Loading...</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px">
+        <button class="btn" style="background:var(--green);color:#000;padding:14px;font-size:0.9rem;" onclick="manualFromPair('buy')">✓ Buy</button>
+        <button class="btn" style="background:var(--red);color:white;padding:14px;font-size:0.9rem;" onclick="manualFromPair('sell')">✕ Sell</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="modal-overlay" id="tradeModal">
   <div class="modal">
     <div class="modal-title" id="tradeModalTitle">Manual Trade</div>
@@ -323,7 +348,7 @@ async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadCh
 async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const pnl=d.pnl_today||0;const pct=d.pnl_pct||0;const el=document.getElementById('portfolioPnl');el.textContent='Today: '+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+pct.toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');document.getElementById('tradesToday').textContent=d.trades_today||0;document.getElementById('winRate').textContent=d.win_rate?d.win_rate+'%':'-';document.getElementById('openPositions').textContent=d.open_positions||0;document.getElementById('freeUsdt').textContent='$'+(d.free_usdt||0).toFixed(0);state.apiConnected=true;updateApiStatus(true)}catch(e){}}
 
 async function loadPrices(){try{const r=await fetch(API_BASE+'/api/prices');const d=await r.json();renderPairs(d.pairs)}catch(e){}}
-function renderPairs(pairs){if(!pairs||!pairs.length){document.getElementById('pairsCard').innerHTML='<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.9rem;">No pairs loaded.</div>';return}const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',RENDER:'R',LINK:'🔗',ARB:'A'};document.getElementById('pairsCard').innerHTML=pairs.map(p=>{let gainHtml='';if(p.gain_pct!==null&&p.gain_pct!==undefined&&p.value_usdt>=1.0){const g=p.gain_pct;const toTp=p.to_tp;const gainCls=g>=0?'up':'down';const tpColor=toTp!==null&&toTp<=1?'var(--green)':toTp!==null&&toTp<=3?'var(--gold)':'var(--text-2)';gainHtml='<div style="font-size:0.72rem;margin-top:4px;font-family:var(--mono);display:flex;gap:8px;"><span class="'+gainCls+'">'+(g>=0?'+':'')+g.toFixed(2)+'%</span><span style="color:var(--text-3)">·</span><span style="color:'+tpColor+'">'+(toTp!==null?'TP in '+toTp.toFixed(2)+'%':'')+'</span></div>'}return'<div class="pair-row"><div class="pair-info"><div class="pair-icon">'+(icons[p.base]||'●')+'</div><div><div class="pair-name">'+p.symbol+'</div><div class="pair-holdings">'+p.holdings+' '+p.base+' · $'+p.value_usdt+'</div>'+gainHtml+'</div></div><div class="pair-prices"><div class="pair-price">$'+Number(p.price).toLocaleString()+'</div><div class="pair-change '+(p.change>=0?'up':'down')+'">'+(p.change>=0?'+':'')+p.change+'%</div></div></div>'}).join('')}
+function renderPairs(pairs){if(!pairs||!pairs.length){document.getElementById('pairsCard').innerHTML='<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.9rem;">No pairs loaded.</div>';return}const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',RENDER:'R',LINK:'🔗',ARB:'A'};document.getElementById('pairsCard').innerHTML=pairs.map(p=>{let gainHtml='';if(p.gain_pct!==null&&p.gain_pct!==undefined&&p.value_usdt>=1.0){const g=p.gain_pct;const toTp=p.to_tp;const gainCls=g>=0?'up':'down';const tpColor=toTp!==null&&toTp<=1?'var(--green)':toTp!==null&&toTp<=3?'var(--gold)':'var(--text-2)';gainHtml='<div style="font-size:0.72rem;margin-top:4px;font-family:var(--mono);display:flex;gap:8px;"><span class="'+gainCls+'">'+(g>=0?'+':'')+g.toFixed(2)+'%</span><span style="color:var(--text-3)">·</span><span style="color:'+tpColor+'">'+(toTp!==null?'TP in '+toTp.toFixed(2)+'%':'')+'</span></div>'}return'<div class="pair-row" onclick="openPairModal(\''+p.symbol+'\',\''+p.base+'\')" style="cursor:pointer"><div class="pair-info"><div class="pair-icon">'+(icons[p.base]||'●')+'</div><div><div class="pair-name">'+p.symbol+'</div><div class="pair-holdings">'+p.holdings+' '+p.base+' · $'+p.value_usdt+'</div>'+gainHtml+'</div></div><div class="pair-prices"><div class="pair-price">$'+Number(p.price).toLocaleString()+'</div><div class="pair-change '+(p.change>=0?'up':'down')+'">'+(p.change>=0?'+':'')+p.change+'%</div></div></div>'}).join('')}
 
 async function loadSignals(){document.getElementById('signalsContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Analysing market...</div>';try{const r=await fetch(API_BASE+'/api/signals');const d=await r.json();renderSignals(d.signals)}catch(e){}}
 function renderSignals(signals){if(!signals||!signals.length){document.getElementById('signalsContainer').innerHTML='<div class="card" style="text-align:center;padding:20px;color:var(--text-2);font-size:0.9rem;">No strong signals. Watching...</div>';return}document.getElementById('signalsContainer').innerHTML=signals.map(s=>'<div class="signal-card '+s.action+'"><div class="signal-header"><div class="signal-pair">'+s.pair+'</div><div class="signal-badge '+s.action+'">'+s.action.toUpperCase()+'</div></div><div class="signal-reason">'+s.reason+'</div><div class="confidence-bar"><div class="confidence-fill '+s.action+'" style="width:'+s.confidence+'%"></div></div><div class="confidence-label"><span>AI Confidence</span><span>'+s.confidence+'%</span></div><div class="indicators"><div class="indicator"><div class="indicator-name">RSI</div><div class="indicator-value '+(s.rsi<35?'up':s.rsi>70?'down':'')+'">'+s.rsi+'</div></div><div class="indicator"><div class="indicator-name">MACD</div><div class="indicator-value '+(s.macd==='bullish'?'up':'down')+'">'+s.macd+'</div></div><div class="indicator"><div class="indicator-name">Trend</div><div class="indicator-value '+(s.trend==='up'?'up':'down')+'">'+s.trend+'</div></div></div>'+(!state.autoMode?'<div class="signal-actions" style="margin-top:14px;"><button class="btn btn-execute" onclick="executeTrade(\''+s.pair+'\',\''+s.action+'\','+s.confidence+')">✓ Execute</button><button class="btn btn-skip" onclick="skipSignal(\''+s.pair+'\')">✕ Skip</button></div>':'<div style="font-size:0.7rem;color:var(--green);margin-top:10px;font-family:var(--mono);">⚡ Auto-executing...</div>')+'</div>').join('')}
@@ -383,7 +408,136 @@ function saveSettings(){
 
 async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
 
-async function openTradeModal(){
+let pairChart2=null;
+let currentPairSymbol='';
+
+async function openPairModal(symbol, base){
+  currentPairSymbol = symbol;
+  document.getElementById('pairModal').classList.add('show');
+  document.getElementById('pairModalTitle').textContent = symbol;
+  document.getElementById('pairModalTrades').innerHTML='<div style="color:var(--text-2);font-size:0.85rem;padding:8px 0">Loading...</div>';
+
+  // Load prices for this pair's stats
+  try{
+    const r=await fetch(API_BASE+'/api/prices');
+    const d=await r.json();
+    const pair=d.pairs&&d.pairs.find(p=>p.symbol===symbol||p.base===base);
+    if(pair){
+      document.getElementById('pairModalPrice').textContent='$'+Number(pair.price).toLocaleString();
+      const chEl=document.getElementById('pairModalChange');
+      chEl.textContent=(pair.change>=0?'+':'')+pair.change+'%';
+      chEl.style.color=pair.change>=0?'var(--green)':'var(--red)';
+      document.getElementById('pairModalHoldings').textContent='$'+pair.value_usdt;
+    }
+  }catch(e){}
+
+  // Load trade history for this pair
+  try{
+    const r=await fetch(API_BASE+'/api/history');
+    const d=await r.json();
+    const trades=(d.trades||[]).filter(t=>t.pair===symbol);
+
+    // Calculate total PnL for this pair
+    const totalPnl=trades.filter(t=>t.side==='sell').reduce((s,t)=>s+(t.pnl||0),0);
+    const pnlEl=document.getElementById('pairModalPnl');
+    pnlEl.textContent=(totalPnl>=0?'+':'')+' $'+totalPnl.toFixed(2);
+    pnlEl.style.color=totalPnl>=0?'var(--green)':'var(--red)';
+
+    // Render trade history rows
+    if(trades.length){
+      document.getElementById('pairModalTrades').innerHTML=trades.slice(0,15).map(t=>{
+        const pnl=t.pnl||0;
+        const detail=t.side==='buy'?('$'+(t.usdt_value||0).toFixed(2)+' @ $'+(t.price||0).toFixed(t.price>100?0:2)):((t.quantity||0).toFixed(4)+' sold');
+        return'<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">'
+          +'<div style="display:flex;align-items:center;gap:10px">'
+            +'<div style="width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;background:'+(t.side==='buy'?'var(--green-dim)':'var(--red-dim)')+';color:'+(t.side==='buy'?'var(--green)':'var(--red)')+';">'+(t.side==='buy'?'B':'S')+'</div>'
+            +'<div><div style="font-size:0.8rem;font-family:var(--mono);font-weight:600">'+t.time+'</div><div style="font-size:0.68rem;color:var(--text-3);font-family:var(--mono)">'+detail+'</div></div>'
+          +'</div>'
+          +'<div style="font-family:var(--mono);font-size:0.85rem;font-weight:600;color:'+(pnl>=0?'var(--green)':'var(--red)')+'">'+( t.side==='sell'?(pnl>=0?'+':'')+' $'+pnl.toFixed(2):'')+'</div>'
+        +'</div>';
+      }).join('');
+    } else {
+      document.getElementById('pairModalTrades').innerHTML='<div style="color:var(--text-2);font-size:0.85rem;padding:8px 0">No trades yet for this pair.</div>';
+    }
+
+    // Draw price chart using trade buy/sell points
+    drawPairChart(trades);
+
+  }catch(e){
+    document.getElementById('pairModalTrades').innerHTML='<div style="color:var(--text-2);font-size:0.85rem">Could not load history.</div>';
+  }
+}
+
+function drawPairChart(trades){
+  if(pairChart2){pairChart2.destroy();pairChart2=null;}
+  const canvas=document.getElementById('pairChart');
+  if(!trades||!trades.length){canvas.style.display='none';return;}
+  canvas.style.display='block';
+
+  // Build price points from trades
+  const points=trades.slice().reverse().map(t=>({
+    x:t.time,
+    y:t.price||0,
+    side:t.side
+  })).filter(p=>p.y>0);
+
+  if(points.length<1){canvas.style.display='none';return;}
+
+  const labels=points.map(p=>p.x.slice(5,16)); // MM-DD HH:MM
+  const vals=points.map(p=>p.y);
+  const pointColors=points.map(p=>p.side==='buy'?'#0dffaa':'#ff4466');
+  const pointRadius=points.map(()=>5);
+
+  const ctx=canvas.getContext('2d');
+  pairChart2=new Chart(ctx,{
+    type:'line',
+    data:{
+      labels,
+      datasets:[{
+        data:vals,
+        borderColor:'rgba(77,159,255,0.6)',
+        borderWidth:2,
+        pointBackgroundColor:pointColors,
+        pointRadius:pointRadius,
+        pointHoverRadius:7,
+        tension:0.3,
+        fill:false
+      }]
+    },
+    options:{
+      responsive:true,
+      plugins:{
+        legend:{display:false},
+        tooltip:{
+          callbacks:{
+            label:(c)=>{
+              const pt=points[c.dataIndex];
+              return (pt.side==='buy'?'BUY':'SELL')+' $'+c.parsed.y.toLocaleString();
+            }
+          }
+        }
+      },
+      scales:{
+        x:{display:false},
+        y:{
+          display:true,
+          grid:{color:'rgba(100,160,255,0.05)'},
+          ticks:{color:'rgba(136,153,187,0.6)',font:{size:10},callback:(v)=>'$'+v.toLocaleString()}
+        }
+      }
+    }
+  });
+}
+
+function manualFromPair(side){
+  // Pre-select this pair in the trade modal
+  document.getElementById('pairModal').classList.remove('show');
+  openTradeModal(currentPairSymbol).then(()=>{
+    submitManualTrade(side);
+  });
+}
+
+async function openTradeModal(preselect){
   // Load current pairs dynamically
   try{
     const r=await fetch(API_BASE+'/api/prices');
@@ -404,6 +558,7 @@ async function openTradeModal(){
     }catch(e2){}
   }
   document.getElementById('tradeModal').classList.add('show');
+  if(preselect){const sel=document.getElementById('tradePairSelect');if(sel){for(let o of sel.options){if(o.value===preselect||o.text===preselect.replace('USDT','/USDT')){o.selected=true;break;}}}}
 }
 
 async function submitManualTrade(side){
