@@ -469,6 +469,12 @@ class Trader:
             'price': round(price, 6), 'quantity': round(quantity, 6),
             'pnl': pnl, 'trigger': 'AI Signal'
         }
+        # Track pyramid state
+        if action == 'buy':
+            self.record_pyramid_buy(symbol, price)
+        elif action == 'sell':
+            self.reset_pyramid_state(symbol)
+
         history = self.config.load_trade_history()
         history.insert(0, trade)
         self.config.save_trade_history(history[:500])
