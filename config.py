@@ -171,6 +171,7 @@ class Config:
             'trade_cooldown_minutes': self.trade_cooldown_minutes,
             'rsi_buy': self.rsi_buy,
             'rsi_sell': self.rsi_sell,
+            'trading_pairs': self.trading_pairs,
         }
 
     def load_trade_history(self):
