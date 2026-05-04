@@ -197,7 +197,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   </div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
     <div class="section-title" style="margin:0">Active Pairs</div>
-    <button onclick="document.getElementById('tradeModal').classList.add('show')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--blue-bright);font-family:var(--sans);font-size:0.75rem;font-weight:600;padding:7px 14px;cursor:pointer">+ Manual Trade</button>
+    <button onclick="openTradeModal()" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--blue-bright);font-family:var(--sans);font-size:0.75rem;font-weight:600;padding:7px 14px;cursor:pointer">+ Manual Trade</button>
   </div>
   <div class="card" id="pairsCard"><div class="loading-row"><div class="spinner"></div> Loading prices...</div></div>
   <div class="section-title">AI Signals</div>
@@ -289,9 +289,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px">
       <div style="font-size:0.75rem;color:var(--text-2);margin-bottom:6px">Pair</div>
       <select id="tradePairSelect" style="width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--mono);font-size:1rem;padding:10px 14px">
-        <option>BTCUSDT</option><option>ETHUSDT</option><option>BNBUSDT</option>
-        <option>SOLUSDT</option><option>XRPUSDT</option><option>LINKUSDT</option>
-        <option>ARBUSDT</option><option>RENDERUSDT</option><option>AVAXUSDT</option>
+        <option>Loading pairs...</option>
       </select>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
@@ -384,6 +382,29 @@ function saveSettings(){
 }
 
 async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
+
+async function openTradeModal(){
+  // Load current pairs dynamically
+  try{
+    const r=await fetch(API_BASE+'/api/prices');
+    const d=await r.json();
+    const sel=document.getElementById('tradePairSelect');
+    if(d.pairs&&d.pairs.length){
+      sel.innerHTML=d.pairs.map(p=>`<option value="${p.symbol.replace('/','')}">${p.symbol}</option>`).join('');
+    }
+  }catch(e){
+    // fallback - load from settings
+    try{
+      const r=await fetch(API_BASE+'/api/settings');
+      const d=await r.json();
+      if(d.trading_pairs&&d.trading_pairs.length){
+        const sel=document.getElementById('tradePairSelect');
+        sel.innerHTML=d.trading_pairs.map(p=>`<option value="${p}">${p.replace('USDT','/USDT')}</option>`).join('');
+      }
+    }catch(e2){}
+  }
+  document.getElementById('tradeModal').classList.add('show');
+}
 
 async function submitManualTrade(side){
   const pair=document.getElementById('tradePairSelect').value;
