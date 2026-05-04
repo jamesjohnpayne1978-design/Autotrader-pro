@@ -53,6 +53,13 @@ class Config:
         self.default_sl_pct = 3.0
         self.default_tp_pct = 6.0
         self.dynamic_tp = 6.0
+
+        # Pyramiding settings
+        self.pyramid_enabled = True
+        self.pyramid_max_adds = 2          # Max 2 additional buys per pair (3 total)
+        self.pyramid_drop_trigger = 4.0    # Add when price drops 4% from last buy
+        self.pyramid_max_drop = 10.0       # Never add if down more than 10% from first buy
+        self.pyramid_size_pct = 3.0        # Each add uses 3% of portfolio (smaller than initial 5%)
         self.max_open_positions = 6
         self.trade_cooldown_minutes = int(os.environ.get('TRADE_COOLDOWN_MINUTES', '60'))
 
@@ -149,6 +156,14 @@ class Config:
             self.sniper_sl_pct = float(data['sniper_sl'])
         if 'trade_cooldown_minutes' in data:
             self.trade_cooldown_minutes = int(data['trade_cooldown_minutes'])
+        if 'pyramid_enabled' in data:
+            self.pyramid_enabled = bool(data['pyramid_enabled'])
+        if 'pyramid_max_adds' in data:
+            self.pyramid_max_adds = int(data['pyramid_max_adds'])
+        if 'pyramid_drop_trigger' in data:
+            self.pyramid_drop_trigger = float(data['pyramid_drop_trigger'])
+        if 'pyramid_max_drop' in data:
+            self.pyramid_max_drop = float(data['pyramid_max_drop'])
         self.save()
 
     def save(self):
@@ -172,6 +187,10 @@ class Config:
             'rsi_buy': self.rsi_buy,
             'rsi_sell': self.rsi_sell,
             'trading_pairs': self.trading_pairs,
+            'pyramid_enabled': self.pyramid_enabled,
+            'pyramid_max_adds': self.pyramid_max_adds,
+            'pyramid_drop_trigger': self.pyramid_drop_trigger,
+            'pyramid_max_drop': self.pyramid_max_drop,
         }
 
     def load_trade_history(self):
