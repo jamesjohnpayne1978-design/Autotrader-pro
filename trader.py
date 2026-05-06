@@ -311,10 +311,18 @@ class Trader:
             if quantity <= 0:
                 raise ValueError(f"Calculated quantity is zero for {symbol}")
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
-            buy_price = float(order.get('fills', [{}])[0].get('price', price)) if order.get('fills') else price
+            # Calculate weighted average fill price across all fills
+            fills = order.get('fills', [])
+            if fills:
+                total_qty = sum(float(f['qty']) for f in fills)
+                buy_price = sum(float(f['price']) * float(f['qty']) for f in fills) / total_qty if total_qty > 0 else price
+            else:
+                buy_price = price
+            log.info(f"Fill price for {symbol}: ${buy_price:.6f} ({len(fills)} fills)")
             log.info(f"BUY {symbol}: qty={quantity} at ${buy_price:.6f}")
             self._last_trade_time[pair] = datetime.now()
-            self._log_trade(pair, 'buy', order, buy_price, quantity)
+            usdt_spent = buy_price * quantity
+            self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
             self._place_oco_order(symbol, pair, quantity, buy_price)
 
         elif action == 'sell':
@@ -460,13 +468,14 @@ class Trader:
             log.error(f"Quantity adjustment error: {e}")
             return round(quantity, 5)
 
-    def _log_trade(self, pair, action, order, price=0, quantity=0, pnl=0):
+    def _log_trade(self, pair, action, order, price=0, quantity=0, pnl=0, usdt_value=None):
         trade = {
             'pair': pair, 'side': action,
             'time': datetime.now().strftime('%Y-%m-%d %H:%M'),
             'date': datetime.now().strftime('%Y-%m-%d'),
             'orderId': order['orderId'], 'status': order['status'],
             'price': round(price, 6), 'quantity': round(quantity, 6),
+            'usdt_value': round(usdt_value if usdt_value else price * quantity, 2),
             'pnl': pnl, 'trigger': 'AI Signal'
         }
         # Track pyramid state
