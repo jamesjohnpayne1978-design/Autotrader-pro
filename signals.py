@@ -32,6 +32,12 @@ class SignalEngine:
             try:
                 self.detect_market_regime()
                 self.refresh_signals()
+                # Check trailing stops every cycle
+                try:
+                    if self.trader:
+                        self.trader.check_all_trailing_stops()
+                except Exception as e:
+                    log.debug(f"Trailing stop check error: {e}")
             except Exception as e:
                 log.error(f"Signal refresh error: {e}")
             time.sleep(300)
@@ -217,6 +223,12 @@ class SignalEngine:
     def get_latest_signals(self):
         if not self.latest_signals:
             self.refresh_signals()
+            # Check trailing stops every cycle
+            try:
+                if self.trader:
+                    self.trader.check_all_trailing_stops()
+            except Exception as e:
+                log.debug(f"Trailing stop check error: {e}")
         return self.latest_signals
 
     def analyse_pair(self, symbol):
@@ -337,10 +349,18 @@ class SignalEngine:
                 action = 'hold'
                 confidence = 40
             else:
-                action = 'buy'
-                confidence += 15
-                if price > ma50:
-                    confidence += 10  # Extra confidence if above 50MA
+                # Volume filter: only buy if volume is elevated (confirms momentum)
+                if volume_ratio < 0.8:
+                    log.info(f"Volume filter: {symbol} volume too low ({volume_ratio:.1f}x avg) — skipping buy")
+                    action = 'hold'
+                    confidence = 45
+                else:
+                    action = 'buy'
+                    confidence += 15
+                    if price > ma50:
+                        confidence += 10  # Extra confidence if above 50MA
+                    if volume_ratio > 1.5:
+                        confidence += 8   # High volume confirmation bonus
         elif rsi > rsi_sell_threshold:
             reasons.append("RSI overbought at " + str(round(rsi, 1)))
             action = 'sell'
