@@ -372,6 +372,83 @@ def get_insights():
     })
 
 
+@app.route('/api/stats')
+def get_stats():
+    """Per-pair win rate, PnL calendar, and portfolio allocation"""
+    try:
+        trades = trader.get_real_trade_history() if trader else []
+        prices = trader.get_prices() if trader else []
+
+        # Per-pair stats
+        pair_stats = {}
+        for t in trades:
+            pair = t.get('pair', '')
+            if not pair:
+                continue
+            if pair not in pair_stats:
+                pair_stats[pair] = {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'trades': 0}
+            if t.get('side') == 'sell':
+                pnl = t.get('pnl', 0) or 0
+                pair_stats[pair]['total_pnl'] = round(pair_stats[pair]['total_pnl'] + pnl, 2)
+                pair_stats[pair]['trades'] += 1
+                if pnl > 0:
+                    pair_stats[pair]['wins'] += 1
+                elif pnl < 0:
+                    pair_stats[pair]['losses'] += 1
+
+        pair_performance = []
+        for pair, s in pair_stats.items():
+            total = s['wins'] + s['losses']
+            win_rate = round((s['wins'] / total * 100) if total > 0 else 0)
+            pair_performance.append({
+                'pair': pair,
+                'win_rate': win_rate,
+                'total_pnl': s['total_pnl'],
+                'trades': s['trades'],
+                'wins': s['wins'],
+                'losses': s['losses'],
+                'rating': 'good' if win_rate >= 60 and s['total_pnl'] > 0 else 'poor' if win_rate < 40 or s['total_pnl'] < -2 else 'ok'
+            })
+        pair_performance.sort(key=lambda x: x['total_pnl'], reverse=True)
+
+        # PnL calendar — last 30 days
+        from datetime import datetime, timedelta
+        calendar = {}
+        for i in range(30):
+            d = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+            calendar[d] = {'pnl': 0.0, 'trades': 0}
+        for t in trades:
+            if t.get('side') == 'sell':
+                d = t.get('date', '')
+                if d in calendar:
+                    pnl = t.get('pnl', 0) or 0
+                    calendar[d]['pnl'] = round(calendar[d]['pnl'] + pnl, 2)
+                    calendar[d]['trades'] += 1
+        calendar_list = [{'date': d, **v} for d, v in sorted(calendar.items())]
+
+        # Portfolio allocation
+        allocation = []
+        total_val = sum(p.get('value_usdt', 0) for p in prices) if prices else 0
+        for p in prices:
+            val = p.get('value_usdt', 0)
+            if val >= 1.0:
+                allocation.append({
+                    'symbol': p.get('symbol'),
+                    'value': val,
+                    'pct': round((val / total_val * 100) if total_val > 0 else 0, 1)
+                })
+        allocation.sort(key=lambda x: x['value'], reverse=True)
+
+        return jsonify({
+            'pair_performance': pair_performance,
+            'calendar': calendar_list,
+            'allocation': allocation
+        })
+    except Exception as e:
+        log.error(f"Stats error: {e}")
+        return jsonify({'pair_performance': [], 'calendar': [], 'allocation': []}), 200
+
+
 @app.route('/api/regime')
 def get_regime():
     if not signal_engine:
