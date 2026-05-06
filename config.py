@@ -53,6 +53,13 @@ class Config:
         self.default_sl_pct = 3.0
         self.default_tp_pct = 6.0
         self.dynamic_tp = 6.0
+        # Trailing stop settings
+        self.trailing_stop_enabled = True
+        self.trailing_stop_pct = 2.0          # Trail 2% below highest price
+        self.trailing_breakeven_trigger = 3.0  # Move to breakeven after 3% gain
+        # Volume filter
+        self.volume_filter_enabled = True
+        self.volume_filter_min = 0.8           # Min 0.8x average volume to buy
 
         # Pyramiding settings
         self.pyramid_enabled = True
