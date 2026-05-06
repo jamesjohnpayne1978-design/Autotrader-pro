@@ -130,6 +130,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .modal-input{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--mono);font-size:0.95rem;padding:14px 18px;margin-bottom:12px}
 .modal-note{font-size:0.72rem;color:var(--text-3);margin-bottom:12px}
 .modal-btn{width:100%;padding:16px;border-radius:var(--radius-sm);border:none;font-family:var(--sans);font-size:1rem;font-weight:700;cursor:pointer;background:var(--blue);color:white;margin-top:8px}
+/* STATS */
+.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:8px}
+.cal-day{height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.55rem;font-family:var(--mono);cursor:default;position:relative}
+.cal-day.positive{background:var(--green-dim);color:var(--green)}
+.cal-day.negative{background:var(--red-dim);color:var(--red)}
+.cal-day.neutral{background:var(--surface2);color:var(--text-3)}
+.cal-day.today{outline:2px solid var(--blue-bright)}
+.pair-stat-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)}
+.pair-stat-row:last-child{border-bottom:none}
+.pair-stat-name{font-family:var(--mono);font-weight:700;font-size:0.9rem}
+.pair-stat-meta{font-size:0.72rem;color:var(--text-2);margin-top:2px}
+.win-bar{height:6px;background:var(--surface2);border-radius:3px;margin-top:6px;overflow:hidden;width:100px}
+.win-fill{height:100%;border-radius:3px}
+.alloc-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
+.alloc-row:last-child{border-bottom:none}
+.alloc-bar{height:8px;background:var(--blue-dim);border-radius:4px;flex:1}
+.alloc-fill{height:100%;background:var(--blue-bright);border-radius:4px;transition:width 0.8s ease}
+.paper-badge{display:inline-block;background:rgba(255,179,64,0.2);color:var(--gold);border:1px solid rgba(255,179,64,0.3);border-radius:6px;font-size:0.65rem;font-family:var(--mono);font-weight:700;padding:2px 8px;margin-left:8px;letter-spacing:0.06em}
 /* INSIGHTS */
 .insight-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px}
 .insight-card.bullish{border-left:4px solid var(--green)}
@@ -158,7 +176,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 </style>
 </head>
 <body>
-<div class="topbar"><div class="topbar-logo">⚡ AUTOTRADER</div><div class="live-badge"><div class="live-dot"></div>LIVE</div><div class="settings-btn" onclick="showPage('settings')">⚙️</div></div>
+<div class="topbar"><div class="topbar-logo">⚡ AUTOTRADER<span class="paper-badge" id="paperBadge" style="display:none">PAPER</span></div><div class="live-badge"><div class="live-dot"></div>LIVE</div><div class="settings-btn" onclick="showPage('settings')">⚙️</div></div>
 <div class="toast" id="toast"></div>
 <div class="modal-overlay" id="apiModal"><div class="modal"><div class="modal-title">🔑 Connect Binance</div><input class="modal-input" id="apiKey" placeholder="API Key" type="password"><input class="modal-input" id="apiSecret" placeholder="API Secret" type="password"><div class="modal-note">Keys stored locally on your device only. Never shared.</div><button class="modal-btn" onclick="saveApiKeys()">Connect Account</button></div></div>
 
@@ -202,6 +220,32 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div class="card" id="pairsCard"><div class="loading-row"><div class="spinner"></div> Loading prices...</div></div>
   <div class="section-title">AI Signals</div>
   <div id="signalsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
+</div>
+
+<!-- STATS -->
+<div class="page" id="page-stats">
+  <div class="section-title">Portfolio Allocation</div>
+  <div class="card" id="allocCard"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div class="section-title">PnL Calendar — Last 30 Days</div>
+  <div class="card">
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:6px">
+      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">M</div>
+      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">T</div>
+      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">W</div>
+      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">T</div>
+      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">F</div>
+      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">S</div>
+      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">S</div>
+    </div>
+    <div class="calendar-grid" id="calendarGrid"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  </div>
+  <div class="section-title">Win Rate Per Pair</div>
+  <div class="card" id="pairStatsCard"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div class="section-title">Paper Trading</div>
+  <div class="card">
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Paper Mode</div><div class="setting-desc">Simulate trades without real orders — safe for testing</div></div><div class="toggle" id="paperToggle" onclick="togglePaper()"><div class="toggle-thumb"></div></div></div>
+    <div id="paperLog" style="display:none;margin-top:12px"><div style="font-size:0.72rem;color:var(--text-3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.1em">Simulated Trades</div><div id="paperTrades" style="font-size:0.8rem;font-family:var(--mono);color:var(--text-2)">No paper trades yet.</div></div>
+  </div>
 </div>
 
 <!-- INSIGHTS -->
@@ -285,8 +329,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <nav class="nav">
   <button class="nav-item active" id="nav-home" onclick="showPage('home')"><span>📊</span>Home</button>
   <button class="nav-item" id="nav-insights" onclick="showPage('insights')"><span>💡</span>Insights</button>
+  <button class="nav-item" id="nav-stats" onclick="showPage('stats')"><span>📈</span>Stats</button>
   <button class="nav-item" id="nav-history" onclick="showPage('history')"><span>📋</span>History</button>
-  <button class="nav-item" id="nav-sniper" onclick="showPage('sniper')"><span>🎯</span>Sniper</button>
   <button class="nav-item" id="nav-settings" onclick="showPage('settings')"><span>⚙️</span>Settings</button>
 </nav>
 
@@ -338,7 +382,7 @@ const API_BASE=window.location.origin;
 let portfolioChart=null,chartRange='24h',allSnapshots=[];
 let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true};
 
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights()}
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats()}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
 function showApiModal(){document.getElementById('apiModal').classList.add('show')}
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
@@ -397,7 +441,26 @@ async function loadInsights(){
   }
 }
 
-async function executeTrade(pair,action,confidence){showToast('Sending '+action.toUpperCase()+' for '+pair+'...');try{const r=await fetch(API_BASE+'/api/trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pair,action,confidence})});const d=await r.json();showToast(d.success?pair+' '+action+' executed!':'Error: '+d.error)}catch(e){showToast('Could not reach trading server')}}
+async function executeTrade(pair,action,confidence){
+  if(paperMode){
+    // Paper trade — simulate only
+    try{
+      const r=await fetch(API_BASE+'/api/prices');const d=await r.json();
+      const p=d.pairs&&d.pairs.find(x=>x.symbol===pair);
+      const price=p?p.price:0;
+      const trade={pair,side:action,price,confidence,time:new Date().toLocaleTimeString(),pnl:0};
+      // Simple PnL simulation vs last paper buy
+      const lastBuy=paperTrades.find(t=>t.pair===pair&&t.side==='buy');
+      if(action==='sell'&&lastBuy){trade.pnl=Math.round((price-lastBuy.price)*10*100)/100;}
+      paperTrades.unshift(trade);
+      renderPaperTrades();
+      showToast('📄 Paper '+action.toUpperCase()+' '+pair+' @ $'+price.toFixed(2));
+    }catch(e){showToast('Paper trade simulated')}
+    return;
+  }
+  showToast('Sending '+action.toUpperCase()+' for '+pair+'...');
+  try{const r=await fetch(API_BASE+'/api/trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pair,action,confidence})});const d=await r.json();showToast(d.success?pair+' '+action+' executed!':'Error: '+d.error)}catch(e){showToast('Could not reach trading server')}
+}
 function skipSignal(pair){showToast('Skipped '+pair);loadSignals()}
 function toggle(id){const el=document.getElementById(id);el.classList.toggle('on');return el.classList.contains('on')}
 function toggleSniper(){state.sniperActive=toggle('sniperToggle');document.getElementById('sniperDot').className='sniper-dot '+(state.sniperActive?'active':'inactive');document.getElementById('sniperLabel').textContent=state.sniperActive?'Sniper Active':'Sniper Paused';fetch(API_BASE+'/api/sniper/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:state.sniperActive})}).catch(()=>{});showToast(state.sniperActive?'Sniper activated':'Sniper paused')}
@@ -580,6 +643,94 @@ async function submitManualTrade(side){
     if(d.success){showToast(pairName+' '+side.toUpperCase()+' executed!');setTimeout(loadDashboard,2000)}
     else showToast('Error: '+(d.error||'Unknown error'));
   }catch(e){showToast('Could not reach trading server')}
+}
+
+let paperMode = false;
+let paperTrades = [];
+
+function togglePaper(){
+  paperMode = !paperMode;
+  const el = document.getElementById('paperToggle');
+  paperMode ? el.classList.add('on') : el.classList.remove('on');
+  document.getElementById('paperBadge').style.display = paperMode ? 'inline-block' : 'none';
+  document.getElementById('paperLog').style.display = paperMode ? 'block' : 'none';
+  showToast(paperMode ? '📄 Paper mode ON — trades simulated' : 'Paper mode OFF — live trading');
+}
+
+function renderPaperTrades(){
+  const el = document.getElementById('paperTrades');
+  if(!paperTrades.length){el.textContent='No paper trades yet.';return;}
+  el.innerHTML = paperTrades.slice(0,10).map(t=>{
+    const pnl = t.pnl||0;
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between">
+      <span><span style="color:${t.side==='buy'?'var(--green)':'var(--red)'}">${t.side.toUpperCase()}</span> ${t.pair} @ $${t.price.toFixed(4)}</span>
+      <span style="color:${pnl>=0?'var(--green)':'var(--red)'}">${pnl!==0?(pnl>=0?'+':'')+' $'+pnl.toFixed(2):''}</span>
+    </div>`;
+  }).join('');
+}
+
+async function loadStats(){
+  try{
+    const r = await fetch(API_BASE+'/api/stats');
+    const d = await r.json();
+
+    // Allocation chart
+    const allocEl = document.getElementById('allocCard');
+    if(d.allocation&&d.allocation.length){
+      const colors = ['var(--blue-bright)','var(--green)','var(--gold)','#a78bfa','#fb923c','#f472b6','#34d399'];
+      allocEl.innerHTML = d.allocation.map((a,i)=>`
+        <div class="alloc-row">
+          <div style="font-family:var(--mono);font-weight:600;font-size:0.85rem;width:70px">${a.symbol.replace('/USDT','')}</div>
+          <div class="alloc-bar"><div class="alloc-fill" style="width:${a.pct}%;background:${colors[i%colors.length]}"></div></div>
+          <div style="font-family:var(--mono);font-size:0.78rem;color:var(--text-2);text-align:right;width:80px">$${a.value.toFixed(0)} (${a.pct}%)</div>
+        </div>`).join('');
+    } else {
+      allocEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">No open positions.</div>';
+    }
+
+    // PnL Calendar
+    const calEl = document.getElementById('calendarGrid');
+    if(d.calendar&&d.calendar.length){
+      const today = new Date().toISOString().split('T')[0];
+      // Pad to start on Monday
+      const firstDate = new Date(d.calendar[0].date);
+      const dayOfWeek = (firstDate.getDay()+6)%7; // 0=Mon
+      let calHtml = Array(dayOfWeek).fill('<div></div>').join('');
+      calHtml += d.calendar.map(day=>{
+        const cls = day.pnl > 0 ? 'positive' : day.pnl < 0 ? 'negative' : 'neutral';
+        const todayCls = day.date === today ? ' today' : '';
+        const dayNum = day.date.split('-')[2];
+        const title = `${day.date}: ${day.pnl>=0?'+':''}$${day.pnl.toFixed(2)} (${day.trades} trades)`;
+        const label = day.pnl !== 0 ? (day.pnl>0?'+':'')+day.pnl.toFixed(0) : dayNum;
+        return `<div class="cal-day ${cls}${todayCls}" title="${title}">${label}</div>`;
+      }).join('');
+      calEl.innerHTML = calHtml;
+    }
+
+    // Win Rate Per Pair
+    const pairEl = document.getElementById('pairStatsCard');
+    if(d.pair_performance&&d.pair_performance.length){
+      pairEl.innerHTML = d.pair_performance.map(p=>{
+        const ratingColor = p.rating==='good'?'var(--green)':p.rating==='poor'?'var(--red)':'var(--gold)';
+        const winFill = p.win_rate > 60 ? 'var(--green)' : p.win_rate < 40 ? 'var(--red)' : 'var(--gold)';
+        return `<div class="pair-stat-row">
+          <div style="flex:1">
+            <div class="pair-stat-name">${p.pair}</div>
+            <div class="pair-stat-meta">${p.trades} trades · ${p.wins}W/${p.losses}L</div>
+            <div class="win-bar"><div class="win-fill" style="width:${p.win_rate}%;background:${winFill}"></div></div>
+          </div>
+          <div style="text-align:right;margin-left:12px">
+            <div style="font-family:var(--mono);font-weight:700;font-size:0.9rem;color:${p.total_pnl>=0?'var(--green)':'var(--red)'}">${p.total_pnl>=0?'+':''}$${p.total_pnl.toFixed(2)}</div>
+            <div style="font-size:0.72rem;color:${ratingColor};font-weight:600;margin-top:2px">${p.win_rate}% win</div>
+          </div>
+        </div>`;
+      }).join('');
+    } else {
+      pairEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">No trade history yet.</div>';
+    }
+  }catch(e){
+    console.error('Stats error:', e);
+  }
 }
 
 window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000)});
