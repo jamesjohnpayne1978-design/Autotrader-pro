@@ -324,6 +324,9 @@ class Trader:
             usdt_spent = buy_price * quantity
             self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
             self._place_oco_order(symbol, pair, quantity, buy_price)
+            # Start trailing stop tracking
+            if getattr(self.config, 'trailing_stop_enabled', False):
+                self.init_trailing_stop(symbol, buy_price)
 
         elif action == 'sell':
             # Cancel any open OCO orders first (releases locked balance)
@@ -343,6 +346,7 @@ class Trader:
             self._last_trade_time[pair] = datetime.now()
             pnl = self._calculate_pnl(pair, sell_price, quantity)
             self._log_trade(pair, 'sell', order, sell_price, quantity, pnl)
+            self.clear_trailing_stop(symbol)
         else:
             raise ValueError(f"Unknown action: {action}")
 
@@ -370,6 +374,75 @@ class Trader:
             log.warning(f"OCO order failed for {symbol}: {e}")
         except Exception as e:
             log.warning(f"OCO setup error for {symbol}: {e}")
+
+    # ─── TRAILING STOP ──────────────────────────────────────────────
+    _trailing_stops = {}  # {symbol: {'buy_price': x, 'highest': x, 'trail_pct': x}}
+
+    def init_trailing_stop(self, symbol, buy_price):
+        """Start tracking a trailing stop for a position"""
+        trail_pct = getattr(self.config, 'trailing_stop_pct', 2.0)
+        breakeven_trigger = getattr(self.config, 'trailing_breakeven_trigger', 3.0)
+        self.__class__._trailing_stops[symbol] = {
+            'buy_price': buy_price,
+            'highest': buy_price,
+            'trail_pct': trail_pct,
+            'breakeven_trigger': breakeven_trigger,
+            'stop_price': buy_price * (1 - self.config.default_sl_pct / 100)
+        }
+        log.info(f"Trailing stop init for {symbol} @ ${buy_price:.4f}")
+
+    def update_trailing_stop(self, symbol, current_price):
+        """Update trailing stop — returns (should_sell, reason) if stop hit"""
+        state = self.__class__._trailing_stops.get(symbol)
+        if not state:
+            return False, None
+
+        buy_price = state['buy_price']
+        highest = state['highest']
+        trail_pct = state['trail_pct']
+        breakeven_trigger = state['breakeven_trigger']
+        gain_pct = ((current_price - buy_price) / buy_price) * 100
+
+        # Update highest price seen
+        if current_price > highest:
+            state['highest'] = current_price
+            # Trail the stop up behind it
+            new_stop = current_price * (1 - trail_pct / 100)
+            # Never move stop down
+            if new_stop > state['stop_price']:
+                state['stop_price'] = new_stop
+                log.info(f"Trailing stop {symbol}: moved to ${new_stop:.4f} ({trail_pct}% below ${current_price:.4f})")
+
+        # Move to breakeven once up enough
+        if gain_pct >= breakeven_trigger and state['stop_price'] < buy_price:
+            state['stop_price'] = buy_price * 1.001  # Tiny above buy = breakeven
+            log.info(f"Trailing stop {symbol}: moved to breakeven @ ${state['stop_price']:.4f}")
+
+        # Check if stop hit
+        if current_price <= state['stop_price']:
+            gain = ((current_price - buy_price) / buy_price) * 100
+            return True, f"Trailing stop hit @ ${current_price:.4f} ({gain:+.1f}% from entry)"
+
+        return False, None
+
+    def clear_trailing_stop(self, symbol):
+        self.__class__._trailing_stops.pop(symbol, None)
+
+    def check_all_trailing_stops(self):
+        """Called every cycle — check if any trailing stops need executing"""
+        if not self.__class__._trailing_stops:
+            return
+        for symbol in list(self.__class__._trailing_stops.keys()):
+            try:
+                price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
+                should_sell, reason = self.update_trailing_stop(symbol, price)
+                if should_sell:
+                    pair = symbol.replace('USDT', '/USDT')
+                    log.info(f"Trailing stop triggered for {pair}: {reason}")
+                    self.execute_trade(pair, 'sell', 100)
+                    self.clear_trailing_stop(symbol)
+            except Exception as e:
+                log.debug(f"Trailing stop check error {symbol}: {e}")
 
     # ─── PYRAMIDING ────────────────────────────────────────────────
     _pyramid_state = {}  # class-level: {symbol: {count, first_price, last_price}}
