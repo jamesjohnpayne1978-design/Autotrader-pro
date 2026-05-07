@@ -30,16 +30,26 @@ risk_manager = RiskManager(config)
 
 
 def send_telegram(message):
-    if not config.telegram_token or not config.telegram_chat_id:
+    if not config.telegram_token:
+        log.warning("Telegram: TELEGRAM_TOKEN not set")
+        return
+    if not config.telegram_chat_id:
+        log.warning("Telegram: TELEGRAM_CHAT_ID not set")
         return
     try:
-        req.post(
+        log.info(f"Sending Telegram message to chat_id={config.telegram_chat_id}")
+        r = req.post(
             f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
-            json={'chat_id': config.telegram_chat_id, 'text': message, 'parse_mode': 'Markdown'},
-            timeout=5
+            json={'chat_id': str(config.telegram_chat_id), 'text': message, 'parse_mode': 'Markdown'},
+            timeout=10
         )
+        data = r.json()
+        if data.get('ok'):
+            log.info("Telegram message sent successfully")
+        else:
+            log.warning(f"Telegram failed: {data.get('description', 'Unknown error')}")
     except Exception as e:
-        log.warning(f"Telegram alert failed: {e}")
+        log.warning(f"Telegram exception: {e}")
 
 
 def init_trader():
@@ -478,14 +488,22 @@ def execute_trade():
     try:
         result = trader.execute_trade(pair, action, config.max_trade_pct)
         risk_manager.record_trade(pair)  # Start cooldown after trade
+        regime = signal_engine.market_regime if signal_engine else 'neutral'
+        source = '👤 Manual' if is_manual else f'🤖 AI Signal ({confidence}%)'
+        icon = '🟢' if action == 'buy' else '🔴'
+        tp = getattr(config, 'dynamic_tp', config.default_tp_pct)
+        sl = config.default_sl_pct
         send_telegram(
-            f"{'🟢' if action == 'buy' else '🔴'} *{action.upper()} {pair}*\n"
-            f"Confidence: {confidence}%\n"
-            f"Market: {signal_engine.market_regime if signal_engine else 'unknown'}\n"
-            f"Order: {result.get('orderId', 'N/A')}"
+            f"{icon} *{action.upper()} {pair}*\n"
+            f"Source: {source}\n"
+            f"Market: {regime.upper()}\n"
+            f"TP: {tp}% · SL: {sl}%\n"
+            f"Order ID: {result.get('orderId', 'N/A')}"
         )
         return jsonify({'success': True, 'result': result})
     except Exception as e:
+        log.error(f"Trade execution error: {e}")
+        send_telegram(f"⚠️ *Trade Failed* — {action.upper()} {pair}\nError: {str(e)[:100]}")
         return jsonify({'error': str(e)}), 500
     finally:
         risk_manager.release_lock(pair)  # Always release lock
