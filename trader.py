@@ -621,15 +621,22 @@ class Trader:
             'usdt_value': round(usdt_value if usdt_value else price * quantity, 2),
             'pnl': pnl, 'trigger': 'AI Signal'
         }
-        # Track pyramid state
-        if action == 'buy':
-            self.record_pyramid_buy(symbol, price)
-        elif action == 'sell':
-            self.reset_pyramid_state(symbol)
+        # Track pyramid state (symbol = pair without slash and USDT)
+        try:
+            sym = pair.replace('/', '').replace('USDT', '') + 'USDT'
+            if action == 'buy':
+                self.record_pyramid_buy(sym, price)
+            elif action == 'sell':
+                self.reset_pyramid_state(sym)
+        except Exception:
+            pass
 
-        history = self.config.load_trade_history()
-        history.insert(0, trade)
-        self.config.save_trade_history(history[:500])
+        try:
+            history = self.config.load_trade_history()
+            history.insert(0, trade)
+            self.config.save_trade_history(history[:500])
+        except Exception as e:
+            log.warning(f"Could not save trade history: {e}")
 
     def snipe_listing(self, symbol, usdt_amount):
         try:
