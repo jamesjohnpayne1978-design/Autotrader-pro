@@ -485,28 +485,38 @@ def execute_trade():
     is_manual = data.get('manual', False)
     if is_manual:
         log.info(f"Manual trade: {action} {pair}")
+    # Execute the trade
     try:
         result = trader.execute_trade(pair, action, config.max_trade_pct)
-        risk_manager.record_trade(pair)  # Start cooldown after trade
+    except Exception as e:
+        log.error(f"Trade execution error: {e}")
+        risk_manager.release_lock(pair)
+        send_telegram(f"⚠️ *Trade Failed* — {action.upper()} {pair}\nError: {str(e)[:100]}")
+        return jsonify({'error': str(e)}), 500
+
+    # Trade succeeded — do post-trade actions safely
+    risk_manager.release_lock(pair)
+    risk_manager.record_trade(pair)
+
+    # Send Telegram notification (never crash the response)
+    try:
         regime = signal_engine.market_regime if signal_engine else 'neutral'
         source = '👤 Manual' if is_manual else f'🤖 AI Signal ({confidence}%)'
         icon = '🟢' if action == 'buy' else '🔴'
-        tp = getattr(config, 'dynamic_tp', config.default_tp_pct)
-        sl = config.default_sl_pct
+        tp = getattr(config, 'dynamic_tp', getattr(config, 'default_tp_pct', 12))
+        sl = getattr(config, 'default_sl_pct', 4)
+        order_id = result.get('orderId', 'N/A') if isinstance(result, dict) else 'N/A'
         send_telegram(
             f"{icon} *{action.upper()} {pair}*\n"
             f"Source: {source}\n"
             f"Market: {regime.upper()}\n"
             f"TP: {tp}% · SL: {sl}%\n"
-            f"Order ID: {result.get('orderId', 'N/A')}"
+            f"Order ID: {order_id}"
         )
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        log.error(f"Trade execution error: {e}")
-        send_telegram(f"⚠️ *Trade Failed* — {action.upper()} {pair}\nError: {str(e)[:100]}")
-        return jsonify({'error': str(e)}), 500
-    finally:
-        risk_manager.release_lock(pair)  # Always release lock
+    except Exception as te:
+        log.warning(f"Telegram notification error (trade was successful): {te}")
+
+    return jsonify({'success': True, 'result': result if isinstance(result, dict) else {}})
 
 
 @app.route('/api/history')
