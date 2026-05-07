@@ -197,14 +197,22 @@ class SignalEngine:
                 if action == 'sell':
                     try:
                         base = pair.replace('/USDT', '')
-                        balance = self.trader._get_total_balance(base)
-                        min_val = balance * self.trader.client.get_symbol_ticker(symbol=pair.replace('/', ''))['price'] if balance > 0 else 0
-                        if float(min_val) < 1.0:
-                            log.info(f"Skipping sell {pair} — no meaningful holdings (balance: {balance})")
+                        symbol = pair.replace('/', '')
+                        account = self.trader.client.get_account()
+                        balance = next(
+                            (float(b['free']) + float(b['locked'])
+                             for b in account['balances'] if b['asset'] == base), 0.0
+                        )
+                        price = float(self.trader.client.get_symbol_ticker(symbol=symbol)['price'])
+                        value = balance * price
+                        if value < 2.0:
+                            log.info(f"Skipping sell {pair} — no meaningful holdings (value: ${value:.2f})")
                             self.risk_manager.release_lock(pair)
                             continue
                     except Exception as e:
                         log.debug(f"Balance check error for {pair}: {e}")
+                        self.risk_manager.release_lock(pair)
+                        continue
 
                 # Cancel any stale open orders before buying to free up balance
                 if action == 'buy':
