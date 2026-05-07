@@ -21,6 +21,8 @@ class SignalEngine:
         self.risk_manager = risk_manager
         self.latest_signals = []
         self.market_regime = 'neutral'
+        self.fear_greed_index = 50
+        self.fear_greed_label = 'Neutral'
         self.regime_reason = 'Analysing market conditions...'
         self.regime_tp = 6.0
         self.running = False
@@ -29,6 +31,13 @@ class SignalEngine:
         self.running = True
         log.info("Signal engine started.")
         while self.running:
+            # Fetch Fear & Greed every 30 mins (every 6 signal cycles)
+            if not hasattr(self, '_fg_count'):
+                self._fg_count = 0
+            self._fg_count += 1
+            if self._fg_count % 6 == 1:
+                self._fetch_fear_greed()
+
             try:
                 self.detect_market_regime()
                 self.refresh_signals()
@@ -129,6 +138,8 @@ class SignalEngine:
 
     def _fallback_regime_simple(self):
         self.market_regime = 'neutral'
+        self.fear_greed_index = 50
+        self.fear_greed_label = 'Neutral'
         self.regime_tp = 6.0
         self.regime_reason = "Using default settings."
         self.config.dynamic_tp = self.regime_tp
@@ -250,6 +261,9 @@ class SignalEngine:
         ma50 = self._sma(closes, 50)
         ma200 = self._sma(closes, 200) if len(closes) >= 200 else None
         bb = self._bollinger(closes)
+        stoch_rsi = self._stochastic_rsi(closes)
+        rsi_divergence = self._detect_rsi_divergence(closes)
+        bb_bounce = self._detect_bb_bounce(closes, bb)
         volume_ratio = volumes[-1] / np.mean(volumes[-20:]) if volumes else 1.0
         price = closes[-1]
         price_change = ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
@@ -273,10 +287,12 @@ class SignalEngine:
 
         indicators = {
             'rsi': rsi, 'macd': macd, 'ma50': ma50, 'ma200': ma200,
-            'bb': bb, 'volume_ratio': volume_ratio, 'price': price,
+            'bb': bb, 'stoch_rsi': stoch_rsi, 'rsi_divergence': rsi_divergence,
+            'bb_bounce': bb_bounce, 'volume_ratio': volume_ratio, 'price': price,
             'price_change_24h': price_change,
             'rsi_buy_threshold': rsi_buy_threshold,
-            'rsi_sell_threshold': rsi_sell_threshold
+            'rsi_sell_threshold': rsi_sell_threshold,
+            'fear_greed': getattr(self, 'fear_greed_index', 50)
         }
         return self._ai_analyse(symbol, indicators)
 
@@ -351,24 +367,58 @@ class SignalEngine:
 
         if rsi < rsi_buy_threshold:
             reasons.append("RSI oversold at " + str(round(rsi, 1)))
-            # Trend filter: block buy if price is well below 50MA (still falling)
-            if ma50 > 0 and price < ma50 * 0.985:
-                log.info(f"Trend filter: {symbol} in downtrend (price {price:.4f} vs 50MA {ma50:.4f}), skipping buy")
+
+            # ── FEAR & GREED FILTER ──────────────────────────────────────
+            fg = indicators.get('fear_greed', 50)
+            if fg < 15:
+                log.info(f"Fear & Greed {fg} — Extreme Fear, skipping buy {symbol}")
+                action = 'hold'
+                confidence = 35
+            # ── TREND FILTER ─────────────────────────────────────────────
+            elif ma50 > 0 and price < ma50 * 0.985:
+                log.info(f"Trend filter: {symbol} downtrend, skipping buy")
                 action = 'hold'
                 confidence = 40
+            # ── VOLUME FILTER ─────────────────────────────────────────────
+            elif volume_ratio < 0.8:
+                log.info(f"Volume filter: {symbol} low volume ({volume_ratio:.1f}x), skipping")
+                action = 'hold'
+                confidence = 45
             else:
-                # Volume filter: only buy if volume is elevated (confirms momentum)
-                if volume_ratio < 0.8:
-                    log.info(f"Volume filter: {symbol} volume too low ({volume_ratio:.1f}x avg) — skipping buy")
-                    action = 'hold'
-                    confidence = 45
-                else:
-                    action = 'buy'
+                action = 'buy'
+                confidence += 15
+
+                # ── BOLLINGER BAND BOUNCE CONFIRMATION ──────────────────
+                bb_bounce = indicators.get('bb_bounce', False)
+                if bb_bounce:
+                    confidence += 12
+                    reasons.append("Price bouncing off lower Bollinger Band")
+                elif bb and bb.get('position', 50) > 40:
+                    confidence -= 8  # Not near lower band — penalise
+
+                # ── RSI DIVERGENCE BONUS ─────────────────────────────────
+                rsi_div = indicators.get('rsi_divergence', 'none')
+                if rsi_div == 'bullish':
                     confidence += 15
-                    if price > ma50:
-                        confidence += 10  # Extra confidence if above 50MA
-                    if volume_ratio > 1.5:
-                        confidence += 8   # High volume confirmation bonus
+                    reasons.append("Bullish RSI divergence detected")
+
+                # ── STOCHASTIC RSI CONFIRMATION ──────────────────────────
+                stoch = indicators.get('stoch_rsi', 50)
+                if stoch < 20:
+                    confidence += 10
+                    reasons.append("Stochastic RSI oversold")
+                elif stoch > 50:
+                    confidence -= 5  # Stoch not confirming oversold
+
+                # ── STANDARD CONFIRMATIONS ───────────────────────────────
+                if price > ma50:
+                    confidence += 8
+                if volume_ratio > 1.5:
+                    confidence += 8
+                if fg > 40:  # Greed/neutral market = more confidence
+                    confidence += 5
+                if fg < 25:  # Fear market = less confidence
+                    confidence -= 5
         elif rsi > rsi_sell_threshold:
             reasons.append("RSI overbought at " + str(round(rsi, 1)))
             action = 'sell'
@@ -435,6 +485,63 @@ class SignalEngine:
         histogram = macd_line - signal_line
         signal = 'bullish' if macd_line > signal_line else 'bearish' if macd_line < signal_line else 'neutral'
         return {'signal': signal, 'histogram': histogram}
+
+    def _stochastic_rsi(self, closes, rsi_period=14, stoch_period=14):
+        """Stochastic RSI — faster momentum signal 0-100"""
+        try:
+            if len(closes) < rsi_period + stoch_period:
+                return 50.0
+            # Calculate RSI series
+            rsi_values = []
+            for i in range(rsi_period, len(closes)):
+                rsi_values.append(self._rsi(closes[:i+1]))
+            if len(rsi_values) < stoch_period:
+                return 50.0
+            recent_rsi = rsi_values[-stoch_period:]
+            min_rsi = min(recent_rsi)
+            max_rsi = max(recent_rsi)
+            if max_rsi == min_rsi:
+                return 50.0
+            stoch = ((rsi_values[-1] - min_rsi) / (max_rsi - min_rsi)) * 100
+            return round(stoch, 2)
+        except Exception:
+            return 50.0
+
+    def _detect_rsi_divergence(self, closes, lookback=10):
+        """Detect bullish RSI divergence — price lower low but RSI higher low"""
+        try:
+            if len(closes) < lookback + 14:
+                return 'none'
+            # Get recent price lows and RSI at those points
+            recent_closes = closes[-(lookback+14):]
+            rsi_now = self._rsi(recent_closes)
+            rsi_prev = self._rsi(recent_closes[:-5])
+            price_now = closes[-1]
+            price_prev = min(closes[-(lookback):-5])
+            # Bullish divergence: price made lower low but RSI made higher low
+            if price_now < price_prev and rsi_now > rsi_prev + 2:
+                return 'bullish'
+            # Bearish divergence: price made higher high but RSI made lower high
+            if price_now > price_prev and rsi_now < rsi_prev - 2:
+                return 'bearish'
+            return 'none'
+        except Exception:
+            return 'none'
+
+    def _detect_bb_bounce(self, closes, bb):
+        """Detect if price is bouncing off lower Bollinger Band"""
+        try:
+            if not bb or 'lower' not in bb:
+                return False
+            lower = bb['lower']
+            price = closes[-1]
+            prev_price = closes[-2] if len(closes) >= 2 else price
+            # Price touched lower band and is now moving up
+            near_lower = price < lower * 1.015  # Within 1.5% of lower band
+            bouncing = price > prev_price        # Price increasing
+            return bool(near_lower and bouncing)
+        except Exception:
+            return False
 
     def _bollinger(self, closes, period=20):
         if len(closes) < period:
