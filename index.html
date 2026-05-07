@@ -6,205 +6,442 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>AutoTrader Pro</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#050810;--surface:#0c1220;--surface2:#131d30;--border:rgba(100,160,255,0.1);--border2:rgba(100,160,255,0.18);--green:#0dffaa;--green-dim:rgba(13,255,170,0.1);--red:#ff4466;--red-dim:rgba(255,68,102,0.1);--gold:#ffb340;--gold-dim:rgba(255,179,64,0.1);--blue:#4d9fff;--blue-bright:#7cb8ff;--blue-dim:rgba(77,159,255,0.1);--text:#f0f4ff;--text-2:#8899bb;--text-3:#4a5a7a;--mono:'JetBrains Mono',monospace;--sans:'Space Grotesk',sans-serif;--radius:16px;--radius-sm:10px}
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;max-width:480px;margin:0 auto;padding-bottom:90px}
-.topbar{position:sticky;top:0;z-index:100;background:rgba(5,8,16,0.92);backdrop-filter:blur(24px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:16px 20px}
-.topbar-logo{font-size:1rem;font-weight:700;letter-spacing:0.06em;color:var(--blue-bright)}
-.live-badge{display:flex;align-items:center;gap:7px;font-size:0.78rem;font-family:var(--mono);color:var(--green);letter-spacing:0.06em}
-.live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(13,255,170,0.4)}50%{opacity:0.8;box-shadow:0 0 0 6px rgba(13,255,170,0)}}
-.settings-btn{width:38px;height:38px;border-radius:var(--radius-sm);background:var(--surface2);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:1.1rem}
-.nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;background:rgba(12,18,32,0.97);backdrop-filter:blur(24px);border-top:1px solid var(--border);display:flex;z-index:100}
-.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;padding:12px 0 14px;cursor:pointer;gap:5px;border:none;background:none;color:var(--text-3);font-size:0.6rem;font-family:var(--sans);letter-spacing:0.04em;text-transform:uppercase;font-weight:500;transition:color 0.2s}
-.nav-item.active{color:var(--blue-bright)}
-.nav-item span{font-size:1.2rem}
-.page{display:none;padding:16px;animation:fadeIn 0.2s ease}
-.page.active{display:block}
-@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.portfolio-header{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:24px 20px;margin-bottom:14px;text-align:center}
-.portfolio-label{font-size:0.72rem;color:var(--text-3);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:10px}
-.portfolio-value{font-size:2.8rem;font-weight:700;font-family:var(--mono);letter-spacing:-0.02em}
-.pnl-row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:10px}
-.portfolio-pnl{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;font-size:0.78rem;font-family:var(--mono);font-weight:600}
-.portfolio-pnl.up{background:var(--green-dim);color:var(--green);border:1px solid rgba(13,255,170,0.2)}
-.portfolio-pnl.down{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,68,102,0.2)}
-.portfolio-stats{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:1px;background:var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-top:18px}
-.stat{background:var(--bg);padding:12px 4px;text-align:center}
-.stat-label{font-size:0.55rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:5px}
-.stat-value{font-size:0.9rem;font-family:var(--mono);font-weight:600}
-.regime-card{border-radius:var(--radius);padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:14px;border:1px solid var(--border)}
-.regime-card.bullish{background:rgba(13,255,170,0.05);border-color:rgba(13,255,170,0.2)}
-.regime-card.bearish{background:rgba(255,68,102,0.05);border-color:rgba(255,68,102,0.2)}
-.regime-card.neutral{background:rgba(77,159,255,0.05);border-color:rgba(77,159,255,0.2)}
-.regime-icon{font-size:1.8rem;flex-shrink:0}
-.regime-info{flex:1}
-.regime-title{font-size:0.82rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase}
-.regime-title.bullish{color:var(--green)}.regime-title.bearish{color:var(--red)}.regime-title.neutral{color:var(--blue-bright)}
-.regime-reason{font-size:0.75rem;color:var(--text-2);margin-top:4px;line-height:1.5}
-.regime-tp{font-size:0.78rem;font-family:var(--mono);margin-top:5px;font-weight:600}
-.regime-tp.bullish{color:var(--green)}.regime-tp.bearish{color:var(--red)}.regime-tp.neutral{color:var(--blue-bright)}
-.chart-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:14px}
-.chart-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-.chart-title{font-size:0.75rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-2)}
-.chart-ranges{display:flex;gap:6px}
-.range-btn{padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text-3);font-family:var(--mono);font-size:0.7rem;cursor:pointer;transition:all 0.2s}
-.range-btn.active{background:var(--blue-dim);border-color:var(--blue);color:var(--blue-bright)}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:14px}
-.card-title{font-size:0.72rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-2);margin-bottom:14px}
-.pair-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
-.pair-row:last-child{border-bottom:none}
-.pair-info{display:flex;align-items:center;gap:12px}
-.pair-icon{width:42px;height:42px;border-radius:50%;background:var(--surface2);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0}
-.pair-name{font-size:1rem;font-weight:600;font-family:var(--mono)}
-.pair-holdings{font-size:0.72rem;color:var(--text-2);margin-top:2px}
-.pair-prices{text-align:right}
-.pair-price{font-size:1rem;font-family:var(--mono);font-weight:600}
-.pair-change{font-size:0.75rem;font-family:var(--mono);margin-top:3px}
-.up{color:var(--green)}.down{color:var(--red)}
-.signal-card{background:var(--surface);border-radius:var(--radius);padding:18px;margin-bottom:14px;border:1px solid var(--border)}
-.signal-card.buy{border-left:4px solid var(--green)}
-.signal-card.sell{border-left:4px solid var(--red)}
-.signal-card.watch{border-left:4px solid var(--gold)}
-.signal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
-.signal-pair{font-family:var(--mono);font-weight:700;font-size:1.1rem}
-.signal-badge{padding:5px 12px;border-radius:20px;font-size:0.72rem;font-family:var(--mono);font-weight:700;letter-spacing:0.08em}
-.signal-badge.buy{background:var(--green-dim);color:var(--green)}
-.signal-badge.sell{background:var(--red-dim);color:var(--red)}
-.signal-badge.watch{background:var(--gold-dim);color:var(--gold)}
-.signal-reason{font-size:0.82rem;color:var(--text-2);line-height:1.6;margin-bottom:14px}
-.confidence-bar{height:5px;background:var(--surface2);border-radius:3px;margin-bottom:5px;overflow:hidden}
-.confidence-fill{height:100%;border-radius:3px;transition:width 0.8s ease}
-.confidence-fill.buy{background:var(--green)}.confidence-fill.sell{background:var(--red)}.confidence-fill.watch{background:var(--gold)}
-.confidence-label{display:flex;justify-content:space-between;font-size:0.72rem;font-family:var(--mono);color:var(--text-2);margin-bottom:16px}
-.signal-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.btn{padding:13px;border-radius:var(--radius-sm);border:none;font-family:var(--sans);font-size:0.9rem;font-weight:700;cursor:pointer;transition:all 0.2s}
-.btn-execute{background:var(--green);color:#000}
-.btn-skip{background:var(--surface2);color:var(--text-2);border:1px solid var(--border2)}
-.indicators{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}
-.indicator{background:var(--surface2);border-radius:var(--radius-sm);padding:12px;text-align:center}
-.indicator-name{font-size:0.65rem;font-family:var(--mono);color:var(--text-3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:5px}
-.indicator-value{font-size:1rem;font-family:var(--mono);font-weight:600}
-.sniper-status{display:flex;align-items:center;gap:12px;padding:16px 18px;background:var(--surface2);border-radius:var(--radius-sm);margin-bottom:14px;border:1px solid var(--border)}
-.sniper-dot{width:11px;height:11px;border-radius:50%;flex-shrink:0}
-.sniper-dot.active{background:var(--green);animation:pulse 2s ease-in-out infinite}
-.sniper-dot.inactive{background:var(--text-3)}
-.sniper-text{flex:1}
-.sniper-label{font-size:0.9rem;font-weight:600}
-.sniper-sub{font-size:0.72rem;color:var(--text-2);margin-top:3px}
-.toggle{position:relative;width:48px;height:26px;background:var(--surface2);border-radius:13px;border:1px solid var(--border2);cursor:pointer;transition:background 0.3s;flex-shrink:0}
-.toggle.on{background:var(--green);border-color:var(--green)}
-.toggle-thumb{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:white;transition:transform 0.3s}
-.toggle.on .toggle-thumb{transform:translateX(22px)}
-.trade-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
-.trade-row:last-child{border-bottom:none}
-.trade-left{display:flex;align-items:center;gap:12px}
-.trade-type{width:36px;height:36px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;font-size:0.8rem;font-family:var(--mono);font-weight:700;flex-shrink:0}
-.trade-type.buy{background:var(--green-dim);color:var(--green)}
-.trade-type.sell{background:var(--red-dim);color:var(--red)}
-.trade-pair{font-size:0.95rem;font-weight:600;font-family:var(--mono)}
-.trade-time{font-size:0.7rem;color:var(--text-2);margin-top:3px}
-.trade-right{text-align:right}
-.trade-pnl{font-size:0.95rem;font-family:var(--mono);font-weight:600}
-.trade-trigger{font-size:0.68rem;color:var(--text-2);margin-top:3px}
-.setting-row{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--border)}
-.setting-row:last-child{border-bottom:none}
-.setting-info{flex:1;margin-right:12px}
-.setting-label{font-size:0.95rem;font-weight:600}
-.setting-desc{font-size:0.74rem;color:var(--text-2);margin-top:3px;line-height:1.4}
-.setting-input{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--mono);font-size:0.9rem;padding:10px 14px;width:90px;text-align:right;font-weight:600}
-.section-title{font-size:0.7rem;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:var(--text-3);margin:20px 0 12px}
-.api-status{display:flex;align-items:center;gap:10px;padding:14px 18px;background:var(--green-dim);border:1px solid rgba(13,255,170,0.2);border-radius:var(--radius-sm);margin-bottom:16px;font-size:0.85rem;color:var(--green);font-family:var(--mono)}
-.api-status.error{background:var(--red-dim);border-color:rgba(255,68,102,0.2);color:var(--red)}
-.loading-row{display:flex;align-items:center;gap:10px;color:var(--text-2);font-size:0.85rem;font-family:var(--mono);padding:16px 0}
-.spinner{width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--blue-bright);border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0}
-@keyframes spin{to{transform:rotate(360deg)}}
-.toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:12px 22px;font-size:0.85rem;font-family:var(--mono);opacity:0;transition:all 0.3s;z-index:200;white-space:nowrap}
-.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:150;display:none;align-items:flex-end}
-.modal-overlay.show{display:flex}
-.modal{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius) var(--radius) 0 0;padding:28px;width:100%}
-.modal-title{font-size:1.1rem;font-weight:700;margin-bottom:18px}
-.modal-input{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--mono);font-size:0.95rem;padding:14px 18px;margin-bottom:12px}
-.modal-note{font-size:0.72rem;color:var(--text-3);margin-bottom:12px}
-.modal-btn{width:100%;padding:16px;border-radius:var(--radius-sm);border:none;font-family:var(--sans);font-size:1rem;font-weight:700;cursor:pointer;background:var(--blue);color:white;margin-top:8px}
-/* STATS */
-.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:8px}
-.cal-day{height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.55rem;font-family:var(--mono);cursor:default;position:relative}
-.cal-day.positive{background:var(--green-dim);color:var(--green)}
-.cal-day.negative{background:var(--red-dim);color:var(--red)}
-.cal-day.neutral{background:var(--surface2);color:var(--text-3)}
-.cal-day.today{outline:2px solid var(--blue-bright)}
-.pair-stat-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)}
-.pair-stat-row:last-child{border-bottom:none}
-.pair-stat-name{font-family:var(--mono);font-weight:700;font-size:0.9rem}
-.pair-stat-meta{font-size:0.72rem;color:var(--text-2);margin-top:2px}
-.win-bar{height:6px;background:var(--surface2);border-radius:3px;margin-top:6px;overflow:hidden;width:100px}
-.win-fill{height:100%;border-radius:3px}
-.alloc-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
-.alloc-row:last-child{border-bottom:none}
-.alloc-bar{height:8px;background:var(--blue-dim);border-radius:4px;flex:1}
-.alloc-fill{height:100%;background:var(--blue-bright);border-radius:4px;transition:width 0.8s ease}
-.paper-badge{display:inline-block;background:rgba(255,179,64,0.2);color:var(--gold);border:1px solid rgba(255,179,64,0.3);border-radius:6px;font-size:0.65rem;font-family:var(--mono);font-weight:700;padding:2px 8px;margin-left:8px;letter-spacing:0.06em}
-/* INSIGHTS */
-.insight-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px}
-.insight-card.bullish{border-left:4px solid var(--green)}
-.insight-card.bearish{border-left:4px solid var(--red)}
-.insight-card.warning{border-left:4px solid var(--gold)}
-.insight-card.neutral{border-left:4px solid var(--blue)}
-.insight-title{font-size:0.95rem;font-weight:700;margin-bottom:6px}
-.insight-body{font-size:0.82rem;color:var(--text-2);line-height:1.6}
-.watch-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
-.watch-info{flex:1}
-.watch-name{font-size:0.95rem;font-weight:700;font-family:var(--mono)}
-.watch-reason{font-size:0.75rem;color:var(--text-2);margin-top:3px;line-height:1.4}
-.watch-signal{padding:5px 12px;border-radius:20px;font-size:0.72rem;font-family:var(--mono);font-weight:700;flex-shrink:0;margin-left:10px}
-.watch-signal.buy{background:var(--green-dim);color:var(--green)}
-.watch-signal.watch{background:var(--blue-dim);color:var(--blue-bright)}
-.watch-signal.avoid{background:var(--red-dim);color:var(--red)}
-.pair-rec{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
-.pair-rec-info{flex:1}
-.pair-rec-name{font-size:0.95rem;font-weight:700;font-family:var(--mono)}
-.pair-rec-reason{font-size:0.75rem;color:var(--text-2);margin-top:3px;line-height:1.4}
-.pair-rec-action{padding:5px 12px;border-radius:20px;font-size:0.72rem;font-family:var(--mono);font-weight:700;flex-shrink:0;margin-left:10px}
-.pair-rec-action.add{background:var(--green-dim);color:var(--green)}
-.pair-rec-action.remove{background:var(--red-dim);color:var(--red)}
-.pair-rec-action.keep{background:var(--blue-dim);color:var(--blue-bright)}.pair-rec-action.avoid{background:var(--red-dim);color:var(--red)}
-.risk-box{background:var(--gold-dim);border:1px solid rgba(255,179,64,0.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:14px;font-size:0.85rem;color:var(--gold);line-height:1.5}
+:root {
+  --bg: #080b12;
+  --surface: #0e1420;
+  --surface2: #141c2e;
+  --surface3: #1a2438;
+  --border: rgba(255,255,255,0.06);
+  --border2: rgba(255,255,255,0.1);
+  --gold: #f0b429;
+  --gold-dim: rgba(240,180,41,0.12);
+  --gold-border: rgba(240,180,41,0.25);
+  --green: #00d395;
+  --green-dim: rgba(0,211,149,0.1);
+  --red: #ff4d6d;
+  --red-dim: rgba(255,77,109,0.1);
+  --blue: #3b82f6;
+  --blue-bright: #60a5fa;
+  --blue-dim: rgba(59,130,246,0.12);
+  --text: #f1f5f9;
+  --text-2: #94a3b8;
+  --text-3: #475569;
+  --mono: 'DM Mono', monospace;
+  --sans: 'Syne', sans-serif;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+  max-width: 480px;
+  margin: 0 auto;
+  padding-bottom: 90px;
+  font-size: 17px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── TOPBAR ─────────────────────────────────────────────── */
+.topbar {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(8,11,18,0.95);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 22px;
+}
+.topbar-logo {
+  font-size: 1.1rem; font-weight: 800; letter-spacing: 0.08em;
+  color: var(--gold); text-transform: uppercase;
+}
+.live-badge {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.78rem; font-family: var(--mono);
+  color: var(--green); letter-spacing: 0.06em;
+  background: var(--green-dim);
+  border: 1px solid rgba(0,211,149,0.2);
+  padding: 5px 12px; border-radius: 20px;
+}
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green);
+  animation: pulse 2s ease-in-out infinite;
+}
+.paper-badge {
+  display: none; background: var(--gold-dim); color: var(--gold);
+  border: 1px solid var(--gold-border); border-radius: 6px;
+  font-size: 0.65rem; font-family: var(--mono); font-weight: 500;
+  padding: 2px 8px; margin-left: 8px; letter-spacing: 0.08em;
+}
+.settings-btn {
+  width: 40px; height: 40px; border-radius: var(--radius-sm);
+  background: var(--surface2); border: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; font-size: 1.2rem;
+}
+@keyframes pulse {
+  0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(0,211,149,0.4)}
+  50%{opacity:.8;box-shadow:0 0 0 6px rgba(0,211,149,0)}
+}
+
+/* ── NAV ─────────────────────────────────────────────────── */
+.nav {
+  position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+  width: 100%; max-width: 480px;
+  background: rgba(8,11,18,0.97);
+  backdrop-filter: blur(24px);
+  border-top: 1px solid var(--border);
+  display: flex; z-index: 100;
+}
+.nav-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  padding: 13px 0 15px; cursor: pointer; gap: 5px;
+  border: none; background: none;
+  color: var(--text-3); font-size: 0.65rem; font-family: var(--sans);
+  letter-spacing: 0.05em; text-transform: uppercase; font-weight: 600;
+  transition: color 0.2s;
+}
+.nav-item.active { color: var(--gold); }
+.nav-item span { font-size: 1.3rem; }
+
+/* ── PAGES ───────────────────────────────────────────────── */
+.page { display: none; padding: 18px; animation: fadeIn 0.25s ease; }
+.page.active { display: block; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+/* ── PORTFOLIO HEADER ────────────────────────────────────── */
+.portfolio-header {
+  background: linear-gradient(145deg, #0e1420 0%, #141c2e 100%);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  padding: 28px 22px 22px;
+  margin-bottom: 16px;
+  position: relative; overflow: hidden;
+}
+.portfolio-header::before {
+  content: ''; position: absolute; top: -40px; right: -40px;
+  width: 160px; height: 160px;
+  background: radial-gradient(circle, rgba(240,180,41,0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+.portfolio-label {
+  font-size: 0.75rem; color: var(--text-3);
+  letter-spacing: 0.16em; text-transform: uppercase;
+  margin-bottom: 10px; font-weight: 600;
+}
+.portfolio-value {
+  font-size: 3.2rem; font-weight: 800;
+  font-family: var(--mono); letter-spacing: -0.02em;
+  color: var(--text); line-height: 1;
+}
+.pnl-row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.portfolio-pnl {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 20px;
+  font-size: 0.88rem; font-family: var(--mono); font-weight: 500;
+}
+.portfolio-pnl.up { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,211,149,0.2); }
+.portfolio-pnl.down { background: var(--red-dim); color: var(--red); border: 1px solid rgba(255,77,109,0.2); }
+
+.portfolio-stats {
+  display: grid; grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 1px; background: var(--border); border-radius: var(--radius-sm);
+  overflow: hidden; margin-top: 20px;
+}
+.stat { background: var(--bg); padding: 14px 6px; text-align: center; }
+.stat-label { font-size: 0.62rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px; font-weight: 600; }
+.stat-value { font-size: 1.05rem; font-family: var(--mono); font-weight: 500; }
+
+/* ── REGIME CARD ─────────────────────────────────────────── */
+.regime-card {
+  border-radius: var(--radius); padding: 16px 18px;
+  margin-bottom: 16px; display: flex; align-items: center; gap: 16px;
+  border: 1px solid var(--border);
+}
+.regime-card.bullish { background: rgba(0,211,149,0.06); border-color: rgba(0,211,149,0.2); }
+.regime-card.bearish { background: rgba(255,77,109,0.06); border-color: rgba(255,77,109,0.2); }
+.regime-card.neutral { background: rgba(59,130,246,0.06); border-color: rgba(59,130,246,0.2); }
+.regime-icon { font-size: 2rem; flex-shrink: 0; }
+.regime-info { flex: 1; }
+.regime-title { font-size: 0.9rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.regime-title.bullish{color:var(--green)} .regime-title.bearish{color:var(--red)} .regime-title.neutral{color:var(--blue-bright)}
+.regime-reason { font-size: 0.82rem; color: var(--text-2); margin-top: 5px; line-height: 1.5; }
+.regime-tp { font-size: 0.82rem; font-family: var(--mono); margin-top: 5px; font-weight: 500; }
+.regime-tp.bullish{color:var(--green)} .regime-tp.bearish{color:var(--red)} .regime-tp.neutral{color:var(--blue-bright)}
+.regime-fg { display: flex; gap: 12px; margin-top: 8px; align-items: center; }
+.fg-val { font-size: 0.82rem; font-family: var(--mono); color: var(--text-2); }
+
+/* ── CHART ───────────────────────────────────────────────── */
+.chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+.chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.chart-title { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-2); }
+.chart-ranges { display: flex; gap: 6px; }
+.range-btn { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text-3); font-family: var(--mono); font-size: 0.75rem; cursor: pointer; transition: all 0.2s; font-weight: 500; }
+.range-btn.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); }
+
+/* ── CARDS ───────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+.card-title { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); margin-bottom: 16px; }
+
+/* ── ACTIVE PAIRS ────────────────────────────────────────── */
+.pair-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 0; border-bottom: 1px solid var(--border); cursor: pointer;
+  transition: background 0.15s;
+}
+.pair-row:last-child { border-bottom: none; }
+.pair-row:active { background: rgba(255,255,255,0.02); }
+.pair-info { display: flex; align-items: center; gap: 14px; }
+.pair-icon {
+  width: 46px; height: 46px; border-radius: 50%;
+  background: var(--surface2); border: 1px solid var(--border2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem; flex-shrink: 0; font-weight: 700;
+}
+.pair-name { font-size: 1.05rem; font-weight: 700; font-family: var(--mono); }
+.pair-holdings { font-size: 0.8rem; color: var(--text-2); margin-top: 4px; }
+.pair-prices { text-align: right; }
+.pair-price { font-size: 1.05rem; font-family: var(--mono); font-weight: 600; }
+.pair-change { font-size: 0.82rem; font-family: var(--mono); margin-top: 4px; font-weight: 500; }
+.up { color: var(--green); } .down { color: var(--red); }
+
+/* ── SIGNALS ─────────────────────────────────────────────── */
+.signal-card { background: var(--surface); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; border: 1px solid var(--border); border-left-width: 4px; }
+.signal-card.buy { border-left-color: var(--green); }
+.signal-card.sell { border-left-color: var(--red); }
+.signal-card.watch { border-left-color: var(--gold); }
+.signal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.signal-pair { font-family: var(--mono); font-weight: 700; font-size: 1.15rem; }
+.signal-badge { padding: 6px 14px; border-radius: 20px; font-size: 0.78rem; font-family: var(--mono); font-weight: 700; letter-spacing: 0.08em; }
+.signal-badge.buy { background: var(--green-dim); color: var(--green); }
+.signal-badge.sell { background: var(--red-dim); color: var(--red); }
+.signal-badge.watch { background: var(--gold-dim); color: var(--gold); }
+.signal-reason { font-size: 0.88rem; color: var(--text-2); line-height: 1.6; margin-bottom: 16px; }
+.confidence-bar { height: 5px; background: var(--surface2); border-radius: 3px; margin-bottom: 6px; overflow: hidden; }
+.confidence-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease; }
+.confidence-fill.buy{background:var(--green)} .confidence-fill.sell{background:var(--red)} .confidence-fill.watch{background:var(--gold)}
+.confidence-label { display: flex; justify-content: space-between; font-size: 0.78rem; font-family: var(--mono); color: var(--text-2); margin-bottom: 18px; }
+.signal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.btn { padding: 15px; border-radius: var(--radius-sm); border: none; font-family: var(--sans); font-size: 0.95rem; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+.btn-execute { background: var(--green); color: #000; }
+.btn-skip { background: var(--surface2); color: var(--text-2); border: 1px solid var(--border2); }
+.indicators { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-top: 14px; }
+.indicator { background: var(--surface2); border-radius: var(--radius-sm); padding: 12px 8px; text-align: center; }
+.indicator-name { font-size: 0.62rem; font-family: var(--mono); color: var(--text-3); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+.indicator-value { font-size: 0.88rem; font-family: var(--mono); font-weight: 600; }
+
+/* ── SECTION TITLE ───────────────────────────────────────── */
+.section-title { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin: 22px 0 14px; }
+
+/* ── HISTORY ─────────────────────────────────────────────── */
+.trade-row { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.trade-row:last-child { border-bottom: none; }
+.trade-left { display: flex; align-items: center; gap: 14px; }
+.trade-type { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 0.82rem; font-family: var(--mono); font-weight: 700; flex-shrink: 0; }
+.trade-type.buy { background: var(--green-dim); color: var(--green); }
+.trade-type.sell { background: var(--red-dim); color: var(--red); }
+.trade-pair { font-size: 1rem; font-weight: 700; font-family: var(--mono); }
+.trade-time { font-size: 0.76rem; color: var(--text-2); margin-top: 4px; }
+.trade-right { text-align: right; }
+.trade-pnl { font-size: 1rem; font-family: var(--mono); font-weight: 600; }
+.trade-trigger { font-size: 0.72rem; color: var(--text-3); margin-top: 4px; }
+
+/* ── SETTINGS ────────────────────────────────────────────── */
+.setting-row { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; border-bottom: 1px solid var(--border); }
+.setting-row:last-child { border-bottom: none; }
+.setting-info { flex: 1; margin-right: 14px; }
+.setting-label { font-size: 1rem; font-weight: 600; }
+.setting-desc { font-size: 0.78rem; color: var(--text-2); margin-top: 4px; line-height: 1.4; }
+.setting-input { background: var(--surface2); border: 1px solid var(--border2); border-radius: var(--radius-sm); color: var(--text); font-family: var(--mono); font-size: 0.95rem; padding: 10px 14px; width: 90px; text-align: right; font-weight: 500; }
+
+/* ── API STATUS ──────────────────────────────────────────── */
+.api-status { display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: var(--green-dim); border: 1px solid rgba(0,211,149,0.2); border-radius: var(--radius-sm); margin-bottom: 16px; font-size: 0.88rem; color: var(--green); font-family: var(--mono); }
+.api-status.error { background: var(--red-dim); border-color: rgba(255,77,109,0.2); color: var(--red); }
+
+/* ── LOADING ─────────────────────────────────────────────── */
+.loading-row { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: 0.88rem; font-family: var(--mono); padding: 20px 0; }
+.spinner { width: 18px; height: 18px; border: 2px solid var(--border2); border-top-color: var(--gold); border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── TOGGLE ──────────────────────────────────────────────── */
+.toggle { position: relative; width: 52px; height: 28px; background: var(--surface2); border-radius: 14px; border: 1px solid var(--border2); cursor: pointer; transition: background 0.3s; flex-shrink: 0; }
+.toggle.on { background: var(--gold); border-color: var(--gold); }
+.toggle-thumb { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: white; transition: transform 0.3s; }
+.toggle.on .toggle-thumb { transform: translateX(24px); }
+
+/* ── SNIPER ──────────────────────────────────────────────── */
+.sniper-status { display: flex; align-items: center; gap: 14px; padding: 18px; background: var(--surface2); border-radius: var(--radius-sm); margin-bottom: 16px; border: 1px solid var(--border); }
+.sniper-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.sniper-dot.active { background: var(--green); animation: pulse 2s ease-in-out infinite; }
+.sniper-dot.inactive { background: var(--text-3); }
+.sniper-text { flex: 1; }
+.sniper-label { font-size: 1rem; font-weight: 600; }
+.sniper-sub { font-size: 0.78rem; color: var(--text-2); margin-top: 4px; }
+
+/* ── TOAST ───────────────────────────────────────────────── */
+.toast { position: fixed; bottom: 105px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--surface3); border: 1px solid var(--border2); border-radius: var(--radius-sm); padding: 13px 24px; font-size: 0.88rem; font-family: var(--mono); opacity: 0; transition: all 0.3s; z-index: 200; white-space: nowrap; color: var(--text); }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── MODALS ──────────────────────────────────────────────── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 150; display: none; align-items: flex-end; }
+.modal-overlay.show { display: flex; }
+.modal { background: var(--surface); border: 1px solid var(--border2); border-radius: var(--radius) var(--radius) 0 0; padding: 28px; width: 100%; }
+.modal-title { font-size: 1.2rem; font-weight: 800; margin-bottom: 20px; }
+.modal-input { width: 100%; background: var(--surface2); border: 1px solid var(--border2); border-radius: var(--radius-sm); color: var(--text); font-family: var(--mono); font-size: 1rem; padding: 15px 18px; margin-bottom: 14px; }
+.modal-note { font-size: 0.78rem; color: var(--text-3); margin-bottom: 14px; line-height: 1.5; }
+.modal-btn { width: 100%; padding: 17px; border-radius: var(--radius-sm); border: none; font-family: var(--sans); font-size: 1rem; font-weight: 700; cursor: pointer; background: var(--gold); color: #000; margin-top: 8px; }
+
+/* ── INSIGHTS ────────────────────────────────────────────── */
+.insight-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 14px; }
+.insight-card.bullish { border-left: 4px solid var(--green); }
+.insight-card.bearish { border-left: 4px solid var(--red); }
+.insight-card.warning { border-left: 4px solid var(--gold); }
+.insight-card.neutral { border-left: 4px solid var(--blue); }
+.insight-title { font-size: 1rem; font-weight: 700; margin-bottom: 8px; }
+.insight-body { font-size: 0.88rem; color: var(--text-2); line-height: 1.65; }
+.watch-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+.watch-info { flex: 1; }
+.watch-name { font-size: 1rem; font-weight: 700; font-family: var(--mono); }
+.watch-reason { font-size: 0.8rem; color: var(--text-2); margin-top: 5px; line-height: 1.4; }
+.watch-signal { padding: 6px 14px; border-radius: 20px; font-size: 0.75rem; font-family: var(--mono); font-weight: 700; flex-shrink: 0; margin-left: 12px; }
+.watch-signal.buy { background: var(--green-dim); color: var(--green); }
+.watch-signal.watch { background: var(--blue-dim); color: var(--blue-bright); }
+.watch-signal.avoid { background: var(--red-dim); color: var(--red); }
+.pair-rec { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+.pair-rec-info { flex: 1; }
+.pair-rec-name { font-size: 1rem; font-weight: 700; font-family: var(--mono); }
+.pair-rec-reason { font-size: 0.8rem; color: var(--text-2); margin-top: 5px; line-height: 1.4; }
+.pair-rec-action { padding: 6px 14px; border-radius: 20px; font-size: 0.75rem; font-family: var(--mono); font-weight: 700; flex-shrink: 0; margin-left: 12px; }
+.pair-rec-action.add { background: var(--green-dim); color: var(--green); }
+.pair-rec-action.remove { background: var(--red-dim); color: var(--red); }
+.pair-rec-action.keep { background: var(--blue-dim); color: var(--blue-bright); }
+.risk-box { background: var(--gold-dim); border: 1px solid var(--gold-border); border-radius: var(--radius-sm); padding: 16px 18px; margin-bottom: 16px; font-size: 0.88rem; color: var(--gold); line-height: 1.6; }
+
+/* ── STATS ───────────────────────────────────────────────── */
+.calendar-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 4px; margin-bottom: 8px; }
+.cal-day { height: 36px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-family: var(--mono); cursor: default; }
+.cal-day.positive { background: var(--green-dim); color: var(--green); }
+.cal-day.negative { background: var(--red-dim); color: var(--red); }
+.cal-day.neutral { background: var(--surface2); color: var(--text-3); }
+.cal-day.today { outline: 2px solid var(--gold); }
+.pair-stat-row { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.pair-stat-row:last-child { border-bottom: none; }
+.pair-stat-name { font-family: var(--mono); font-weight: 700; font-size: 0.95rem; }
+.pair-stat-meta { font-size: 0.76rem; color: var(--text-2); margin-top: 4px; }
+.win-bar { height: 6px; background: var(--surface2); border-radius: 3px; margin-top: 8px; overflow: hidden; width: 110px; }
+.win-fill { height: 100%; border-radius: 3px; }
+.alloc-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.alloc-row:last-child { border-bottom: none; }
+.alloc-bar { height: 8px; background: var(--surface2); border-radius: 4px; flex: 1; }
+.alloc-fill { height: 100%; border-radius: 4px; transition: width 0.8s ease; }
+
+/* ── PAIR MODAL ──────────────────────────────────────────── */
+.pair-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 0; }
 </style>
 </head>
 <body>
-<div class="topbar"><div class="topbar-logo">⚡ AUTOTRADER<span class="paper-badge" id="paperBadge" style="display:none">PAPER</span></div><div class="live-badge"><div class="live-dot"></div>LIVE</div><div class="settings-btn" onclick="showPage('settings')">⚙️</div></div>
-<div class="toast" id="toast"></div>
-<div class="modal-overlay" id="apiModal"><div class="modal"><div class="modal-title">🔑 Connect Binance</div><input class="modal-input" id="apiKey" placeholder="API Key" type="password"><input class="modal-input" id="apiSecret" placeholder="API Secret" type="password"><div class="modal-note">Keys stored locally on your device only. Never shared.</div><button class="modal-btn" onclick="saveApiKeys()">Connect Account</button></div></div>
 
-<!-- HOME -->
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-logo">⚡ AutoTrader<span class="paper-badge" id="paperBadge">PAPER</span></div>
+  <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+  <div class="settings-btn" onclick="showPage('settings')">⚙️</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- API KEY MODAL -->
+<div class="modal-overlay" id="apiModal">
+  <div class="modal">
+    <div class="modal-title">🔑 Connect Binance</div>
+    <input class="modal-input" id="apiKey" placeholder="API Key" type="password">
+    <input class="modal-input" id="apiSecret" placeholder="API Secret" type="password">
+    <div class="modal-note">Keys stored locally on your device only. Never shared.</div>
+    <button class="modal-btn" onclick="saveApiKeys()">Connect Account</button>
+  </div>
+</div>
+
+<!-- TRADE MODAL -->
+<div class="modal-overlay" id="tradeModal">
+  <div class="modal">
+    <div class="modal-title">Manual Trade</div>
+    <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:16px;margin-bottom:18px">
+      <div style="font-size:0.78rem;color:var(--text-2);margin-bottom:8px;letter-spacing:0.08em;text-transform:uppercase">Select Pair</div>
+      <select id="tradePairSelect" style="width:100%;background:transparent;border:none;color:var(--text);font-family:var(--mono);font-size:1.05rem;font-weight:600;outline:none">
+        <option>Loading pairs...</option>
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+      <button class="btn" style="background:var(--green);color:#000;padding:18px;font-size:1rem;" onclick="submitManualTrade('buy')">✓ BUY</button>
+      <button class="btn" style="background:var(--red);color:white;padding:18px;font-size:1rem;" onclick="submitManualTrade('sell')">✕ SELL</button>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text-3);text-align:center;line-height:1.6">Buy uses 5% of portfolio · Sell closes full position</div>
+    <button class="btn btn-skip" style="width:100%;margin-top:14px;padding:14px" onclick="document.getElementById('tradeModal').classList.remove('show')">Cancel</button>
+  </div>
+</div>
+
+<!-- PAIR DETAIL MODAL -->
+<div class="modal-overlay" id="pairModal">
+  <div class="modal" style="padding:0;border-radius:var(--radius) var(--radius) 0 0;overflow:hidden;max-height:85vh;display:flex;flex-direction:column">
+    <div style="padding:22px 22px 0;background:var(--surface)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="font-size:1.2rem;font-weight:800;font-family:var(--mono)" id="pairModalTitle">BTC/USDT</div>
+        <button onclick="document.getElementById('pairModal').classList.remove('show')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:8px;color:var(--text-2);font-size:0.88rem;padding:7px 14px;cursor:pointer;font-family:var(--sans)">✕ Close</button>
+      </div>
+      <div style="display:flex;gap:20px;margin-bottom:18px">
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">Price</div><div style="font-family:var(--mono);font-weight:700;font-size:1.2rem" id="pairModalPrice">-</div></div>
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">24h</div><div style="font-family:var(--mono);font-weight:600;font-size:1.2rem" id="pairModalChange">-</div></div>
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">Holdings</div><div style="font-family:var(--mono);font-weight:600;font-size:1.2rem" id="pairModalHoldings">-</div></div>
+        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">P&L</div><div style="font-family:var(--mono);font-weight:600;font-size:1.2rem" id="pairModalPnl">-</div></div>
+      </div>
+      <canvas id="pairChart" height="140" style="width:100%"></canvas>
+    </div>
+    <div style="padding:18px 22px;overflow-y:auto;flex:1">
+      <div style="font-size:0.72rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-3);margin-bottom:12px">Trade History</div>
+      <div id="pairModalTrades"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px">
+        <button class="btn" style="background:var(--green);color:#000;padding:16px;font-size:0.95rem;" onclick="manualFromPair('buy')">✓ Buy</button>
+        <button class="btn" style="background:var(--red);color:white;padding:16px;font-size:0.95rem;" onclick="manualFromPair('sell')">✕ Sell</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── HOME PAGE ─────────────────────────────────────────── -->
 <div class="page active" id="page-home">
   <div class="portfolio-header">
     <div class="portfolio-label">Total Portfolio Value</div>
     <div class="portfolio-value" id="portfolioValue">$0.00</div>
-    <div class="pnl-row"><div class="portfolio-pnl up" id="portfolioPnl">Today: +$0.00 (0.00%)</div></div>
+    <div class="pnl-row">
+      <div class="portfolio-pnl up" id="portfolioPnl">Today: +$0.00 (0.00%)</div>
+    </div>
     <div class="portfolio-stats">
       <div class="stat"><div class="stat-label">Trades</div><div class="stat-value" id="tradesToday">0</div></div>
-      <div class="stat"><div class="stat-label">Win %</div><div class="stat-value up" id="winRate">-</div></div>
+      <div class="stat"><div class="stat-label">Win %</div><div class="stat-value up" id="winRate">—</div></div>
       <div class="stat"><div class="stat-label">Open</div><div class="stat-value" id="openPositions">0</div></div>
-      <div class="stat"><div class="stat-label">USDT</div><div class="stat-value up" id="freeUsdt">$0</div></div>
+      <div class="stat"><div class="stat-label">Free USDT</div><div class="stat-value up" id="freeUsdt">$0</div></div>
     </div>
   </div>
+
   <div class="regime-card neutral" id="regimeCard">
     <div class="regime-icon" id="regimeIcon">📊</div>
     <div class="regime-info">
-      <div class="regime-title neutral" id="regimeTitle">ANALYSING MARKET</div>
-      <div class="regime-reason" id="regimeReason">Detecting current market regime...</div>
-      <div class="regime-tp neutral" id="regimeTp">Auto Take Profit: calculating...</div>
-      <div style="display:flex;gap:12px;margin-top:6px;align-items:center">
-        <div style="font-size:0.72rem;font-family:var(--mono);color:var(--text-2)">Fear & Greed: <span id="fearGreedVal" style="font-weight:700">-</span></div>
-        <div style="font-size:0.68rem;color:var(--text-3)" id="fearGreedLabel">Loading...</div>
+      <div class="regime-title neutral" id="regimeTitle">ANALYSING</div>
+      <div class="regime-reason" id="regimeReason">Detecting market regime...</div>
+      <div class="regime-tp neutral" id="regimeTp">Auto TP: calculating...</div>
+      <div class="regime-fg">
+        <div class="fg-val">Fear & Greed: <span id="fearGreedVal" style="font-weight:700">—</span></div>
+        <div style="font-size:0.76rem;color:var(--text-3)" id="fearGreedLabel"></div>
       </div>
     </div>
   </div>
+
   <div class="chart-card">
     <div class="chart-header">
       <div class="chart-title">Portfolio Performance</div>
@@ -217,72 +454,49 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <canvas id="portfolioChart" height="160"></canvas>
     <div class="loading-row" id="chartLoading"><div class="spinner"></div> Loading chart...</div>
   </div>
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
     <div class="section-title" style="margin:0">Active Pairs</div>
-    <button onclick="openTradeModal()" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--blue-bright);font-family:var(--sans);font-size:0.75rem;font-weight:600;padding:7px 14px;cursor:pointer">+ Manual Trade</button>
+    <button onclick="openTradeModal()" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">+ Manual Trade</button>
   </div>
   <div class="card" id="pairsCard"><div class="loading-row"><div class="spinner"></div> Loading prices...</div></div>
+
   <div class="section-title">AI Signals</div>
   <div id="signalsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
 </div>
 
-<!-- STATS -->
-<div class="page" id="page-stats">
-  <div class="section-title">Portfolio Allocation</div>
-  <div class="card" id="allocCard"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
-  <div class="section-title">PnL Calendar — Last 30 Days</div>
-  <div class="card">
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:6px">
-      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">M</div>
-      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">T</div>
-      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">W</div>
-      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">T</div>
-      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">F</div>
-      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">S</div>
-      <div style="text-align:center;font-size:0.6rem;color:var(--text-3)">S</div>
-    </div>
-    <div class="calendar-grid" id="calendarGrid"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
-  </div>
-  <div class="section-title">Win Rate Per Pair</div>
-  <div class="card" id="pairStatsCard"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
-  <div class="section-title">Paper Trading</div>
-  <div class="card">
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Paper Mode</div><div class="setting-desc">Simulate trades without real orders — safe for testing</div></div><div class="toggle" id="paperToggle" onclick="togglePaper()"><div class="toggle-thumb"></div></div></div>
-    <div id="paperLog" style="display:none;margin-top:12px"><div style="font-size:0.72rem;color:var(--text-3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.1em">Simulated Trades</div><div id="paperTrades" style="font-size:0.8rem;font-family:var(--mono);color:var(--text-2)">No paper trades yet.</div></div>
-  </div>
-</div>
-
-<!-- INSIGHTS -->
+<!-- ── INSIGHTS PAGE ──────────────────────────────────────── -->
 <div class="page" id="page-insights">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
     <div class="section-title" style="margin:0">AI Market Insights</div>
-    <div style="font-size:0.7rem;color:var(--text-3);font-family:var(--mono)" id="insightsUpdated">-</div>
+    <div style="font-size:0.75rem;color:var(--text-3);font-family:var(--mono)" id="insightsUpdated">—</div>
   </div>
   <div id="insightsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
   <div class="section-title">Watchlist</div>
   <div id="watchlistContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
   <div class="section-title">Pair Recommendations</div>
   <div id="pairRecsContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
-  <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:14px;font-size:0.75rem;color:var(--text-2);line-height:1.5">
-    To add/remove pairs: Railway → Variables → <span style="font-family:var(--mono);color:var(--blue-bright)">TRADING_PAIRS</span>
+  <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 18px;margin-bottom:16px;font-size:0.82rem;color:var(--text-2);line-height:1.5">
+    To add/remove pairs: Railway → Variables → <span style="font-family:var(--mono);color:var(--gold)">TRADING_PAIRS</span>
   </div>
   <div class="section-title">Risk Warning</div>
   <div class="risk-box" id="riskWarning">Loading market analysis...</div>
-  <div style="text-align:center;padding:16px 0">
-    <button class="btn" style="background:var(--blue-dim);color:var(--blue-bright);border:1px solid var(--border2);padding:12px 28px;border-radius:var(--radius-sm);font-size:0.9rem;font-weight:700;" onclick="loadInsights()">Refresh Insights</button>
+  <div style="text-align:center;padding:18px 0">
+    <button class="btn" style="background:var(--gold-dim);color:var(--gold);border:1px solid var(--gold-border);padding:14px 32px;border-radius:var(--radius-sm);font-size:0.95rem;font-weight:700;" onclick="loadInsights()">Refresh Insights</button>
   </div>
 </div>
 
-<!-- HISTORY -->
-<div class="page" id="page-history">
-  <div class="section-title">Trade History</div>
-  <div class="card" id="historyCard"><div class="loading-row"><div class="spinner"></div> Loading history...</div></div>
-</div>
-
-<!-- SNIPER -->
+<!-- ── SNIPER PAGE ────────────────────────────────────────── -->
 <div class="page" id="page-sniper">
   <div class="section-title">New Listing Sniper</div>
-  <div class="sniper-status"><div class="sniper-dot active" id="sniperDot"></div><div class="sniper-text"><div class="sniper-label" id="sniperLabel">Sniper Active</div><div class="sniper-sub">Monitoring Binance every 10s</div></div><div class="toggle on" id="sniperToggle" onclick="toggleSniper()"><div class="toggle-thumb"></div></div></div>
+  <div class="sniper-status">
+    <div class="sniper-dot active" id="sniperDot"></div>
+    <div class="sniper-text">
+      <div class="sniper-label" id="sniperLabel">Sniper Active</div>
+      <div class="sniper-sub">Monitoring Binance every 15s</div>
+    </div>
+    <div class="toggle on" id="sniperToggle" onclick="toggleSniper()"><div class="toggle-thumb"></div></div>
+  </div>
   <div class="card">
     <div class="card-title">Sniper Settings</div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Spend Per Listing</div><div class="setting-desc">Maximum USDT per new coin</div></div><input class="setting-input" id="sniperBudget" value="50" type="number"></div>
@@ -292,26 +506,58 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Approval Mode</div><div class="setting-desc">Ask before buying new listings</div></div><div class="toggle on" id="approvalToggle" onclick="toggleApproval()"><div class="toggle-thumb"></div></div></div>
   </div>
   <div class="section-title">Recent Detections</div>
-  <div class="card" id="sniperHistory"><div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.9rem;">No new listings detected yet.</div></div>
+  <div class="card" id="sniperHistory"><div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.95rem;">No new listings detected yet.</div></div>
 </div>
 
-<!-- SETTINGS -->
+<!-- ── HISTORY PAGE ───────────────────────────────────────── -->
+<div class="page" id="page-history">
+  <div class="section-title">Trade History</div>
+  <div class="card" id="historyCard"><div class="loading-row"><div class="spinner"></div> Loading history...</div></div>
+</div>
+
+<!-- ── STATS PAGE ─────────────────────────────────────────── -->
+<div class="page" id="page-stats">
+  <div class="section-title">Portfolio Allocation</div>
+  <div class="card" id="allocCard"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div class="section-title">PnL Calendar — Last 30 Days</div>
+  <div class="card">
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:8px">
+      <div style="text-align:center;font-size:0.65rem;color:var(--text-3);font-weight:600">M</div>
+      <div style="text-align:center;font-size:0.65rem;color:var(--text-3);font-weight:600">T</div>
+      <div style="text-align:center;font-size:0.65rem;color:var(--text-3);font-weight:600">W</div>
+      <div style="text-align:center;font-size:0.65rem;color:var(--text-3);font-weight:600">T</div>
+      <div style="text-align:center;font-size:0.65rem;color:var(--text-3);font-weight:600">F</div>
+      <div style="text-align:center;font-size:0.65rem;color:var(--text-3);font-weight:600">S</div>
+      <div style="text-align:center;font-size:0.65rem;color:var(--text-3);font-weight:600">S</div>
+    </div>
+    <div class="calendar-grid" id="calendarGrid"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  </div>
+  <div class="section-title">Win Rate Per Pair</div>
+  <div class="card" id="pairStatsCard"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
+  <div class="section-title">Paper Trading</div>
+  <div class="card">
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Paper Mode</div><div class="setting-desc">Simulate trades without real orders</div></div><div class="toggle" id="paperToggle" onclick="togglePaper()"><div class="toggle-thumb"></div></div></div>
+    <div id="paperLog" style="display:none;margin-top:14px"><div style="font-size:0.72rem;color:var(--text-3);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600">Simulated Trades</div><div id="paperTrades" style="font-size:0.85rem;font-family:var(--mono);color:var(--text-2)">No paper trades yet.</div></div>
+  </div>
+</div>
+
+<!-- ── SETTINGS PAGE ─────────────────────────────────────── -->
 <div class="page" id="page-settings">
   <div class="section-title">Navigation</div>
-  <div class="card" style="padding:12px 18px">
+  <div class="card" style="padding:14px 20px">
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <button onclick="showPage('history')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--sans);font-size:0.85rem;font-weight:600;padding:10px 16px;cursor:pointer">📋 Trade History</button>
-      <button onclick="showPage('sniper')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--sans);font-size:0.85rem;font-weight:600;padding:10px 16px;cursor:pointer">🎯 Sniper</button>
+      <button onclick="showPage('history')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--sans);font-size:0.88rem;font-weight:600;padding:11px 18px;cursor:pointer">📋 History</button>
+      <button onclick="showPage('sniper')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--sans);font-size:0.88rem;font-weight:600;padding:11px 18px;cursor:pointer">🎯 Sniper</button>
     </div>
   </div>
   <div class="section-title">Connection</div>
-  <div class="card"><div class="api-status" id="apiStatus"><span>●</span> Not connected</div><button class="btn" style="width:100%;background:var(--blue);color:white;padding:14px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="showApiModal()">Configure Binance API</button></div>
+  <div class="card"><div class="api-status" id="apiStatus"><span>●</span> Not connected</div><button class="btn" style="width:100%;background:var(--gold);color:#000;padding:16px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="showApiModal()">Configure Binance API</button></div>
   <div class="section-title">Risk Management</div>
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Trade Size</div><div class="setting-desc">% of portfolio per trade</div></div><input class="setting-input" id="maxTradeSize" value="5" type="number"></div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Daily Loss Limit</div><div class="setting-desc">Pause trading after this % loss</div></div><input class="setting-input" id="dailyLossLimit" value="5" type="number"></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Stop Loss</div><div class="setting-desc">Auto stop-loss on all trades</div></div><input class="setting-input" id="defaultSL" value="3" type="number"></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Take Profit</div><div class="setting-desc">Overridden by AI regime detection</div></div><input class="setting-input" id="defaultTP" value="6" type="number"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Stop Loss</div><div class="setting-desc">Per trade stop loss %</div></div><input class="setting-input" id="defaultSL" value="4" type="number"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Take Profit</div><div class="setting-desc">Overridden by AI regime</div></div><input class="setting-input" id="defaultTP" value="12" type="number"></div>
   </div>
   <div class="section-title">Trading Mode</div>
   <div class="card">
@@ -320,23 +566,26 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   </div>
   <div class="section-title">Strategy — RSI Tiers</div>
   <div class="card">
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">BTC / ETH</div><div class="setting-desc">Large cap — patient entries</div></div><div style="font-family:var(--mono);font-size:0.85rem;font-weight:700;color:var(--green)">25 / 80</div></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">SOL / LINK / BNB</div><div class="setting-desc">Mid cap — moderate thresholds</div></div><div style="font-family:var(--mono);font-size:0.85rem;font-weight:700;color:var(--blue-bright)">30 / 75</div></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">ARB / RENDER / Others</div><div class="setting-desc">Small cap — tighter entries</div></div><div style="font-family:var(--mono);font-size:0.85rem;font-weight:700;color:var(--gold)">32 / 80</div></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Regime Adjustment</div><div class="setting-desc">Auto-applied on top of tier values</div></div><div style="font-family:var(--mono);font-size:0.8rem;color:var(--text-2)" id="regimeAdjust">Loading...</div></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">MA Cross</div><div class="setting-desc">Use Golden/Death Cross signals</div></div><div class="toggle on" id="maCrossToggle" onclick="toggleMaCross()"><div class="toggle-thumb"></div></div></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">MACD Signals</div><div class="setting-desc">Include MACD crossover signals</div></div><div class="toggle on" id="macdToggle" onclick="toggleMacd()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">BTC / ETH</div><div class="setting-desc">Large cap — patient entries</div></div><div style="font-family:var(--mono);font-size:0.9rem;font-weight:700;color:var(--green)">25 / 80</div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">SOL / LINK / BNB</div><div class="setting-desc">Mid cap — moderate</div></div><div style="font-family:var(--mono);font-size:0.9rem;font-weight:700;color:var(--blue-bright)">30 / 75</div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">ARB / RENDER / Others</div><div class="setting-desc">Small cap — tighter entries</div></div><div style="font-family:var(--mono);font-size:0.9rem;font-weight:700;color:var(--gold)">32 / 80</div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Regime Adjustment</div><div class="setting-desc">Auto-applied on top of tier</div></div><div style="font-family:var(--mono);font-size:0.82rem;color:var(--text-2)" id="regimeAdjust">Loading...</div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">MA Cross</div><div class="setting-desc">Golden/Death Cross signals</div></div><div class="toggle on" id="maCrossToggle" onclick="toggleMaCross()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">MACD Signals</div><div class="setting-desc">MACD crossover signals</div></div><div class="toggle on" id="macdToggle" onclick="toggleMacd()"><div class="toggle-thumb"></div></div></div>
   </div>
   <div class="section-title">Pyramiding</div>
   <div class="card">
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Pyramid Mode</div><div class="setting-desc">Add to winning positions on dips</div></div><div class="toggle on" id="pyramidToggle" onclick="togglePyramid()"><div class="toggle-thumb"></div></div></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Adds Per Pair</div><div class="setting-desc">Max extra buys per position (2 = 3 total)</div></div><input class="setting-input" id="pyramidMaxAdds" value="2" type="number" min="1" max="3"></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Add Trigger</div><div class="setting-desc">% drop from last buy to trigger add</div></div><input class="setting-input" id="pyramidTrigger" value="4" type="number"></div>
-    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Drawdown</div><div class="setting-desc">Never add if down more than this %</div></div><input class="setting-input" id="pyramidMaxDrop" value="10" type="number"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Pyramid Mode</div><div class="setting-desc">Add to positions on dips</div></div><div class="toggle on" id="pyramidToggle" onclick="togglePyramid()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Adds Per Pair</div><div class="setting-desc">Max extra buys (2 = 3 total)</div></div><input class="setting-input" id="pyramidMaxAdds" value="2" type="number" min="1" max="3"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Add Trigger</div><div class="setting-desc">% drop from last buy to add</div></div><input class="setting-input" id="pyramidTrigger" value="4" type="number"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Drawdown</div><div class="setting-desc">Never add if down more than %</div></div><input class="setting-input" id="pyramidMaxDrop" value="10" type="number"></div>
   </div>
-  <div style="text-align:center;padding:24px 0;"><button class="btn" style="background:var(--blue);color:white;padding:14px 40px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="saveSettings()">Save Settings</button></div>
+  <div style="text-align:center;padding:26px 0">
+    <button class="btn" style="background:var(--gold);color:#000;padding:16px 44px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="saveSettings()">Save Settings</button>
+  </div>
 </div>
 
+<!-- ── NAV ───────────────────────────────────────────────── -->
 <nav class="nav">
   <button class="nav-item active" id="nav-home" onclick="showPage('home')"><span>📊</span>Home</button>
   <button class="nav-item" id="nav-insights" onclick="showPage('insights')"><span>💡</span>Insights</button>
@@ -345,50 +594,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <button class="nav-item" id="nav-stats" onclick="showPage('stats')"><span>📈</span>Stats</button>
 </nav>
 
-<div class="modal-overlay" id="pairModal">
-  <div class="modal" style="padding:0;border-radius:var(--radius) var(--radius) 0 0;overflow:hidden;max-height:85vh;display:flex;flex-direction:column">
-    <div style="padding:20px 20px 0;background:var(--surface)">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-        <div style="font-size:1.1rem;font-weight:700;font-family:var(--mono)" id="pairModalTitle">BTC/USDT</div>
-        <button onclick="document.getElementById('pairModal').classList.remove('show')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:8px;color:var(--text-2);font-size:0.85rem;padding:6px 12px;cursor:pointer">✕ Close</button>
-      </div>
-      <div style="display:flex;gap:16px;margin-bottom:16px">
-        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">Price</div><div style="font-family:var(--mono);font-weight:700;font-size:1.1rem" id="pairModalPrice">-</div></div>
-        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">24h</div><div style="font-family:var(--mono);font-weight:600;font-size:1.1rem" id="pairModalChange">-</div></div>
-        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">Holdings</div><div style="font-family:var(--mono);font-weight:600;font-size:1.1rem" id="pairModalHoldings">-</div></div>
-        <div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em">P&L</div><div style="font-family:var(--mono);font-weight:600;font-size:1.1rem" id="pairModalPnl">-</div></div>
-      </div>
-      <canvas id="pairChart" height="140" style="width:100%"></canvas>
-    </div>
-    <div style="padding:16px 20px;overflow-y:auto;flex:1">
-      <div style="font-size:0.7rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px">Trade History</div>
-      <div id="pairModalTrades"><div style="color:var(--text-2);font-size:0.85rem;padding:8px 0">Loading...</div></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px">
-        <button class="btn" style="background:var(--green);color:#000;padding:14px;font-size:0.9rem;" onclick="manualFromPair('buy')">✓ Buy</button>
-        <button class="btn" style="background:var(--red);color:white;padding:14px;font-size:0.9rem;" onclick="manualFromPair('sell')">✕ Sell</button>
-      </div>
-    </div>
-  </div>
-</div>
-<div class="modal-overlay" id="tradeModal">
-  <div class="modal">
-    <div class="modal-title" id="tradeModalTitle">Manual Trade</div>
-    <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px">
-      <div style="font-size:0.75rem;color:var(--text-2);margin-bottom:6px">Pair</div>
-      <select id="tradePairSelect" style="width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--mono);font-size:1rem;padding:10px 14px">
-        <option>Loading pairs...</option>
-      </select>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-      <button class="btn" style="background:var(--green);color:#000;padding:16px;font-size:1rem;" onclick="submitManualTrade('buy')">✓ BUY</button>
-      <button class="btn" style="background:var(--red);color:white;padding:16px;font-size:1rem;" onclick="submitManualTrade('sell')">✕ SELL</button>
-    </div>
-    <div style="font-size:0.72rem;color:var(--text-3);text-align:center;line-height:1.5">Buy uses 5% of portfolio. Sell closes full position and cancels OCO orders.</div>
-    <button class="btn btn-skip" style="width:100%;margin-top:12px;padding:12px" onclick="document.getElementById('tradeModal').classList.remove('show')">Cancel</button>
-  </div>
-</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <script>
+
 const API_BASE=window.location.origin;
 let portfolioChart=null,chartRange='24h',allSnapshots=[];
 let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true};
@@ -757,6 +965,7 @@ async function loadStats(){
 
 window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000)});
 document.getElementById('apiModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show')});
+
 </script>
 </body>
 </html>
