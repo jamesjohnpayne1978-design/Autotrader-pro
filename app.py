@@ -504,8 +504,33 @@ def get_history():
 @app.route('/api/sniper/status')
 def sniper_status():
     if not sniper:
-        return jsonify({'active': False, 'detections': []})
-    return jsonify({'active': sniper.active, 'detections': sniper.recent_detections[-10:]})
+        return jsonify({'active': False, 'detections': [], 'watching': 0})
+    return jsonify({
+        'active': sniper.active,
+        'detections': sniper.recent_detections[-10:],
+        'watching': len(sniper.seen_symbols),
+        'status': 'running' if sniper.active else 'paused'
+    })
+
+@app.route('/api/sniper/test')
+def test_sniper():
+    """Test endpoint — verify sniper is working correctly"""
+    if not sniper:
+        return jsonify({'error': 'Sniper not initialised'}), 400
+    try:
+        info = trader.client.get_exchange_info()
+        current = {s['symbol'] for s in info['symbols']
+                  if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'}
+        return jsonify({
+            'sniper_active': sniper.active,
+            'pairs_watching': len(sniper.seen_symbols),
+            'pairs_on_binance': len(current),
+            'difference': len(current - sniper.seen_symbols),
+            'new_since_seed': list(current - sniper.seen_symbols)[:10],
+            'message': 'Sniper is working correctly' if len(current - sniper.seen_symbols) == 0 else f'{len(current-sniper.seen_symbols)} untracked pairs detected'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/sniper/toggle', methods=['POST'])
