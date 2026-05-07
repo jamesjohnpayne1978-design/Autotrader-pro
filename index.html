@@ -199,6 +199,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       <div class="regime-title neutral" id="regimeTitle">ANALYSING MARKET</div>
       <div class="regime-reason" id="regimeReason">Detecting current market regime...</div>
       <div class="regime-tp neutral" id="regimeTp">Auto Take Profit: calculating...</div>
+      <div style="display:flex;gap:12px;margin-top:6px;align-items:center">
+        <div style="font-size:0.72rem;font-family:var(--mono);color:var(--text-2)">Fear & Greed: <span id="fearGreedVal" style="font-weight:700">-</span></div>
+        <div style="font-size:0.68rem;color:var(--text-3)" id="fearGreedLabel">Loading...</div>
+      </div>
     </div>
   </div>
   <div class="chart-card">
@@ -395,13 +399,24 @@ function showApiModal(){document.getElementById('apiModal').classList.add('show'
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
 function updateApiStatus(c){const el=document.getElementById('apiStatus');el.className=c?'api-status':'api-status error';el.innerHTML=c?'<span>●</span> Connected to Binance':'<span>●</span> Not connected'}
 
+async function loadFearGreed(){try{
+  const r=await fetch('https://api.alternative.me/fng/?limit=1');
+  const d=await r.json();
+  const val=parseInt(d.data[0].value);
+  const label=d.data[0].value_classification;
+  const el=document.getElementById('fearGreedVal');
+  const lel=document.getElementById('fearGreedLabel');
+  if(el){el.textContent=val;el.style.color=val<25?'var(--red)':val<45?'var(--gold)':val<75?'var(--green)':'var(--blue-bright)';}
+  if(lel)lel.textContent=label;
+}catch(e){}}
+
 async function loadRegime(){try{const r=await fetch(API_BASE+'/api/regime');const d=await r.json();const regime=d.regime||'neutral';const tp=d.take_profit||6;const reason=d.reason||'';const icons={bullish:'🚀',bearish:'🔴',neutral:'📊'};const labels={bullish:'BULL MARKET',bearish:'BEAR MARKET',neutral:'NEUTRAL MARKET'};document.getElementById('regimeCard').className='regime-card '+regime;document.getElementById('regimeIcon').textContent=icons[regime];document.getElementById('regimeTitle').className='regime-title '+regime;document.getElementById('regimeTitle').textContent=labels[regime];document.getElementById('regimeReason').textContent=reason;document.getElementById('regimeTp').className='regime-tp '+regime;document.getElementById('regimeTp').textContent='Auto Take Profit: '+tp+'%';const adj=document.getElementById('regimeAdjust');if(adj){if(regime==='bearish')adj.textContent='Bear: -3 buy / -5 sell';else if(regime==='bullish')adj.textContent='Bull: +3 buy / +3 sell';else adj.textContent='Neutral: no adjustment'}}catch(e){}}
 
 function setChartRange(r){chartRange=r;['24h','7d','30d'].forEach(x=>{const b=document.getElementById('btn'+x);if(b)b.className='range-btn'+(x===r?' active':'')});renderChart()}
 function renderChart(){if(!allSnapshots||!allSnapshots.length){document.getElementById('portfolioChart').style.display='none';document.getElementById('chartLoading').style.display='flex';return}document.getElementById('chartLoading').style.display='none';document.getElementById('portfolioChart').style.display='block';const now=new Date();const hrs={'24h':24,'7d':168,'30d':720}[chartRange]||24;const cut=new Date(now-hrs*3600000);const f=allSnapshots.filter(s=>new Date(s.time)>=cut);if(f.length<2){document.getElementById('portfolioChart').style.display='none';document.getElementById('chartLoading').innerHTML='<span style="color:var(--text-2);font-size:0.78rem;">Not enough data yet.</span>';document.getElementById('chartLoading').style.display='flex';return}const labels=f.map(s=>{const d=new Date(s.time);return chartRange==='24h'?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):d.toLocaleDateString([],{month:'short',day:'numeric'})});const vals=f.map(s=>s.value);const isUp=vals[vals.length-1]>=vals[0];const col=isUp?'#0dffaa':'#ff4466';if(portfolioChart)portfolioChart.destroy();const ctx=document.getElementById('portfolioChart').getContext('2d');portfolioChart=new Chart(ctx,{type:'line',data:{labels,datasets:[{data:vals,borderColor:col,borderWidth:2,pointRadius:0,tension:0.4,fill:true,backgroundColor:(c)=>{const g=c.chart.ctx.createLinearGradient(0,0,0,160);g.addColorStop(0,isUp?'rgba(13,255,170,0.2)':'rgba(255,68,102,0.2)');g.addColorStop(1,'rgba(0,0,0,0)');return g}}]},options:{responsive:true,plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,backgroundColor:'rgba(12,18,32,0.95)',bodyColor:'#f0f4ff',callbacks:{label:(c)=>'$'+c.parsed.y.toLocaleString()}}},scales:{x:{display:false},y:{display:false}}}})}
 async function loadChart(){try{const r=await fetch(API_BASE+'/api/portfolio/history');const d=await r.json();allSnapshots=d.history||[];renderChart()}catch(e){document.getElementById('chartLoading').style.display='none'}}
 
-async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime()}
+async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime();loadFearGreed()}
 
 async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const pnl=d.pnl_today||0;const pct=d.pnl_pct||0;const el=document.getElementById('portfolioPnl');el.textContent='Today: '+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+pct.toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');document.getElementById('tradesToday').textContent=d.trades_today||0;document.getElementById('winRate').textContent=d.win_rate?d.win_rate+'%':'-';document.getElementById('openPositions').textContent=d.open_positions||0;document.getElementById('freeUsdt').textContent='$'+(d.free_usdt||0).toFixed(0);state.apiConnected=true;updateApiStatus(true)}catch(e){}}
 
