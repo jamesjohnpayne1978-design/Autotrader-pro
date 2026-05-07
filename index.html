@@ -371,15 +371,13 @@ body {
 <div class="modal-overlay" id="tradeModal">
   <div class="modal">
     <div class="modal-title">Manual Trade</div>
-    <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:16px;margin-bottom:18px">
-      <div style="font-size:0.78rem;color:var(--text-2);margin-bottom:8px;letter-spacing:0.08em;text-transform:uppercase">Select Pair</div>
-      <select id="tradePairSelect" style="width:100%;background:transparent;border:none;color:var(--text);font-family:var(--mono);font-size:1.05rem;font-weight:600;outline:none">
-        <option>Loading pairs...</option>
-      </select>
+    <div style="background:var(--surface2);border-radius:var(--radius-sm);padding:4px;margin-bottom:18px">
+      <div id="pairButtonsContainer" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px"></div>
     </div>
+    <div style="font-size:0.82rem;color:var(--text-2);margin-bottom:16px;text-align:center">Selected: <span id="selectedPairLabel" style="color:var(--gold);font-family:var(--mono);font-weight:700">Loading...</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-      <button class="btn" style="background:var(--green);color:#000;padding:18px;font-size:1rem;" onclick="submitManualTrade('buy')">✓ BUY</button>
-      <button class="btn" style="background:var(--red);color:white;padding:18px;font-size:1rem;" onclick="submitManualTrade('sell')">✕ SELL</button>
+      <button class="btn" id="tradeBuyBtn" style="background:var(--green);color:#000;padding:18px;font-size:1rem;opacity:0.5" onclick="submitManualTrade('buy')" disabled>✓ BUY</button>
+      <button class="btn" id="tradeSellBtn" style="background:var(--red);color:white;padding:18px;font-size:1rem;opacity:0.5" onclick="submitManualTrade('sell')" disabled>✕ SELL</button>
     </div>
     <div style="font-size:0.78rem;color:var(--text-3);text-align:center;line-height:1.6">Buy uses 5% of portfolio · Sell closes full position</div>
     <button class="btn btn-skip" style="width:100%;margin-top:14px;padding:14px" onclick="document.getElementById('tradeModal').classList.remove('show')">Cancel</button>
@@ -839,32 +837,65 @@ function manualFromPair(side){
   });
 }
 
+let selectedTradePair = '';
+
+function selectTradePair(symbol, displayName){
+  selectedTradePair = symbol;
+  document.getElementById('selectedPairLabel').textContent = displayName;
+  // Highlight selected button
+  document.querySelectorAll('.pair-select-btn').forEach(b=>{
+    b.style.background = b.dataset.symbol === symbol ? 'var(--gold)' : 'var(--surface3)';
+    b.style.color = b.dataset.symbol === symbol ? '#000' : 'var(--text)';
+  });
+  // Enable trade buttons
+  document.getElementById('tradeBuyBtn').disabled = false;
+  document.getElementById('tradeBuyBtn').style.opacity = '1';
+  document.getElementById('tradeSellBtn').disabled = false;
+  document.getElementById('tradeSellBtn').style.opacity = '1';
+}
+
 async function openTradeModal(preselect){
-  // Load current pairs dynamically
+  selectedTradePair = preselect || '';
+  document.getElementById('selectedPairLabel').textContent = preselect ? preselect.replace('USDT','/USDT') : 'Tap a pair below';
+  document.getElementById('tradeBuyBtn').disabled = !preselect;
+  document.getElementById('tradeBuyBtn').style.opacity = preselect ? '1' : '0.5';
+  document.getElementById('tradeSellBtn').disabled = !preselect;
+  document.getElementById('tradeSellBtn').style.opacity = preselect ? '1' : '0.5';
+  document.getElementById('tradeModal').classList.add('show');
+
+  // Load pairs as tap buttons
+  const container = document.getElementById('pairButtonsContainer');
+  container.innerHTML = '<div style="color:var(--text-3);font-size:0.85rem;padding:4px">Loading pairs...</div>';
   try{
-    const r=await fetch(API_BASE+'/api/prices');
-    const d=await r.json();
-    const sel=document.getElementById('tradePairSelect');
-    if(d.pairs&&d.pairs.length){
-      sel.innerHTML=d.pairs.map(p=>`<option value="${p.symbol.replace('/','')}">${p.symbol}</option>`).join('');
+    const r = await fetch(API_BASE+'/api/prices');
+    const d = await r.json();
+    if(d.pairs && d.pairs.length){
+      container.innerHTML = d.pairs.map(p=>{
+        const sym = p.symbol.replace('/','');
+        const isSelected = sym === preselect;
+        return `<button class="pair-select-btn" data-symbol="${sym}"
+          onclick="selectTradePair('${sym}','${p.symbol}')"
+          style="background:${isSelected?'var(--gold)':'var(--surface3)'};
+                 color:${isSelected?'#000':'var(--text)'};
+                 border:1px solid var(--border2);border-radius:8px;
+                 padding:10px 14px;font-family:var(--mono);font-size:0.88rem;
+                 font-weight:700;cursor:pointer">
+          ${p.symbol.replace('/USDT','')}
+        </button>`;
+      }).join('');
+      if(preselect){
+        const firstMatch = d.pairs.find(p=>p.symbol.replace('/','')===preselect);
+        if(firstMatch) selectTradePair(preselect, firstMatch.symbol);
+      }
     }
   }catch(e){
-    // fallback - load from settings
-    try{
-      const r=await fetch(API_BASE+'/api/settings');
-      const d=await r.json();
-      if(d.trading_pairs&&d.trading_pairs.length){
-        const sel=document.getElementById('tradePairSelect');
-        sel.innerHTML=d.trading_pairs.map(p=>`<option value="${p}">${p.replace('USDT','/USDT')}</option>`).join('');
-      }
-    }catch(e2){}
+    container.innerHTML='<div style="color:var(--red);font-size:0.85rem">Could not load pairs</div>';
   }
-  document.getElementById('tradeModal').classList.add('show');
-  if(preselect){const sel=document.getElementById('tradePairSelect');if(sel){for(let o of sel.options){if(o.value===preselect||o.text===preselect.replace('USDT','/USDT')){o.selected=true;break;}}}}
 }
 
 async function submitManualTrade(side){
-  const pair=document.getElementById('tradePairSelect').value;
+  const pair = selectedTradePair;
+  if(!pair){showToast('Please select a pair first');return;}
   const pairName=pair.replace('USDT','/USDT');
   document.getElementById('tradeModal').classList.remove('show');
   showToast('Sending manual '+side.toUpperCase()+' for '+pairName+'...');
