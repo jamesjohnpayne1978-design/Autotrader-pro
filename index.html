@@ -400,7 +400,7 @@ function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();co
 function updateApiStatus(c){const el=document.getElementById('apiStatus');el.className=c?'api-status':'api-status error';el.innerHTML=c?'<span>●</span> Connected to Binance':'<span>●</span> Not connected'}
 
 async function loadFearGreed(){try{
-  const r=await fetch('https://api.alternative.me/fng/?limit=1');
+  const r=await fetch('https://api.alternative.me/fng/?limit=1',{mode:'cors'});
   const d=await r.json();
   const val=parseInt(d.data[0].value);
   const label=d.data[0].value_classification;
