@@ -512,6 +512,38 @@ def sniper_status():
         'status': 'running' if sniper.active else 'paused'
     })
 
+@app.route('/api/telegram/test')
+def test_telegram():
+    """Send a test Telegram message to verify setup"""
+    if not config.telegram_token or not config.telegram_chat_id:
+        return jsonify({
+            'success': False,
+            'error': 'TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set in Railway Variables',
+            'token_set': bool(config.telegram_token),
+            'chat_id_set': bool(config.telegram_chat_id)
+        })
+    try:
+        import requests as test_req
+        msg = (
+            "✅ *AutoTrader Pro — Test Message*\n\n"
+            "Telegram is connected and working!\n"
+            "You will receive alerts for every trade.\n\n"
+            "_Sent from your Railway bot_"
+        )
+        r = test_req.post(
+            f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
+            json={'chat_id': config.telegram_chat_id, 'text': msg, 'parse_mode': 'Markdown'},
+            timeout=10
+        )
+        data = r.json()
+        if data.get('ok'):
+            return jsonify({'success': True, 'message': 'Test message sent! Check Telegram.'})
+        else:
+            return jsonify({'success': False, 'error': data.get('description', 'Unknown error'), 'response': data})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
 @app.route('/api/sniper/test')
 def test_sniper():
     """Test endpoint — verify sniper is working correctly"""
