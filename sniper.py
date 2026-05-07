@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 # Binance public API - no scraping needed
 BINANCE_API = "https://api.binance.com/api/v3"
 BINANCE_NEWS_API = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=20"
+BINANCE_NEWS_API_V2 = "https://www.binance.com/en/support/announcement/new-cryptocurrency-listing?c=48&navId=48"
 
 class ListingSniper:
     def __init__(self, config, trader, risk_manager):
@@ -49,33 +50,38 @@ class ListingSniper:
             pass
 
     def run(self):
-        log.info("Sniper thread started — checking every 15s")
-        # Seed initial known symbols on first run
-        self._seed_known_symbols()
+        log.info("Sniper thread started — seeding known symbols...")
+        # Always force-seed on startup to get current state
+        self._seed_known_symbols(force=True)
+        log.info(f"Sniper ready — watching {len(self.seen_symbols)} existing pairs for new listings")
         check_count = 0
         while True:
             if self.active:
                 try:
-                    # Check exchange info every cycle (most reliable)
                     self._check_new_exchange_symbols()
-                    # Check Binance news API every 4 cycles (~60s)
+                    # Check news API every 4 cycles (~60s)
                     if check_count % 4 == 0:
                         self._check_binance_news()
+                    if check_count % 20 == 0:  # Log heartbeat every 5 mins
+                        log.info(f"Sniper heartbeat — watching {len(self.seen_symbols)} pairs, {len(self.recent_detections)} detections so far")
                     check_count += 1
                 except Exception as e:
                     log.error(f"Sniper check error: {e}")
             time.sleep(15)
 
-    def _seed_known_symbols(self):
+    def _seed_known_symbols(self, force=False):
         """Load all current symbols so we only alert on NEW ones"""
         try:
             info = self.trader.client.get_exchange_info()
             current = {s['symbol'] for s in info['symbols']
                       if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'}
-            if not self.seen_symbols:
+            if force or not self.seen_symbols:
+                # Always force-seed on startup — never trust stale saved state
                 self.seen_symbols = current
                 self._save_seen()
-                log.info(f"Sniper seeded with {len(current)} existing USDT pairs")
+                log.info(f"Sniper seeded with {len(current)} existing USDT pairs (force={force})")
+            else:
+                log.info(f"Sniper using {len(self.seen_symbols)} saved symbols")
         except Exception as e:
             log.warning(f"Could not seed symbols: {e}")
 
@@ -147,19 +153,21 @@ class ListingSniper:
     def _extract_symbol(self, title: str):
         """Extract coin symbol from announcement title"""
         import re
-        # Patterns: (BTC), (NEWCOIN/USDT), "will list ABC"
+        SKIP = {'USD','USDT','USDC','BUSD','EUR','GBP','BTC','ETH','BNB',
+                'THE','FOR','AND','NEW','OUR','ITS','NOT','ALL','ANY'}
         patterns = [
-            r'\(([A-Z]{2,10})(?:/USDT)?\)',
-            r'(?:list|listing|lists|adds?)\s+([A-Z]{2,10})(?:\s|/|$)',
-            r'([A-Z]{3,10})\s+(?:to|on)\s+Binance',
+            r'\(([A-Z]{2,12})(?:/USDT|/BTC|/ETH)?\)',          # (TOKEN) or (TOKEN/USDT)
+            r'(?:will\s+list|lists|listing|adds?)\s+([A-Z]{2,12})',  # will list TOKEN
+            r'([A-Z]{3,12})\s+(?:token|coin)?\s+(?:to|on)\s+Binance', # TOKEN to Binance
+            r'Binance\s+(?:Lists|Will\s+List)\s+([A-Z]{2,12})',  # Binance Lists TOKEN
         ]
         for pattern in patterns:
-            match = re.search(pattern, title, re.IGNORECASE)
-            if match:
+            for match in re.finditer(pattern, title, re.IGNORECASE):
                 coin = match.group(1).upper()
-                # Skip known stablecoins and common false positives
-                if coin not in {'USD', 'USDT', 'USDC', 'BUSD', 'EUR', 'GBP', 'BTC', 'ETH', 'BNB', 'THE', 'FOR', 'AND'}:
-                    return coin + 'USDT'
+                if coin not in SKIP and len(coin) >= 2:
+                    symbol = coin + 'USDT'
+                    log.info(f"Extracted symbol {symbol} from: {title[:60]}")
+                    return symbol
         return None
 
     def _handle_new_listing(self, symbol: str, title: str, source: str):
