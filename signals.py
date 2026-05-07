@@ -51,6 +51,23 @@ class SignalEngine:
                 log.error(f"Signal refresh error: {e}")
             time.sleep(300)
 
+    def _fetch_fear_greed(self):
+        """Fetch crypto Fear & Greed index — 0=extreme fear, 100=extreme greed"""
+        try:
+            import requests as req
+            r = req.get('https://api.alternative.me/fng/?limit=1', timeout=8)
+            if r.status_code == 200:
+                data = r.json()
+                value = int(data['data'][0]['value'])
+                classification = data['data'][0]['value_classification']
+                self.fear_greed_index = value
+                self.fear_greed_label = classification
+                log.info(f"Fear & Greed: {value} ({classification})")
+                return value
+        except Exception as e:
+            log.debug(f"Fear & Greed fetch error: {e}")
+        return getattr(self, 'fear_greed_index', 50)
+
     def detect_market_regime(self):
         """Analyse overall market to determine bull/bear/neutral regime"""
         try:
