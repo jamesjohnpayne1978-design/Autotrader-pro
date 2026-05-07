@@ -50,13 +50,13 @@ class Config:
         # Risk settings
         self.max_trade_pct = 5.0
         self.daily_loss_limit_pct = 5.0
-        self.default_sl_pct = 3.0
-        self.default_tp_pct = 6.0
-        self.dynamic_tp = 6.0
+        self.default_sl_pct = 4.0    # Wider — avoids normal volatility stopouts
+        self.default_tp_pct = 12.0   # Bigger TP — let winners run
+        self.dynamic_tp = 12.0        # Default dynamic TP
         # Trailing stop settings
         self.trailing_stop_enabled = True
-        self.trailing_stop_pct = 2.0          # Trail 2% below highest price
-        self.trailing_breakeven_trigger = 3.0  # Move to breakeven after 3% gain
+        self.trailing_stop_pct = 2.5           # Trail 2.5% below highest price
+        self.trailing_breakeven_trigger = 4.0  # Move to breakeven after 4% gain
         # Volume filter
         self.volume_filter_enabled = True
         self.volume_filter_min = 0.8           # Min 0.8x average volume to buy
