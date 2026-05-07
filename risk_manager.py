@@ -40,7 +40,7 @@ class RiskManager:
             return False, reason
 
         # Check confidence threshold
-        if confidence < 72:
+        if confidence < 68:
             reason = f"Confidence {confidence}% below minimum 65%"
             log.info(f"Risk check failed for {pair}: {reason}")
             return False, reason
