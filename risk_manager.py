@@ -25,10 +25,11 @@ class RiskManager:
         # Check minimum hold time before auto-selling
         if action == 'sell':
             from datetime import datetime
+            self._load_persistent_times()
             min_hold = getattr(self.config, 'min_hold_minutes', 120)
             elapsed_mins = None
 
-            # Method 1: in-memory (fastest, lost on restart)
+            # Method 1: in-memory + persistent file
             last = RiskManager._trade_times.get(pair)
             if last:
                 elapsed_mins = (datetime.now() - last).total_seconds() / 60
@@ -128,9 +129,33 @@ class RiskManager:
         """Release trading lock after trade completes or fails"""
         RiskManager._trading_now.discard(pair)
 
+    def _load_persistent_times(self):
+        """Load trade times from disk into memory on first check"""
+        if getattr(self.__class__, '_times_loaded', False):
+            return
+        try:
+            import json, os
+            trade_times_file = '/data/trade_times.json'
+            if os.path.exists(trade_times_file):
+                from datetime import datetime
+                with open(trade_times_file, 'r') as f:
+                    saved = json.load(f)
+                for pair, ts in saved.items():
+                    try:
+                        dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                        if pair not in RiskManager._trade_times:
+                            RiskManager._trade_times[pair] = dt
+                    except Exception:
+                        pass
+                log.info(f"Loaded {len(saved)} trade times from disk")
+        except Exception as e:
+            log.debug(f"Could not load trade times: {e}")
+        self.__class__._times_loaded = True
+
     def _is_on_cooldown(self, pair):
         """Check cooldown using both memory AND saved trade history (survives restarts)"""
         from datetime import datetime
+        self._load_persistent_times()
         cooldown = getattr(self.config, 'trade_cooldown_minutes', 60)
 
         # Check in-memory first (fastest)
@@ -169,9 +194,23 @@ class RiskManager:
         return False
 
     def record_trade(self, pair):
-        """Call this after any trade to start cooldown"""
+        """Call this after any trade to start cooldown — persists across restarts"""
         from datetime import datetime
-        RiskManager._trade_times[pair] = datetime.now()
+        import json, os
+        now = datetime.now()
+        RiskManager._trade_times[pair] = now
+        # Save to persistent volume so cooldown survives Railway restarts
+        try:
+            trade_times_file = '/data/trade_times.json'
+            existing = {}
+            if os.path.exists(trade_times_file):
+                with open(trade_times_file, 'r') as f:
+                    existing = json.load(f)
+            existing[pair] = now.strftime('%Y-%m-%d %H:%M:%S')
+            with open(trade_times_file, 'w') as f:
+                json.dump(existing, f)
+        except Exception as e:
+            log.debug(f"Could not persist trade time: {e}")
 
     def _already_holding(self, pair):
         """Returns True if we already have a meaningful position in this pair"""
