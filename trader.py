@@ -159,23 +159,17 @@ class Trader:
                 price = float(ticker['price'])
                 pair_name = f"{base}/USDT"
 
-                # Find most recent buy price from saved history
+                # Find most recent buy price — only show gain if position is open
                 buy_price = None
                 try:
-                    # History is newest first — find most recent buy
-                    # But only if there's no more recent sell (position is open)
-                    found_sell = False
-                    for trade in history:
-                        if trade.get('pair') != pair_name:
-                            continue
-                        if trade.get('side') == 'sell':
-                            found_sell = True
-                            break  # Most recent trade is a sell — no open position
-                        if trade.get('side') == 'buy' and not found_sell:
-                            bp = trade.get('price', 0)
+                    pair_trades = [t for t in history if t.get('pair') == pair_name]
+                    if pair_trades:
+                        latest = pair_trades[0]  # History is newest first
+                        # Only show gain% if most recent trade is a buy (position open)
+                        if latest.get('side') == 'buy':
+                            bp = latest.get('price', 0)
                             if bp and float(bp) > 0:
                                 buy_price = float(bp)
-                                break
                 except Exception:
                     buy_price = None
 
@@ -330,7 +324,10 @@ class Trader:
             log.info(f"BUY {symbol}: qty={quantity} at ${buy_price:.6f}")
             self._last_trade_time[pair] = datetime.now()
             usdt_spent = buy_price * quantity
-            self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
+            try:
+                self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
+            except Exception as le:
+                log.warning(f"Could not log buy trade: {le}")
             # Place OCO order — wrap in try so a failed OCO doesn't lose the trade
             try:
                 self._place_oco_order(symbol, pair, quantity, buy_price)
@@ -356,12 +353,27 @@ class Trader:
                 raise ValueError(f"Adjusted sell quantity is zero for {symbol}")
             price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
             order = self.client.order_market_sell(symbol=symbol, quantity=quantity)
-            sell_price = float(order.get('fills', [{}])[0].get('price', price)) if order.get('fills') else price
+            fills = order.get('fills', [])
+            if fills:
+                total_qty = sum(float(f['qty']) for f in fills)
+                sell_price = sum(float(f['price']) * float(f['qty']) for f in fills) / total_qty if total_qty > 0 else price
+            else:
+                sell_price = price
             log.info(f"SELL {symbol}: qty={quantity} at ${sell_price:.6f}")
             self._last_trade_time[pair] = datetime.now()
-            pnl = self._calculate_pnl(pair, sell_price, quantity)
-            self._log_trade(pair, 'sell', order, sell_price, quantity, pnl)
-            self.clear_trailing_stop(symbol)
+            # Wrap post-trade logging safely — never crash after Binance order succeeds
+            try:
+                pnl = self._calculate_pnl(pair, sell_price, quantity)
+            except Exception:
+                pnl = 0.0
+            try:
+                self._log_trade(pair, 'sell', order, sell_price, quantity, pnl)
+            except Exception as le:
+                log.warning(f"Could not log sell trade: {le}")
+            try:
+                self.clear_trailing_stop(symbol)
+            except Exception:
+                pass
         else:
             raise ValueError(f"Unknown action: {action}")
 
