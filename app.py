@@ -1,631 +1,624 @@
 """
-AutoTrader Pro - Binance Trading Engine
-Fixed: Real PnL from Binance trade history, OCO orders, gain%, free USDT
+AutoTrader Pro - Main Flask Server
+Added: market regime endpoint
 """
 
+from flask import Flask, jsonify, request, send_file
+from datetime import datetime
+from flask_cors import CORS
+import threading
 import logging
-import math
-from datetime import datetime, timedelta
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
+import os
+import requests as req
+from trader import Trader
+from sniper import ListingSniper
+from signals import SignalEngine
+from risk_manager import RiskManager
+from config import Config
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
 
+app = Flask(__name__)
+CORS(app)
 
-class Trader:
-    def __init__(self, config):
-        self.config = config
-        self.client = Client(config.api_key, config.api_secret)
-        self._verify_connection()
-        self._symbol_info_cache = {}
-        self._last_trade_time = {}
-        self._open_oco_orders = {}
+config = Config()
+trader = None
+sniper = None
+signal_engine = None
+risk_manager = RiskManager(config)
 
-    def _verify_connection(self):
+
+def send_telegram(message):
+    if not config.telegram_token:
+        log.warning("Telegram: TELEGRAM_TOKEN not set")
+        return
+    if not config.telegram_chat_id:
+        log.warning("Telegram: TELEGRAM_CHAT_ID not set")
+        return
+    try:
+        log.info(f"Sending Telegram message to chat_id={config.telegram_chat_id}")
+        r = req.post(
+            f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
+            json={'chat_id': str(config.telegram_chat_id), 'text': message, 'parse_mode': 'Markdown'},
+            timeout=10
+        )
+        data = r.json()
+        if data.get('ok'):
+            log.info("Telegram message sent successfully")
+        else:
+            log.warning(f"Telegram failed: {data.get('description', 'Unknown error')}")
+    except Exception as e:
+        log.warning(f"Telegram exception: {e}")
+
+
+def init_trader():
+    global trader, sniper, signal_engine
+    if config.api_key and config.api_secret:
         try:
-            self.client.ping()
-            log.info("Binance connection established.")
-        except BinanceAPIException as e:
-            log.error(f"Binance connection failed: {e}")
-            raise
+            trader = Trader(config)
+            signal_engine = SignalEngine(config, trader, risk_manager)
+            sniper = ListingSniper(config, trader, risk_manager)
+            if config.sniper_active:
+                sniper_thread = threading.Thread(target=sniper.run, daemon=True)
+                sniper_thread.start()
+            signal_thread = threading.Thread(target=signal_engine.run, daemon=True)
+            signal_thread.start()
+            log.info("Trader, Sniper and Signal Engine initialised.")
+            send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
+        except Exception as e:
+            log.error(f"Failed to initialise trader: {e}")
 
-    def is_on_cooldown(self, pair):
-        cooldown = self.config.trade_cooldown_minutes
-        if pair in self._last_trade_time:
-            elapsed = (datetime.now() - self._last_trade_time[pair]).total_seconds() / 60
-            if elapsed < cooldown:
-                log.info(f"Cooldown active for {pair}: {cooldown - elapsed:.1f} mins remaining")
-                return True
-        return False
 
-    def get_portfolio(self):
-        account = self.client.get_account()
-        balances = [b for b in account['balances']
-                    if float(b['free']) + float(b['locked']) > 0]
-        total_usdt = 0.0
-        positions = []
-        free_usdt = 0.0
-        for b in balances:
-            asset = b['asset']
-            amount = float(b['free']) + float(b['locked'])
-            if asset == 'USDT':
-                total_usdt += amount
-                free_usdt = float(b['free'])
-                positions.append({'asset': asset, 'amount': amount, 'value_usdt': amount})
-                continue
+@app.route('/')
+def index():
+    return send_file('index.html')
+
+
+@app.route('/api/health')
+def health():
+    return jsonify({
+        'status': 'ok',
+        'connected': trader is not None,
+        'sniper': sniper.active if sniper else False,
+        'auto_mode': config.auto_mode,
+        'version': '1.0.0'
+    })
+
+
+@app.route('/api/config', methods=['POST'])
+def set_config():
+    data = request.json
+    config.api_key = data.get('api_key', '')
+    config.api_secret = data.get('api_secret', '')
+    config.save()
+    init_trader()
+    return jsonify({'success': True})
+
+
+@app.route('/api/portfolio')
+def get_portfolio():
+    if not trader:
+        return jsonify({'error': 'Not connected'}), 400
+    try:
+        return jsonify(trader.get_portfolio())
+    except Exception as e:
+        log.error(f"Portfolio error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/portfolio/history')
+def portfolio_history():
+    try:
+        history = config.load_portfolio_history()
+        return jsonify({'history': history})
+    except Exception as e:
+        return jsonify({'history': [], 'error': str(e)})
+
+
+@app.route('/api/prices')
+def get_prices():
+    if not trader:
+        return jsonify({'pairs': []}), 200
+    try:
+        pairs = trader.get_prices()
+        return jsonify({'pairs': pairs if pairs else []})
+    except Exception as e:
+        log.error(f"Prices error: {e}")
+        # Return empty list instead of 500 so dashboard shows something
+        return jsonify({'pairs': [], 'error': str(e)}), 200
+
+
+@app.route('/api/signals')
+def get_signals():
+    if not signal_engine:
+        return jsonify({'signals': []})
+    try:
+        return jsonify({'signals': signal_engine.get_latest_signals()})
+    except Exception as e:
+        return jsonify({'signals': [], 'error': str(e)})
+
+
+
+@app.route('/api/insights')
+def get_insights():
+    regime = 'neutral'
+    regime_tp = 6.0
+    try:
+        regime = signal_engine.market_regime if signal_engine else 'neutral'
+        regime_tp = signal_engine.regime_tp if signal_engine else 6.0
+    except Exception:
+        pass
+
+    insights = []
+    watchlist = []
+    pair_recs = []
+    risk_warning = ""
+
+    try:
+        import requests as req_lib
+
+        # Pull live Binance market data for all major pairs
+        def get_binance_ticker(symbol):
+            r = req_lib.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}", timeout=5)
+            return r.json() if r.status_code == 200 else {}
+
+        def get_rsi(symbol, interval='1h', period=14):
+            r = req_lib.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=5)
+            if r.status_code != 200: return None
+            closes = [float(k[4]) for k in r.json()]
+            gains, losses = [], []
+            for i in range(1, len(closes)):
+                diff = closes[i] - closes[i-1]
+                gains.append(max(diff, 0))
+                losses.append(max(-diff, 0))
+            avg_gain = sum(gains) / period
+            avg_loss = sum(losses) / period
+            if avg_loss == 0: return 100
+            rs = avg_gain / avg_loss
+            return round(100 - (100 / (1 + rs)), 1)
+
+        # Analyse current trading pairs + additional watchlist candidates
+        analysis_pairs = list(getattr(config, 'trading_pairs', ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT']))
+        watch_candidates = ['AVAXUSDT','INJUSDT','SUIUSDT','APTUSDT','LINKUSDT','DOTUSDT','NEARUSDT']
+
+        pair_data = {}
+        for symbol in analysis_pairs + watch_candidates:
             try:
-                ticker = self.client.get_symbol_ticker(symbol=f"{asset}USDT")
-                price = float(ticker['price'])
-                value = amount * price
-                total_usdt += value
-                positions.append({
-                    'asset': asset,
-                    'amount': round(amount, 6),
-                    'price': round(price, 4),
-                    'value_usdt': round(value, 2)
-                })
+                t = get_binance_ticker(symbol)
+                rsi = get_rsi(symbol)
+                if t and 'lastPrice' in t:
+                    pair_data[symbol] = {
+                        'price': float(t['lastPrice']),
+                        'change': float(t['priceChangePercent']),
+                        'volume': float(t['quoteVolume']),
+                        'high': float(t['highPrice']),
+                        'low': float(t['lowPrice']),
+                        'rsi': rsi
+                    }
             except Exception:
                 pass
 
-        self._save_portfolio_snapshot(round(total_usdt, 2))
+        # BTC analysis
+        btc = pair_data.get('BTCUSDT', {})
+        btc_change = btc.get('change', 0)
+        btc_rsi = btc.get('rsi', 50)
+        btc_price = btc.get('price', 0)
 
-        # Daily PnL from actual closed Binance trades today
-        pnl_today = 0.0
-        pnl_pct = 0.0
-        pnl_total = 0.0
-        pnl_total_pct = 0.0
-        try:
-            real_trades = self.get_real_trade_history()
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            # Sum PnL from all closed (sell) trades today
-            today_sells = [t for t in real_trades if t.get('side') == 'sell' and t.get('date', '') == today_str and t.get('pnl', 0) != 0]
-            pnl_today = round(sum(t.get('pnl', 0) for t in today_sells), 2)
-            if total_usdt > 0 and pnl_today != 0:
-                pnl_pct = round((pnl_today / (total_usdt - pnl_today)) * 100, 2)
-            # Total PnL from all closed trades ever
-            all_sells = [t for t in real_trades if t.get('side') == 'sell' and t.get('pnl', 0) != 0]
-            pnl_total = round(sum(t.get('pnl', 0) for t in all_sells), 2)
-            # Total % vs first snapshot
-            snapshots = self.config.load_portfolio_history()
-            if snapshots and snapshots[0]['value'] > 0:
-                first_val = snapshots[0]['value']
-                pnl_total_pct = round(((total_usdt - first_val) / first_val) * 100, 2)
-        except Exception as e:
-            log.debug(f"PnL calc error: {e}")
-
-        # Trade counts
-        history = self.get_real_trade_history()
-        today = datetime.now().strftime('%Y-%m-%d')
-        trades_today = len([t for t in history if t.get('date', '') == today])
-        closed = [t for t in history if t.get('side') == 'sell' and t.get('pnl', 0) != 0]
-        wins = [t for t in closed if t.get('pnl', 0) > 0]
-        win_rate = round(len(wins) / len(closed) * 100) if closed else None
-
-        return {
-            'total_usdt': round(total_usdt, 2),
-            'positions': positions,
-            'trades_today': trades_today,
-            'open_positions': len([p for p in positions if p['asset'] != 'USDT' and p.get('value_usdt', 0) >= 1.0]),
-            'win_rate': win_rate,
-            'pnl_today': pnl_today,
-            'pnl_pct': pnl_pct,
-            'pnl_total': pnl_total,
-            'pnl_total_pct': pnl_total_pct,
-            'free_usdt': round(free_usdt, 2)
-        }
-
-    def _save_portfolio_snapshot(self, value):
-        try:
-            snapshots = self.config.load_portfolio_history()
-            now = datetime.now()
-            if snapshots:
-                last_time = datetime.fromisoformat(snapshots[-1]['time'])
-                if (now - last_time).total_seconds() < 3600:
-                    return
-            snapshots.append({
-                'time': now.isoformat(),
-                'value': value,
-                'date': now.strftime('%Y-%m-%d %H:%M')
-            })
-            self.config.save_portfolio_history(snapshots[-2160:])
-        except Exception as e:
-            log.debug(f"Snapshot save failed: {e}")
-
-    def get_portfolio_history(self):
-        return self.config.load_portfolio_history()
-
-    def get_prices(self):
-        results = []
-        # Use saved history (fast) not real-time Binance history (slow/times out)
-        history = self.config.load_trade_history()
-        tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
-        sl_pct = self.config.default_sl_pct
-
-        for symbol in self.config.trading_pairs:
-            try:
-                ticker = self.client.get_symbol_ticker(symbol=symbol)
-                stats = self.client.get_ticker(symbol=symbol)
-                base = symbol.replace('USDT', '')
-                # Get account balance once per symbol safely
-                try:
-                    account = self.client.get_account()
-                    holding = next(
-                        (float(b['free']) + float(b['locked'])
-                         for b in account['balances'] if b['asset'] == base), 0.0
-                    )
-                except Exception:
-                    holding = 0.0
-
-                price = float(ticker['price'])
-                pair_name = f"{base}/USDT"
-
-                # Find most recent buy price from saved history
-                buy_price = None
-                try:
-                    # History is newest first — find most recent buy
-                    # But only if there's no more recent sell (position is open)
-                    found_sell = False
-                    for trade in history:
-                        if trade.get('pair') != pair_name:
-                            continue
-                        if trade.get('side') == 'sell':
-                            found_sell = True
-                            break  # Most recent trade is a sell — no open position
-                        if trade.get('side') == 'buy' and not found_sell:
-                            bp = trade.get('price', 0)
-                            if bp and float(bp) > 0:
-                                buy_price = float(bp)
-                                break
-                except Exception:
-                    buy_price = None
-
-                gain_pct = None
-                to_tp = None
-                try:
-                    if buy_price and buy_price > 0 and holding * price >= 1.0:
-                        gain_pct = round(((price - buy_price) / buy_price) * 100, 2)
-                        to_tp = round(tp_pct - gain_pct, 2)
-                except Exception:
-                    pass
-
-                results.append({
-                    'symbol': pair_name,
-                    'base': base,
-                    'price': round(price, 6),
-                    'change': round(float(stats['priceChangePercent']), 2),
-                    'volume': float(stats['volume']),
-                    'holdings': round(holding, 6),
-                    'value_usdt': round(holding * price, 2),
-                    'buy_price': round(buy_price, 6) if buy_price else None,
-                    'gain_pct': gain_pct,
-                    'to_tp': to_tp,
-                    'tp_pct': tp_pct,
-                    'sl_pct': sl_pct
-                })
-            except Exception as e:
-                log.warning(f"Could not fetch {symbol}: {e}")
-                # Add basic entry so pair still shows on dashboard
-                try:
-                    base = symbol.replace('USDT', '')
-                    results.append({
-                        'symbol': f"{base}/USDT",
-                        'base': base,
-                        'price': 0,
-                        'change': 0,
-                        'volume': 0,
-                        'holdings': 0,
-                        'value_usdt': 0,
-                        'buy_price': None,
-                        'gain_pct': None,
-                        'to_tp': None,
-                        'tp_pct': tp_pct,
-                        'sl_pct': sl_pct
-                    })
-                except Exception:
-                    pass
-        return results
-
-    def get_real_trade_history(self):
-        """
-        Pull real trade history from Binance for all configured pairs.
-        Matches buys to sells and calculates real PnL per trade.
-        """
-        try:
-            all_trades = []
-            for symbol in self.config.trading_pairs:
-                try:
-                    trades = self.client.get_my_trades(symbol=symbol, limit=50)
-                    for t in trades:
-                        all_trades.append({
-                            'symbol': symbol,
-                            'pair': symbol.replace('USDT', '') + '/USDT',
-                            'side': 'buy' if t['isBuyer'] else 'sell',
-                            'price': float(t['price']),
-                            'quantity': float(t['qty']),
-                            'usdt_value': float(t['quoteQty']),
-                            'commission': float(t['commission']),
-                            'time_ms': int(t['time']),
-                            'time': datetime.fromtimestamp(int(t['time']) / 1000).strftime('%Y-%m-%d %H:%M'),
-                            'date': datetime.fromtimestamp(int(t['time']) / 1000).strftime('%Y-%m-%d'),
-                            'orderId': str(t['orderId']),
-                        })
-                except Exception as e:
-                    log.debug(f"Could not fetch trades for {symbol}: {e}")
-
-            # Consolidate partial fills with same orderId into single trades
-            consolidated = {}
-            for t in all_trades:
-                key = t['orderId']
-                if key not in consolidated:
-                    consolidated[key] = t.copy()
-                else:
-                    # Merge fills: add quantity and value, average price
-                    existing = consolidated[key]
-                    total_qty = existing['quantity'] + t['quantity']
-                    total_val = existing['usdt_value'] + t['usdt_value']
-                    existing['price'] = round(total_val / total_qty, 6) if total_qty > 0 else existing['price']
-                    existing['quantity'] = round(total_qty, 6)
-                    existing['usdt_value'] = round(total_val, 2)
-
-            all_trades = list(consolidated.values())
-            all_trades.sort(key=lambda x: x['time_ms'], reverse=True)
-
-            # Calculate PnL by matching sells to most recent buys per pair
-            buy_prices = {}
-            result = []
-            for trade in sorted(all_trades, key=lambda x: x['time_ms']):
-                symbol = trade['symbol']
-                if trade['side'] == 'buy':
-                    buy_prices[symbol] = trade['price']
-                    trade['pnl'] = 0.0
-                    trade['trigger'] = 'AI Signal'
-                elif trade['side'] == 'sell':
-                    if symbol in buy_prices and buy_prices[symbol] > 0:
-                        pnl = (trade['price'] - buy_prices[symbol]) * trade['quantity']
-                        trade['pnl'] = round(pnl, 2)
-                    else:
-                        trade['pnl'] = 0.0
-                    trade['trigger'] = 'AI Signal'
-
-            for trade in sorted(all_trades, key=lambda x: x['time_ms'], reverse=True):
-                result.append(trade)
-
-            return result[:100]
-
-        except Exception as e:
-            log.error(f"Real trade history error: {e}")
-            return self.config.load_trade_history()
-
-    def get_klines(self, symbol, interval='1h', limit=100):
-        raw = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        return [{
-            'time': k[0], 'open': float(k[1]), 'high': float(k[2]),
-            'low': float(k[3]), 'close': float(k[4]), 'volume': float(k[5])
-        } for k in raw]
-
-    def execute_trade(self, pair, action, pct_of_portfolio):
-        if self.is_on_cooldown(pair):
-            raise ValueError(f"Trade cooldown active for {pair}")
-
-        symbol = pair.replace('/', '')
-        base = symbol.replace('USDT', '')
-
-        if action == 'buy':
-            usdt_balance = self._get_balance('USDT')
-            amount_usdt = usdt_balance * (pct_of_portfolio / 100)
-            amount_usdt = max(15, min(amount_usdt, usdt_balance * 0.95))
-            price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-            quantity = self._adjust_quantity(symbol, amount_usdt / price)
-            if quantity <= 0:
-                raise ValueError(f"Calculated quantity is zero for {symbol}")
-            order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
-            # Calculate weighted average fill price across all fills
-            fills = order.get('fills', [])
-            if fills:
-                total_qty = sum(float(f['qty']) for f in fills)
-                buy_price = sum(float(f['price']) * float(f['qty']) for f in fills) / total_qty if total_qty > 0 else price
+        if btc_price > 0:
+            if btc_change > 3:
+                insights.append({"title": f"BTC Up {btc_change:.1f}% — Momentum Strong",
+                    "body": f"Bitcoin is trading at ${btc_price:,.0f}, up {btc_change:.1f}% in 24h. RSI at {btc_rsi} — {'still room to run' if btc_rsi < 65 else 'approaching overbought, watch for pullback'}. Altcoins typically follow within 4-12 hours.",
+                    "type": "bullish"})
+            elif btc_change < -3:
+                insights.append({"title": f"BTC Down {abs(btc_change):.1f}% — Caution",
+                    "body": f"Bitcoin dropped to ${btc_price:,.0f}, down {abs(btc_change):.1f}% in 24h. RSI at {btc_rsi} — {'oversold, possible bounce zone' if btc_rsi < 35 else 'still room to fall further'}. Bot trend filter is protecting against buying into this dip.",
+                    "type": "bearish"})
             else:
-                buy_price = price
-            log.info(f"Fill price for {symbol}: ${buy_price:.6f} ({len(fills)} fills)")
-            log.info(f"BUY {symbol}: qty={quantity} at ${buy_price:.6f}")
-            self._last_trade_time[pair] = datetime.now()
-            usdt_spent = buy_price * quantity
-            self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
-            # Place OCO order — wrap in try so a failed OCO doesn't lose the trade
-            try:
-                self._place_oco_order(symbol, pair, quantity, buy_price)
-            except Exception as oco_err:
-                log.warning(f"OCO order failed for {symbol} (trade still executed): {oco_err}")
-            # Start trailing stop tracking
-            if getattr(self.config, 'trailing_stop_enabled', False):
-                try:
-                    self.init_trailing_stop(symbol, buy_price)
-                except Exception:
-                    pass
+                insights.append({"title": f"BTC Consolidating at ${btc_price:,.0f}",
+                    "body": f"Bitcoin is ranging with only {btc_change:+.1f}% change in 24h. RSI at {btc_rsi} — neutral territory. Consolidation phases often precede large moves — {'bull bias given regime' if regime == 'bullish' else 'watch for direction before adding positions'}.",
+                    "type": "neutral"})
 
-        elif action == 'sell':
-            # Cancel any open OCO orders first (releases locked balance)
-            self._cancel_all_open_orders(symbol)
-            import time; time.sleep(1)  # Wait for cancellation to process
-            # Use free + locked balance since OCO is now cancelled
-            quantity = self._get_total_balance(base)
-            if quantity <= 0:
-                raise ValueError(f"No {base} balance to sell")
-            quantity = self._adjust_quantity(symbol, quantity * 0.999)
-            if quantity <= 0:
-                raise ValueError(f"Adjusted sell quantity is zero for {symbol}")
-            price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-            order = self.client.order_market_sell(symbol=symbol, quantity=quantity)
-            sell_price = float(order.get('fills', [{}])[0].get('price', price)) if order.get('fills') else price
-            log.info(f"SELL {symbol}: qty={quantity} at ${sell_price:.6f}")
-            self._last_trade_time[pair] = datetime.now()
-            pnl = self._calculate_pnl(pair, sell_price, quantity)
-            self._log_trade(pair, 'sell', order, sell_price, quantity, pnl)
-            self.clear_trailing_stop(symbol)
+        # Find oversold opportunities
+        oversold = [(s, d) for s, d in pair_data.items() if d.get('rsi') and d['rsi'] < 35 and s in analysis_pairs]
+        overbought = [(s, d) for s, d in pair_data.items() if d.get('rsi') and d['rsi'] > 70 and s in analysis_pairs]
+
+        if oversold:
+            names = ', '.join([s.replace('USDT','') for s,_ in oversold[:3]])
+            rsis = ', '.join([str(d['rsi']) for _,d in oversold[:3]])
+            insights.append({"title": f"Oversold: {names}",
+                "body": f"{names} showing RSI readings of {rsis} — technically oversold. {'Trend filter active — bot will only buy if price is near 50MA.' if len(oversold) > 0 else ''} Watch for RSI reversal confirmation before entry.",
+                "type": "bullish"})
+        elif overbought:
+            names = ', '.join([s.replace('USDT','') for s,_ in overbought[:3]])
+            insights.append({"title": f"Overbought Warning: {names}",
+                "body": f"{names} RSI above 70 — overbought territory. Bot will auto-generate sell signals. If holding these, take-profit orders are already active via OCO on Binance.",
+                "type": "warning"})
         else:
-            raise ValueError(f"Unknown action: {action}")
+            insights.append({"title": "RSI Neutral Across Pairs",
+                "body": f"All monitored pairs showing RSI between 35-70 — no extreme readings. Market in balance. Bot confidence threshold at 72% means it will wait for stronger signals before trading.",
+                "type": "neutral"})
 
-        return {'orderId': order['orderId'], 'status': order['status']}
+        # Volume analysis
+        high_vol = [(s, d) for s, d in pair_data.items() if d.get('volume', 0) > 50_000_000 and abs(d.get('change', 0)) > 2]
+        if high_vol:
+            top = sorted(high_vol, key=lambda x: x[1]['volume'], reverse=True)[0]
+            sym, data = top
+            name = sym.replace('USDT', '')
+            insights.append({"title": f"High Volume Alert: {name}",
+                "body": f"{name} showing ${data['volume']/1e6:.0f}M in 24h volume with {data['change']:+.1f}% price move. High volume moves are more likely to sustain direction. {'Bot has this pair active.' if sym in analysis_pairs else 'Not currently in bot — consider adding via Railway TRADING_PAIRS.'}",
+                "type": "bullish" if data['change'] > 0 else "bearish"})
 
-    def _place_oco_order(self, symbol, pair, quantity, buy_price):
+        # Build watchlist from candidates
+        wl_candidates = [(s, d) for s, d in pair_data.items() if s in watch_candidates and d.get('rsi')]
+        wl_candidates.sort(key=lambda x: x[1]['change'], reverse=True)
+        for sym, data in wl_candidates[:3]:
+            name = sym.replace('USDT', '')
+            rsi = data['rsi']
+            change = data['change']
+            if rsi < 40:
+                signal = "buy"
+                reason = f"RSI oversold at {rsi} with {change:+.1f}% 24h move — potential bounce candidate."
+            elif rsi > 65:
+                signal = "avoid"
+                reason = f"RSI at {rsi} — overbought. Wait for pullback before entry."
+            else:
+                signal = "watch"
+                reason = f"RSI at {rsi}, {change:+.1f}% in 24h — neutral setup, monitor for breakout."
+            watchlist.append({"symbol": sym, "name": name, "reason": reason, "signal": signal})
+
+        # Pair recommendations based on volume + trend
+        for sym in ['AVAXUSDT', 'INJUSDT', 'SUIUSDT', 'NEARUSDT', 'APTUSDT']:
+            if sym in pair_data:
+                d = pair_data[sym]
+                name = sym.replace('USDT', '')
+                in_bot = sym in analysis_pairs
+                if d.get('rsi') and d['rsi'] < 40 and d['volume'] > 20_000_000:
+                    pair_recs.append({"symbol": sym, "name": name, "action": "add" if not in_bot else "keep",
+                        "reason": f"RSI {d['rsi']} oversold + ${d['volume']/1e6:.0f}M volume. Strong entry setup right now."})
+                elif d.get('rsi') and d['rsi'] > 70:
+                    pair_recs.append({"symbol": sym, "name": name, "action": "keep" if in_bot else "avoid",
+                        "reason": f"RSI {d['rsi']} overbought — wait for pullback before adding."})
+                else:
+                    pair_recs.append({"symbol": sym, "name": name, "action": "keep" if in_bot else "add",
+                        "reason": f"{d['change']:+.1f}% 24h, RSI {d['rsi']} — solid mid-cap with good liquidity on Binance."})
+            if len(pair_recs) >= 3:
+                break
+
+        # Risk warning
+        losers = [(s, d) for s, d in pair_data.items() if s in analysis_pairs and d.get('change', 0) < -5]
+        if losers:
+            names = ', '.join([s.replace('USDT','') for s,_ in losers])
+            risk_warning = f"{names} down over 5% today — check your OCO stop loss orders are active in Binance app."
+        elif regime == 'bearish':
+            risk_warning = "Bear market regime detected — bot is using tighter RSI thresholds and lower take-profit targets. Reduce position sizes if uncertain."
+        elif btc_rsi and btc_rsi > 75:
+            risk_warning = f"BTC RSI at {btc_rsi} — historically high. Consider reducing exposure or tightening stop losses on open positions."
+        else:
+            risk_warning = "No major risk signals detected. Ensure OCO orders are active in Binance for all open positions."
+
+    except Exception as e:
+        log.warning(f"Insights data fetch error: {e}")
+        insights = [{"title": "Market data temporarily unavailable", "body": "Could not fetch live Binance data. Check Railway logs for details.", "type": "warning"}]
+        watchlist = []
+        pair_recs = []
+        risk_warning = "Check Railway logs — insights data fetch failed."
+
+    # Try Gemini AI (free, works globally) using the live data we just fetched
+    gemini_key = os.environ.get('GEMINI_API_KEY', '')
+    ai_powered = False
+    if gemini_key and pair_data:
         try:
-            tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
-            sl_pct = self.config.default_sl_pct
-            tp_price = self._round_price(symbol, buy_price * (1 + tp_pct / 100))
-            sl_price = self._round_price(symbol, buy_price * (1 - sl_pct / 100))
-            sl_limit_price = self._round_price(symbol, sl_price * 0.995)
-            log.info(f"Placing OCO for {symbol}: TP=${tp_price} SL=${sl_price} qty={quantity}")
-            oco = self.client.create_oco_order(
-                symbol=symbol, side='SELL', quantity=quantity,
-                price=str(tp_price), stopPrice=str(sl_price),
-                stopLimitPrice=str(sl_limit_price), stopLimitTimeInForce='GTC'
+            import json
+            data_summary = f"Live Binance data {datetime.now().strftime('%Y-%m-%d %H:%M')}:\n"
+            for sym, d in list(pair_data.items())[:12]:
+                rsi_str = f" RSI:{d['rsi']}" if d.get('rsi') else ""
+                data_summary += f"{sym}: ${d['price']:.4f} {d['change']:+.1f}%{rsi_str}\n"
+            data_summary += f"Regime: {regime}. TP: {regime_tp}%. Bot pairs: {','.join(analysis_pairs)}"
+
+            ai_prompt = (
+                "You are a professional crypto trader analysing live market data. Be specific and direct.\n\n"
+                + data_summary +
+                "\n\nUsing this real data, give specific actionable analysis. Reference actual prices and RSI values. "
+                "Suggest specific coins based on current conditions. Do NOT be generic.\n"
+                "Return ONLY valid JSON, no markdown, no explanation:\n"
+                '{"insights":['
+                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"},'
+                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"},'
+                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"}'
+                '],'
+                '"watchlist":['
+                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"},'
+                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"},'
+                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"}'
+                '],'
+                '"pair_recommendations":['
+                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"},'
+                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"},'
+                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"}'
+                '],'
+                '"risk_warning":"1 specific sentence with actual data"}'
             )
-            self._open_oco_orders[pair] = {
-                'orderListId': oco.get('orderListId'),
-                'symbol': symbol, 'tp_price': tp_price, 'sl_price': sl_price
-            }
-            log.info(f"OCO placed for {symbol} — TP: ${tp_price} ({tp_pct}%) | SL: ${sl_price} ({sl_pct}%)")
-        except BinanceAPIException as e:
-            log.warning(f"OCO order failed for {symbol}: {e}")
+
+            r = req_lib.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{"text": ai_prompt}]}],
+                    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1200}
+                },
+                timeout=30
+            )
+
+            if r.status_code == 200:
+                data = r.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                text = text.replace("```json", "").replace("```", "").strip()
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start != -1 and end > start:
+                    ai_result = json.loads(text[start:end])
+                    insights = ai_result.get("insights", insights)
+                    watchlist = ai_result.get("watchlist", watchlist)
+                    pair_recs = ai_result.get("pair_recommendations", pair_recs)
+                    risk_warning = ai_result.get("risk_warning", risk_warning)
+                    ai_powered = True
+                    log.info("Gemini AI insights generated successfully")
+                else:
+                    log.warning(f"Could not parse Gemini response: {text[:200]}")
+            else:
+                log.warning(f"Gemini API error {r.status_code}: {r.text[:200]}")
         except Exception as e:
-            log.warning(f"OCO setup error for {symbol}: {e}")
+            log.warning(f"Gemini insights failed: {e}")
 
-    # ─── TRAILING STOP ──────────────────────────────────────────────
-    _trailing_stops = {}  # {symbol: {'buy_price': x, 'highest': x, 'trail_pct': x}}
+    return jsonify({
+        "regime": regime,
+        "updated": datetime.now().strftime("%H:%M"),
+        "ai_powered": ai_powered,
+        "insights": insights[:3],
+        "watchlist": watchlist[:3],
+        "pair_recommendations": pair_recs[:3],
+        "risk_warning": risk_warning
+    })
 
-    def init_trailing_stop(self, symbol, buy_price):
-        """Start tracking a trailing stop for a position"""
-        trail_pct = getattr(self.config, 'trailing_stop_pct', 2.0)
-        breakeven_trigger = getattr(self.config, 'trailing_breakeven_trigger', 3.0)
-        self.__class__._trailing_stops[symbol] = {
-            'buy_price': buy_price,
-            'highest': buy_price,
-            'trail_pct': trail_pct,
-            'breakeven_trigger': breakeven_trigger,
-            'stop_price': buy_price * (1 - self.config.default_sl_pct / 100)
-        }
-        log.info(f"Trailing stop init for {symbol} @ ${buy_price:.4f}")
 
-    def update_trailing_stop(self, symbol, current_price):
-        """Update trailing stop — returns (should_sell, reason) if stop hit"""
-        state = self.__class__._trailing_stops.get(symbol)
-        if not state:
-            return False, None
+@app.route('/api/stats')
+def get_stats():
+    """Per-pair win rate, PnL calendar, and portfolio allocation"""
+    try:
+        trades = trader.get_real_trade_history() if trader else []
+        prices = trader.get_prices() if trader else []
 
-        buy_price = state['buy_price']
-        highest = state['highest']
-        trail_pct = state['trail_pct']
-        breakeven_trigger = state['breakeven_trigger']
-        gain_pct = ((current_price - buy_price) / buy_price) * 100
+        # Per-pair stats
+        pair_stats = {}
+        for t in trades:
+            pair = t.get('pair', '')
+            if not pair:
+                continue
+            if pair not in pair_stats:
+                pair_stats[pair] = {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'trades': 0}
+            if t.get('side') == 'sell':
+                pnl = t.get('pnl', 0) or 0
+                pair_stats[pair]['total_pnl'] = round(pair_stats[pair]['total_pnl'] + pnl, 2)
+                pair_stats[pair]['trades'] += 1
+                if pnl > 0:
+                    pair_stats[pair]['wins'] += 1
+                elif pnl < 0:
+                    pair_stats[pair]['losses'] += 1
 
-        # Update highest price seen
-        if current_price > highest:
-            state['highest'] = current_price
-            # Trail the stop up behind it
-            new_stop = current_price * (1 - trail_pct / 100)
-            # Never move stop down
-            if new_stop > state['stop_price']:
-                state['stop_price'] = new_stop
-                log.info(f"Trailing stop {symbol}: moved to ${new_stop:.4f} ({trail_pct}% below ${current_price:.4f})")
+        pair_performance = []
+        for pair, s in pair_stats.items():
+            total = s['wins'] + s['losses']
+            win_rate = round((s['wins'] / total * 100) if total > 0 else 0)
+            pair_performance.append({
+                'pair': pair,
+                'win_rate': win_rate,
+                'total_pnl': s['total_pnl'],
+                'trades': s['trades'],
+                'wins': s['wins'],
+                'losses': s['losses'],
+                'rating': 'good' if win_rate >= 60 and s['total_pnl'] > 0 else 'poor' if win_rate < 40 or s['total_pnl'] < -2 else 'ok'
+            })
+        pair_performance.sort(key=lambda x: x['total_pnl'], reverse=True)
 
-        # Move to breakeven once up enough
-        if gain_pct >= breakeven_trigger and state['stop_price'] < buy_price:
-            state['stop_price'] = buy_price * 1.001  # Tiny above buy = breakeven
-            log.info(f"Trailing stop {symbol}: moved to breakeven @ ${state['stop_price']:.4f}")
+        # PnL calendar — last 30 days
+        from datetime import datetime, timedelta
+        calendar = {}
+        for i in range(30):
+            d = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+            calendar[d] = {'pnl': 0.0, 'trades': 0}
+        for t in trades:
+            if t.get('side') == 'sell':
+                d = t.get('date', '')
+                if d in calendar:
+                    pnl = t.get('pnl', 0) or 0
+                    calendar[d]['pnl'] = round(calendar[d]['pnl'] + pnl, 2)
+                    calendar[d]['trades'] += 1
+        calendar_list = [{'date': d, **v} for d, v in sorted(calendar.items())]
 
-        # Check if stop hit
-        if current_price <= state['stop_price']:
-            gain = ((current_price - buy_price) / buy_price) * 100
-            return True, f"Trailing stop hit @ ${current_price:.4f} ({gain:+.1f}% from entry)"
+        # Portfolio allocation
+        allocation = []
+        total_val = sum(p.get('value_usdt', 0) for p in prices) if prices else 0
+        for p in prices:
+            val = p.get('value_usdt', 0)
+            if val >= 1.0:
+                allocation.append({
+                    'symbol': p.get('symbol'),
+                    'value': val,
+                    'pct': round((val / total_val * 100) if total_val > 0 else 0, 1)
+                })
+        allocation.sort(key=lambda x: x['value'], reverse=True)
 
-        return False, None
+        return jsonify({
+            'pair_performance': pair_performance,
+            'calendar': calendar_list,
+            'allocation': allocation
+        })
+    except Exception as e:
+        log.error(f"Stats error: {e}")
+        return jsonify({'pair_performance': [], 'calendar': [], 'allocation': []}), 200
 
-    def clear_trailing_stop(self, symbol):
-        self.__class__._trailing_stops.pop(symbol, None)
 
-    def check_all_trailing_stops(self):
-        """Called every cycle — check if any trailing stops need executing"""
-        if not self.__class__._trailing_stops:
-            return
-        for symbol in list(self.__class__._trailing_stops.keys()):
-            try:
-                price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-                should_sell, reason = self.update_trailing_stop(symbol, price)
-                if should_sell:
-                    pair = symbol.replace('USDT', '/USDT')
-                    log.info(f"Trailing stop triggered for {pair}: {reason}")
-                    self.execute_trade(pair, 'sell', 100)
-                    self.clear_trailing_stop(symbol)
-            except Exception as e:
-                log.debug(f"Trailing stop check error {symbol}: {e}")
+@app.route('/api/regime')
+def get_regime():
+    if not signal_engine:
+        return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': 'Bot not initialised'})
+    try:
+        return jsonify(signal_engine.get_regime())
+    except Exception as e:
+        return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': str(e)})
 
-    # ─── PYRAMIDING ────────────────────────────────────────────────
-    _pyramid_state = {}  # class-level: {symbol: {count, first_price, last_price}}
 
-    def get_pyramid_state(self, symbol):
-        return self.__class__._pyramid_state.get(symbol, {'count': 0, 'first_price': 0.0, 'last_price': 0.0})
+@app.route('/api/trade', methods=['POST'])
+def execute_trade():
+    if not trader:
+        return jsonify({'error': 'Not connected'}), 400
+    data = request.json
+    pair = data.get('pair')
+    action = data.get('action')
+    confidence = float(data.get('confidence', 0))
 
-    def record_pyramid_buy(self, symbol, price):
-        state = self.get_pyramid_state(symbol)
-        if state['count'] == 0:
-            state['first_price'] = price
-        state['last_price'] = price
-        state['count'] = state['count'] + 1
-        self.__class__._pyramid_state[symbol] = state
-        log.info(f"Pyramid {symbol}: buy #{state['count']} @ ${price:.4f} (first: ${state['first_price']:.4f})")
+    approved, reason = risk_manager.check_trade(pair, action, confidence)
+    if not approved:
+        return jsonify({'error': f'Risk manager blocked: {reason}'}), 400
 
-    def reset_pyramid_state(self, symbol):
-        self.__class__._pyramid_state.pop(symbol, None)
-        log.info(f"Pyramid state reset for {symbol}")
+    is_manual = data.get('manual', False)
+    if is_manual:
+        log.info(f"Manual trade: {action} {pair}")
+    # Execute the trade
+    try:
+        result = trader.execute_trade(pair, action, config.max_trade_pct)
+    except Exception as e:
+        log.error(f"Trade execution error: {e}")
+        risk_manager.release_lock(pair)
+        send_telegram(f"⚠️ *Trade Failed* — {action.upper()} {pair}\nError: {str(e)[:100]}")
+        return jsonify({'error': str(e)}), 500
 
-    def should_pyramid(self, symbol, current_price):
-        """Returns (bool, reason) — whether to add to existing position"""
-        if not getattr(self.config, 'pyramid_enabled', False):
-            return False, "Pyramiding disabled"
-        state = self.get_pyramid_state(symbol)
-        if state['count'] == 0:
-            return False, "No initial position to pyramid"
-        max_adds = getattr(self.config, 'pyramid_max_adds', 2)
-        if state['count'] > max_adds:
-            return False, f"Max pyramid adds ({max_adds}) reached"
-        first_price = state['first_price']
-        last_price = state['last_price']
-        if first_price <= 0:
-            return False, "No valid first buy price"
-        drop_from_first = ((first_price - current_price) / first_price) * 100
-        drop_from_last  = ((last_price  - current_price) / last_price)  * 100
-        max_drop = getattr(self.config, 'pyramid_max_drop', 10.0)
-        trigger  = getattr(self.config, 'pyramid_drop_trigger', 4.0)
-        if drop_from_first > max_drop:
-            return False, f"Down {drop_from_first:.1f}% from first buy — too risky"
-        if drop_from_last < trigger:
-            return False, f"Only down {drop_from_last:.1f}% from last buy (need {trigger}%)"
-        return True, f"Down {drop_from_last:.1f}% from last buy — adding position #{state['count']+1}"
+    # Trade succeeded — do post-trade actions safely
+    risk_manager.release_lock(pair)
+    risk_manager.record_trade(pair)
 
-    def _cancel_all_open_orders(self, symbol):
-        """Cancel ALL open orders for a symbol — releases locked balance"""
-        try:
-            open_orders = self.client.get_open_orders(symbol=symbol)
-            if not open_orders:
-                log.info(f"No open orders to cancel for {symbol}")
-                return
-            # Cancel each order individually (python-binance compatible)
-            for order in open_orders:
-                try:
-                    self.client.cancel_order(symbol=symbol, orderId=order['orderId'])
-                    log.info(f"Cancelled order {order['orderId']} for {symbol}")
-                except Exception as e:
-                    log.warning(f"Could not cancel order {order['orderId']}: {e}")
-            log.info(f"Cancelled {len(open_orders)} orders for {symbol}")
-        except Exception as e:
-            log.warning(f"Could not cancel orders for {symbol}: {e}")
+    # Send Telegram notification (never crash the response)
+    try:
+        regime = signal_engine.market_regime if signal_engine else 'neutral'
+        source = '👤 Manual' if is_manual else f'🤖 AI Signal ({confidence}%)'
+        icon = '🟢' if action == 'buy' else '🔴'
+        tp = getattr(config, 'dynamic_tp', getattr(config, 'default_tp_pct', 12))
+        sl = getattr(config, 'default_sl_pct', 4)
+        order_id = result.get('orderId', 'N/A') if isinstance(result, dict) else 'N/A'
+        send_telegram(
+            f"{icon} *{action.upper()} {pair}*\n"
+            f"Source: {source}\n"
+            f"Market: {regime.upper()}\n"
+            f"TP: {tp}% · SL: {sl}%\n"
+            f"Order ID: {order_id}"
+        )
+    except Exception as te:
+        log.warning(f"Telegram notification error (trade was successful): {te}")
 
-    def _get_total_balance(self, asset):
-        """Get free + locked balance (use after cancelling orders)"""
-        account = self.client.get_account()
-        for b in account['balances']:
-            if b['asset'] == asset:
-                return float(b['free']) + float(b['locked'])
-        return 0.0
+    return jsonify({'success': True, 'result': result if isinstance(result, dict) else {}})
 
-    def _cancel_oco_orders(self, symbol, pair):
-        if pair in self._open_oco_orders:
-            try:
-                order_info = self._open_oco_orders[pair]
-                self.client.cancel_order_list(symbol=symbol, orderListId=order_info['orderListId'])
-                del self._open_oco_orders[pair]
-                log.info(f"Cancelled OCO orders for {symbol}")
-            except Exception as e:
-                log.warning(f"Could not cancel OCO for {symbol}: {e}")
 
-    def _round_price(self, symbol, price):
-        try:
-            info = self._get_symbol_info(symbol)
-            price_filter = next(f for f in info['filters'] if f['filterType'] == 'PRICE_FILTER')
-            tick_size = float(price_filter['tickSize'])
-            if tick_size > 0:
-                precision = int(round(-math.log10(tick_size)))
-                price = math.floor(price / tick_size) * tick_size
-                return round(price, precision)
-        except Exception:
-            pass
-        return round(price, 4)
+@app.route('/api/history')
+def get_history():
+    try:
+        if trader:
+            return jsonify({'trades': trader.get_real_trade_history()})
+        return jsonify({'trades': config.load_trade_history()})
+    except Exception as e:
+        return jsonify({'trades': [], 'error': str(e)})
 
-    def _calculate_pnl(self, pair, sell_price, quantity):
-        try:
-            history = self.config.load_trade_history()
-            for trade in history:
-                if trade.get('pair') == pair and trade.get('side') == 'buy':
-                    buy_price = trade.get('price', 0)
-                    if buy_price > 0:
-                        return round((sell_price - buy_price) * quantity, 2)
-        except Exception as e:
-            log.debug(f"PnL calculation error: {e}")
-        return 0.0
 
-    def _get_balance(self, asset):
-        account = self.client.get_account()
-        for b in account['balances']:
-            if b['asset'] == asset:
-                return float(b['free'])
-        return 0.0
+@app.route('/api/sniper/status')
+def sniper_status():
+    if not sniper:
+        return jsonify({'active': False, 'detections': [], 'watching': 0})
+    return jsonify({
+        'active': sniper.active,
+        'detections': sniper.recent_detections[-10:],
+        'watching': len(sniper.seen_symbols),
+        'status': 'running' if sniper.active else 'paused'
+    })
 
-    def _get_symbol_info(self, symbol):
-        if symbol not in self._symbol_info_cache:
-            self._symbol_info_cache[symbol] = self.client.get_symbol_info(symbol)
-        return self._symbol_info_cache[symbol]
+@app.route('/api/telegram/test')
+def test_telegram():
+    """Send a test Telegram message to verify setup"""
+    if not config.telegram_token or not config.telegram_chat_id:
+        return jsonify({
+            'success': False,
+            'error': 'TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set in Railway Variables',
+            'token_set': bool(config.telegram_token),
+            'chat_id_set': bool(config.telegram_chat_id)
+        })
+    try:
+        import requests as test_req
+        msg = (
+            "✅ *AutoTrader Pro — Test Message*\n\n"
+            "Telegram is connected and working!\n"
+            "You will receive alerts for every trade.\n\n"
+            "_Sent from your Railway bot_"
+        )
+        r = test_req.post(
+            f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
+            json={'chat_id': config.telegram_chat_id, 'text': msg, 'parse_mode': 'Markdown'},
+            timeout=10
+        )
+        data = r.json()
+        if data.get('ok'):
+            return jsonify({'success': True, 'message': 'Test message sent! Check Telegram.'})
+        else:
+            return jsonify({'success': False, 'error': data.get('description', 'Unknown error'), 'response': data})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
-    def _adjust_quantity(self, symbol, quantity):
-        try:
-            info = self._get_symbol_info(symbol)
-            lot_filter = next(f for f in info['filters'] if f['filterType'] == 'LOT_SIZE')
-            step_size = float(lot_filter['stepSize'])
-            min_qty = float(lot_filter['minQty'])
-            if step_size > 0:
-                precision = int(round(-math.log10(step_size)))
-                quantity = math.floor(quantity / step_size) * step_size
-                quantity = round(quantity, precision)
-            if quantity < min_qty:
-                return 0
-            min_notional_filter = next(
-                (f for f in info['filters'] if f['filterType'] in ('MIN_NOTIONAL', 'NOTIONAL')), None)
-            if min_notional_filter:
-                min_notional = float(min_notional_filter.get('minNotional', 0))
-                price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-                if quantity * price < min_notional:
-                    return 0
-            return quantity
-        except Exception as e:
-            log.error(f"Quantity adjustment error: {e}")
-            return round(quantity, 5)
 
-    def _log_trade(self, pair, action, order, price=0, quantity=0, pnl=0, usdt_value=None):
-        trade = {
-            'pair': pair, 'side': action,
-            'time': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'date': datetime.now().strftime('%Y-%m-%d'),
-            'orderId': order['orderId'], 'status': order['status'],
-            'price': round(price, 6), 'quantity': round(quantity, 6),
-            'usdt_value': round(usdt_value if usdt_value else price * quantity, 2),
-            'pnl': pnl, 'trigger': 'AI Signal'
-        }
-        # Track pyramid state
-        if action == 'buy':
-            self.record_pyramid_buy(symbol, price)
-        elif action == 'sell':
-            self.reset_pyramid_state(symbol)
+@app.route('/api/sniper/test')
+def test_sniper():
+    """Test endpoint — verify sniper is working correctly"""
+    if not sniper:
+        return jsonify({'error': 'Sniper not initialised'}), 400
+    try:
+        info = trader.client.get_exchange_info()
+        current = {s['symbol'] for s in info['symbols']
+                  if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'}
+        return jsonify({
+            'sniper_active': sniper.active,
+            'pairs_watching': len(sniper.seen_symbols),
+            'pairs_on_binance': len(current),
+            'difference': len(current - sniper.seen_symbols),
+            'new_since_seed': list(current - sniper.seen_symbols)[:10],
+            'message': 'Sniper is working correctly' if len(current - sniper.seen_symbols) == 0 else f'{len(current-sniper.seen_symbols)} untracked pairs detected'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-        history = self.config.load_trade_history()
-        history.insert(0, trade)
-        self.config.save_trade_history(history[:500])
 
-    def snipe_listing(self, symbol, usdt_amount):
-        try:
-            price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-            quantity = self._adjust_quantity(symbol, usdt_amount / price)
-            if quantity <= 0:
-                return {'success': False, 'error': 'Invalid quantity'}
-            order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
-            return {'success': True, 'orderId': order['orderId']}
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
+@app.route('/api/sniper/toggle', methods=['POST'])
+def toggle_sniper():
+    if not sniper:
+        return jsonify({'error': 'Not initialised'}), 400
+    sniper.active = request.json.get('active', False)
+    config.sniper_active = sniper.active
+    config.save()
+    return jsonify({'active': sniper.active})
+
+
+@app.route('/api/settings', methods=['GET', 'POST'])
+def settings():
+    if request.method == 'POST':
+        config.update(request.json)
+        config.save()
+        if risk_manager:
+            risk_manager.reload(config)
+        return jsonify({'success': True})
+    return jsonify(config.to_dict())
+
+
+# Initialise when module loads (works with both gunicorn and direct run)
+log.info("AutoTrader Pro module loaded — initialising trader...")
+threading.Thread(target=init_trader, daemon=True).start()
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8080))
+    log.info(f"AutoTrader Pro starting on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
