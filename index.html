@@ -293,6 +293,13 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 <!-- SETTINGS -->
 <div class="page" id="page-settings">
+  <div class="section-title">Navigation</div>
+  <div class="card" style="padding:12px 18px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button onclick="showPage('history')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--sans);font-size:0.85rem;font-weight:600;padding:10px 16px;cursor:pointer">📋 Trade History</button>
+      <button onclick="showPage('sniper')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--sans);font-size:0.85rem;font-weight:600;padding:10px 16px;cursor:pointer">🎯 Sniper</button>
+    </div>
+  </div>
   <div class="section-title">Connection</div>
   <div class="card"><div class="api-status" id="apiStatus"><span>●</span> Not connected</div><button class="btn" style="width:100%;background:var(--blue);color:white;padding:14px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="showApiModal()">Configure Binance API</button></div>
   <div class="section-title">Risk Management</div>
@@ -329,9 +336,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <nav class="nav">
   <button class="nav-item active" id="nav-home" onclick="showPage('home')"><span>📊</span>Home</button>
   <button class="nav-item" id="nav-insights" onclick="showPage('insights')"><span>💡</span>Insights</button>
-  <button class="nav-item" id="nav-stats" onclick="showPage('stats')"><span>📈</span>Stats</button>
+  <button class="nav-item" id="nav-sniper" onclick="showPage('sniper')"><span>🎯</span>Sniper</button>
   <button class="nav-item" id="nav-history" onclick="showPage('history')"><span>📋</span>History</button>
-  <button class="nav-item" id="nav-settings" onclick="showPage('settings')"><span>⚙️</span>Settings</button>
+  <button class="nav-item" id="nav-stats" onclick="showPage('stats')"><span>📈</span>Stats</button>
 </nav>
 
 <div class="modal-overlay" id="pairModal">
