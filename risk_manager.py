@@ -22,8 +22,41 @@ class RiskManager:
         """
         Returns (approved: bool, reason: str)
         """
-        # Only check risk on buys
+        # Check minimum hold time before auto-selling
         if action == 'sell':
+            try:
+                from datetime import datetime
+                cooldown = getattr(self.config, 'trade_cooldown_minutes', 60)
+                min_hold = getattr(self.config, 'min_hold_minutes', 120)
+
+                # Check in-memory trade times
+                last = RiskManager._trade_times.get(pair)
+                if last:
+                    elapsed = (datetime.now() - last).total_seconds() / 60
+                    if elapsed < min_hold:
+                        reason = f"Min hold time: {pair} only held {elapsed:.0f} mins (need {min_hold} mins)"
+                        log.info(f"Sell blocked: {reason}")
+                        return False, reason
+
+                # Also check saved history
+                history = self.config.load_trade_history()
+                pair_buys = [t for t in history if t.get('pair') == pair and t.get('side') == 'buy']
+                if pair_buys:
+                    last_buy_str = pair_buys[0].get('time', '')
+                    if last_buy_str:
+                        for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M']:
+                            try:
+                                last_buy_dt = datetime.strptime(last_buy_str[:19], fmt)
+                                elapsed = (datetime.now() - last_buy_dt).total_seconds() / 60
+                                if elapsed < min_hold:
+                                    reason = f"Min hold time: bought {elapsed:.0f} mins ago (need {min_hold} mins)"
+                                    log.info(f"Sell blocked: {reason}")
+                                    return False, reason
+                                break
+                            except Exception:
+                                continue
+            except Exception as e:
+                log.debug(f"Hold time check error: {e}")
             return True, "Sell approved"
 
         # Prevent simultaneous orders for same pair
