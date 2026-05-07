@@ -74,7 +74,7 @@ class SignalEngine:
                 f"   - neutral = 6%\n"
                 f"   - bearish = 4%\n\n"
                 f"Return ONLY this JSON:\n"
-                f'{{"regime":"bullish"|"bearish"|"neutral","take_profit":4|6|8,"reason":"one sentence explanation"}}'
+                f'{{"regime":"bullish"|"bearish"|"neutral","take_profit":8|12|15,"reason":"one sentence explanation"}}'
             )
 
             response = requests.post(
@@ -96,7 +96,7 @@ class SignalEngine:
                 if start != -1:
                     result = json.loads(text[start:end])
                     self.market_regime = result.get('regime', 'neutral')
-                    self.regime_tp = float(result.get('take_profit', 6.0))
+                    self.regime_tp = float(result.get('take_profit', 12.0))
                     self.regime_reason = result.get('reason', '')
                     self.config.dynamic_tp = self.regime_tp
                     log.info(f"Market regime: {self.market_regime} — TP set to {self.regime_tp}%")
@@ -113,11 +113,11 @@ class SignalEngine:
         """Rule-based regime detection when AI unavailable"""
         if rsi > 55 and price_change_7d > 3 and price > ma7:
             self.market_regime = 'bullish'
-            self.regime_tp = 8.0
+            self.regime_tp = 15.0
             self.regime_reason = f"RSI {round(rsi)} above 55, price up {round(price_change_7d, 1)}% in 7 days and above 7MA."
         elif rsi < 45 and price_change_7d < -3 and price < ma7:
             self.market_regime = 'bearish'
-            self.regime_tp = 4.0
+            self.regime_tp = 8.0
             self.regime_reason = f"RSI {round(rsi)} below 45, price down {round(abs(price_change_7d), 1)}% in 7 days and below 7MA."
         else:
             self.market_regime = 'neutral'
@@ -161,7 +161,7 @@ class SignalEngine:
             pair = signal.get('pair')
             if action not in ('buy', 'sell'):
                 continue
-            if confidence < 72:
+            if confidence < 68:
                 log.info(f"Auto-execute skipped {pair} — confidence {confidence}% below 65%")
                 continue
             approved, reason = self.risk_manager.check_trade(pair, action, confidence)
