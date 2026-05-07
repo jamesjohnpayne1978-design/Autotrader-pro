@@ -24,39 +24,41 @@ class RiskManager:
         """
         # Check minimum hold time before auto-selling
         if action == 'sell':
-            try:
-                from datetime import datetime
-                cooldown = getattr(self.config, 'trade_cooldown_minutes', 60)
-                min_hold = getattr(self.config, 'min_hold_minutes', 120)
+            from datetime import datetime
+            min_hold = getattr(self.config, 'min_hold_minutes', 120)
+            elapsed_mins = None
 
-                # Check in-memory trade times
-                last = RiskManager._trade_times.get(pair)
-                if last:
-                    elapsed = (datetime.now() - last).total_seconds() / 60
-                    if elapsed < min_hold:
-                        reason = f"Min hold time: {pair} only held {elapsed:.0f} mins (need {min_hold} mins)"
-                        log.info(f"Sell blocked: {reason}")
-                        return False, reason
+            # Method 1: in-memory (fastest, lost on restart)
+            last = RiskManager._trade_times.get(pair)
+            if last:
+                elapsed_mins = (datetime.now() - last).total_seconds() / 60
+                log.info(f"Hold check (memory): {pair} held {elapsed_mins:.1f} mins")
 
-                # Also check saved history
-                history = self.config.load_trade_history()
-                pair_buys = [t for t in history if t.get('pair') == pair and t.get('side') == 'buy']
-                if pair_buys:
-                    last_buy_str = pair_buys[0].get('time', '')
-                    if last_buy_str:
+            # Method 2: saved trade history (survives restarts)
+            if elapsed_mins is None:
+                try:
+                    history = self.config.load_trade_history()
+                    buys = [t for t in history
+                            if t.get('pair') == pair and t.get('side') == 'buy']
+                    if buys:
+                        ts = buys[0].get('time', '')
                         for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M']:
                             try:
-                                last_buy_dt = datetime.strptime(last_buy_str[:19], fmt)
-                                elapsed = (datetime.now() - last_buy_dt).total_seconds() / 60
-                                if elapsed < min_hold:
-                                    reason = f"Min hold time: bought {elapsed:.0f} mins ago (need {min_hold} mins)"
-                                    log.info(f"Sell blocked: {reason}")
-                                    return False, reason
+                                dt = datetime.strptime(ts[:16], fmt[:len(fmt)])
+                                elapsed_mins = (datetime.now() - dt).total_seconds() / 60
+                                log.info(f"Hold check (history): {pair} held {elapsed_mins:.1f} mins")
                                 break
                             except Exception:
                                 continue
-            except Exception as e:
-                log.debug(f"Hold time check error: {e}")
+                except Exception as e:
+                    log.debug(f"History hold check error: {e}")
+
+            # Block if under minimum hold time
+            if elapsed_mins is not None and elapsed_mins < min_hold:
+                reason = f"Too soon to sell {pair} — held {elapsed_mins:.0f} mins, minimum is {min_hold} mins"
+                log.info(f"Sell blocked: {reason}")
+                return False, reason
+
             return True, "Sell approved"
 
         # Prevent simultaneous orders for same pair
