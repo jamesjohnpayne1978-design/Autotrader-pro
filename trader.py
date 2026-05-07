@@ -138,7 +138,7 @@ class Trader:
         results = []
         # Use saved history (fast) not real-time Binance history (slow/times out)
         history = self.config.load_trade_history()
-        tp_pct = getattr(self.config, 'dynamic_tp', self.config.default_tp_pct)
+        tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
         sl_pct = self.config.default_sl_pct
 
         for symbol in self.config.trading_pairs:
@@ -159,11 +159,19 @@ class Trader:
                 price = float(ticker['price'])
                 pair_name = f"{base}/USDT"
 
-                # Find last buy price from saved history
+                # Find most recent buy price from saved history
                 buy_price = None
                 try:
+                    # History is newest first — find most recent buy
+                    # But only if there's no more recent sell (position is open)
+                    found_sell = False
                     for trade in history:
-                        if trade.get('pair') == pair_name and trade.get('side') == 'buy':
+                        if trade.get('pair') != pair_name:
+                            continue
+                        if trade.get('side') == 'sell':
+                            found_sell = True
+                            break  # Most recent trade is a sell — no open position
+                        if trade.get('side') == 'buy' and not found_sell:
                             bp = trade.get('price', 0)
                             if bp and float(bp) > 0:
                                 buy_price = float(bp)
@@ -323,10 +331,17 @@ class Trader:
             self._last_trade_time[pair] = datetime.now()
             usdt_spent = buy_price * quantity
             self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
-            self._place_oco_order(symbol, pair, quantity, buy_price)
+            # Place OCO order — wrap in try so a failed OCO doesn't lose the trade
+            try:
+                self._place_oco_order(symbol, pair, quantity, buy_price)
+            except Exception as oco_err:
+                log.warning(f"OCO order failed for {symbol} (trade still executed): {oco_err}")
             # Start trailing stop tracking
             if getattr(self.config, 'trailing_stop_enabled', False):
-                self.init_trailing_stop(symbol, buy_price)
+                try:
+                    self.init_trailing_stop(symbol, buy_price)
+                except Exception:
+                    pass
 
         elif action == 'sell':
             # Cancel any open OCO orders first (releases locked balance)
@@ -354,7 +369,7 @@ class Trader:
 
     def _place_oco_order(self, symbol, pair, quantity, buy_price):
         try:
-            tp_pct = getattr(self.config, 'dynamic_tp', self.config.default_tp_pct)
+            tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
             sl_pct = self.config.default_sl_pct
             tp_price = self._round_price(symbol, buy_price * (1 + tp_pct / 100))
             sl_price = self._round_price(symbol, buy_price * (1 - sl_pct / 100))
