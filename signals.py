@@ -197,6 +197,17 @@ class SignalEngine:
                 log.info(f"Auto-execute blocked {pair}: {reason}")
                 continue
             try:
+                # NEVER auto-sell manual positions - they have their own TP/SL manager
+                if action == 'sell':
+                    try:
+                        from app import manual_manager
+                        if manual_manager and manual_manager.has_position(pair):
+                            log.info(f"Skipping auto-sell {pair} - open manual position (managed by TP/SL monitor)")
+                            self.risk_manager.release_lock(pair)
+                            continue
+                    except Exception:
+                        pass
+
                 # Check if we should pyramid (add to existing position)
                 if action == 'buy' and getattr(self.config, 'pyramid_enabled', False):
                     try:
