@@ -24,13 +24,13 @@ class Config:
         else:
             self.trading_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'RENDERUSDT', 'SOLUSDT', 'LINKUSDT', 'ARBUSDT']
 
-        # RSI defaults (used as fallback only — tier system overrides these)
+        # RSI defaults (used as fallback only - tier system overrides these)
         self.rsi_buy = 35
         self.rsi_sell = 70
 
-        # RSI tier sets — auto-assigns thresholds by market cap
+        # RSI tier sets - auto-assigns thresholds by market cap
         self._rsi_large_caps = {'BTCUSDT', 'ETHUSDT'}
-        # Mid cap — established coins (30 buy / 75 sell)
+        # Mid cap - established coins (30 buy / 75 sell)
         self._rsi_mid_caps = {
             'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'LINKUSDT',
             'ADAUSDT', 'DOTUSDT', 'MATICUSDT', 'AVAXUSDT',
@@ -50,8 +50,8 @@ class Config:
         # Risk settings
         self.max_trade_pct = 5.0
         self.daily_loss_limit_pct = 5.0
-        self.default_sl_pct = 4.0    # Wider — avoids normal volatility stopouts
-        self.default_tp_pct = 12.0   # Bigger TP — let winners run
+        self.default_sl_pct = 4.0    # Wider - avoids normal volatility stopouts
+        self.default_tp_pct = 12.0   # Bigger TP - let winners run
         self.dynamic_tp = 12.0        # Default dynamic TP
         # Trailing stop settings
         self.trailing_stop_enabled = True
@@ -90,11 +90,11 @@ class Config:
     def get_pair_rsi(self, symbol):
         """Auto-assign RSI thresholds based on pair tier. Works for any new pair."""
         if symbol in self._rsi_large_caps:
-            return (25, 80)   # Large cap — patient entries
+            return (25, 80)   # Large cap - patient entries
         elif symbol in self._rsi_mid_caps:
-            return (30, 75)   # Mid cap — moderate thresholds
+            return (30, 75)   # Mid cap - moderate thresholds
         else:
-            return (32, 80)   # Small/speculative — tighter entries
+            return (32, 80)   # Small/speculative - tighter entries
 
     def _load_saved_settings(self):
         """Load persisted settings from disk"""
