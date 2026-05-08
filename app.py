@@ -207,16 +207,16 @@ def get_insights():
 
         if btc_price > 0:
             if btc_change > 3:
-                insights.append({"title": f"BTC Up {btc_change:.1f}% — Momentum Strong",
-                    "body": f"Bitcoin is trading at ${btc_price:,.0f}, up {btc_change:.1f}% in 24h. RSI at {btc_rsi} — {'still room to run' if btc_rsi < 65 else 'approaching overbought, watch for pullback'}. Altcoins typically follow within 4-12 hours.",
+                insights.append({"title": f"BTC Up {btc_change:.1f}% - Momentum Strong",
+                    "body": f"Bitcoin is trading at ${btc_price:,.0f}, up {btc_change:.1f}% in 24h. RSI at {btc_rsi} - {'still room to run' if btc_rsi < 65 else 'approaching overbought, watch for pullback'}. Altcoins typically follow within 4-12 hours.",
                     "type": "bullish"})
             elif btc_change < -3:
-                insights.append({"title": f"BTC Down {abs(btc_change):.1f}% — Caution",
-                    "body": f"Bitcoin dropped to ${btc_price:,.0f}, down {abs(btc_change):.1f}% in 24h. RSI at {btc_rsi} — {'oversold, possible bounce zone' if btc_rsi < 35 else 'still room to fall further'}. Bot trend filter is protecting against buying into this dip.",
+                insights.append({"title": f"BTC Down {abs(btc_change):.1f}% - Caution",
+                    "body": f"Bitcoin dropped to ${btc_price:,.0f}, down {abs(btc_change):.1f}% in 24h. RSI at {btc_rsi} - {'oversold, possible bounce zone' if btc_rsi < 35 else 'still room to fall further'}. Bot trend filter is protecting against buying into this dip.",
                     "type": "bearish"})
             else:
                 insights.append({"title": f"BTC Consolidating at ${btc_price:,.0f}",
-                    "body": f"Bitcoin is ranging with only {btc_change:+.1f}% change in 24h. RSI at {btc_rsi} — neutral territory. Consolidation phases often precede large moves — {'bull bias given regime' if regime == 'bullish' else 'watch for direction before adding positions'}.",
+                    "body": f"Bitcoin is ranging with only {btc_change:+.1f}% change in 24h. RSI at {btc_rsi} - neutral territory. Consolidation phases often precede large moves - {'bull bias given regime' if regime == 'bullish' else 'watch for direction before adding positions'}.",
                     "type": "neutral"})
 
         # Find oversold opportunities
@@ -227,16 +227,16 @@ def get_insights():
             names = ', '.join([s.replace('USDT','') for s,_ in oversold[:3]])
             rsis = ', '.join([str(d['rsi']) for _,d in oversold[:3]])
             insights.append({"title": f"Oversold: {names}",
-                "body": f"{names} showing RSI readings of {rsis} — technically oversold. {'Trend filter active — bot will only buy if price is near 50MA.' if len(oversold) > 0 else ''} Watch for RSI reversal confirmation before entry.",
+                "body": f"{names} showing RSI readings of {rsis} - technically oversold. {'Trend filter active - bot will only buy if price is near 50MA.' if len(oversold) > 0 else ''} Watch for RSI reversal confirmation before entry.",
                 "type": "bullish"})
         elif overbought:
             names = ', '.join([s.replace('USDT','') for s,_ in overbought[:3]])
             insights.append({"title": f"Overbought Warning: {names}",
-                "body": f"{names} RSI above 70 — overbought territory. Bot will auto-generate sell signals. If holding these, take-profit orders are already active via OCO on Binance.",
+                "body": f"{names} RSI above 70 - overbought territory. Bot will auto-generate sell signals. If holding these, take-profit orders are already active via OCO on Binance.",
                 "type": "warning"})
         else:
             insights.append({"title": "RSI Neutral Across Pairs",
-                "body": f"All monitored pairs showing RSI between 35-70 — no extreme readings. Market in balance. Bot confidence threshold at 72% means it will wait for stronger signals before trading.",
+                "body": f"All monitored pairs showing RSI between 35-70 - no extreme readings. Market in balance. Bot confidence threshold at 72% means it will wait for stronger signals before trading.",
                 "type": "neutral"})
 
         # Volume analysis
@@ -246,7 +246,7 @@ def get_insights():
             sym, data = top
             name = sym.replace('USDT', '')
             insights.append({"title": f"High Volume Alert: {name}",
-                "body": f"{name} showing ${data['volume']/1e6:.0f}M in 24h volume with {data['change']:+.1f}% price move. High volume moves are more likely to sustain direction. {'Bot has this pair active.' if sym in analysis_pairs else 'Not currently in bot — consider adding via Railway TRADING_PAIRS.'}",
+                "body": f"{name} showing ${data['volume']/1e6:.0f}M in 24h volume with {data['change']:+.1f}% price move. High volume moves are more likely to sustain direction. {'Bot has this pair active.' if sym in analysis_pairs else 'Not currently in bot - consider adding via Railway TRADING_PAIRS.'}",
                 "type": "bullish" if data['change'] > 0 else "bearish"})
 
         # Build watchlist from candidates
@@ -258,13 +258,13 @@ def get_insights():
             change = data['change']
             if rsi < 40:
                 signal = "buy"
-                reason = f"RSI oversold at {rsi} with {change:+.1f}% 24h move — potential bounce candidate."
+                reason = f"RSI oversold at {rsi} with {change:+.1f}% 24h move - potential bounce candidate."
             elif rsi > 65:
                 signal = "avoid"
-                reason = f"RSI at {rsi} — overbought. Wait for pullback before entry."
+                reason = f"RSI at {rsi} - overbought. Wait for pullback before entry."
             else:
                 signal = "watch"
-                reason = f"RSI at {rsi}, {change:+.1f}% in 24h — neutral setup, monitor for breakout."
+                reason = f"RSI at {rsi}, {change:+.1f}% in 24h - neutral setup, monitor for breakout."
             watchlist.append({"symbol": sym, "name": name, "reason": reason, "signal": signal})
 
         # Pair recommendations based on volume + trend
@@ -278,10 +278,10 @@ def get_insights():
                         "reason": f"RSI {d['rsi']} oversold + ${d['volume']/1e6:.0f}M volume. Strong entry setup right now."})
                 elif d.get('rsi') and d['rsi'] > 70:
                     pair_recs.append({"symbol": sym, "name": name, "action": "keep" if in_bot else "avoid",
-                        "reason": f"RSI {d['rsi']} overbought — wait for pullback before adding."})
+                        "reason": f"RSI {d['rsi']} overbought - wait for pullback before adding."})
                 else:
                     pair_recs.append({"symbol": sym, "name": name, "action": "keep" if in_bot else "add",
-                        "reason": f"{d['change']:+.1f}% 24h, RSI {d['rsi']} — solid mid-cap with good liquidity on Binance."})
+                        "reason": f"{d['change']:+.1f}% 24h, RSI {d['rsi']} - solid mid-cap with good liquidity on Binance."})
             if len(pair_recs) >= 3:
                 break
 
@@ -289,11 +289,11 @@ def get_insights():
         losers = [(s, d) for s, d in pair_data.items() if s in analysis_pairs and d.get('change', 0) < -5]
         if losers:
             names = ', '.join([s.replace('USDT','') for s,_ in losers])
-            risk_warning = f"{names} down over 5% today — check your OCO stop loss orders are active in Binance app."
+            risk_warning = f"{names} down over 5% today - check your OCO stop loss orders are active in Binance app."
         elif regime == 'bearish':
-            risk_warning = "Bear market regime detected — bot is using tighter RSI thresholds and lower take-profit targets. Reduce position sizes if uncertain."
+            risk_warning = "Bear market regime detected - bot is using tighter RSI thresholds and lower take-profit targets. Reduce position sizes if uncertain."
         elif btc_rsi and btc_rsi > 75:
-            risk_warning = f"BTC RSI at {btc_rsi} — historically high. Consider reducing exposure or tightening stop losses on open positions."
+            risk_warning = f"BTC RSI at {btc_rsi} - historically high. Consider reducing exposure or tightening stop losses on open positions."
         else:
             risk_warning = "No major risk signals detected. Ensure OCO orders are active in Binance for all open positions."
 
@@ -302,7 +302,7 @@ def get_insights():
         insights = [{"title": "Market data temporarily unavailable", "body": "Could not fetch live Binance data. Check Railway logs for details.", "type": "warning"}]
         watchlist = []
         pair_recs = []
-        risk_warning = "Check Railway logs — insights data fetch failed."
+        risk_warning = "Check Railway logs - insights data fetch failed."
 
     # Try Gemini AI (free, works globally) using the live data we just fetched
     gemini_key = os.environ.get('GEMINI_API_KEY', '')
@@ -421,7 +421,7 @@ def get_stats():
             })
         pair_performance.sort(key=lambda x: x['total_pnl'], reverse=True)
 
-        # PnL calendar — last 30 days
+        # PnL calendar - last 30 days
         from datetime import datetime, timedelta
         calendar = {}
         for i in range(30):
@@ -485,7 +485,7 @@ def execute_trade():
     is_manual = data.get('manual', False)
     if is_manual:
         log.info(f"Manual trade: {action} {pair}")
-    # For manual buys — record trade time IMMEDIATELY before execution
+    # For manual buys - record trade time IMMEDIATELY before execution
     # This prevents signal engine from selling within the hold period
     if action == 'buy':
         risk_manager.record_trade(pair)
@@ -496,10 +496,10 @@ def execute_trade():
     except Exception as e:
         log.error(f"Trade execution error: {e}")
         risk_manager.release_lock(pair)
-        send_telegram(f"⚠️ *Trade Failed* — {action.upper()} {pair}\nError: {str(e)[:100]}")
+        send_telegram(f"⚠️ *Trade Failed* - {action.upper()} {pair}\nError: {str(e)[:100]}")
         return jsonify({'error': str(e)}), 500
 
-    # Trade succeeded — do post-trade actions safely
+    # Trade succeeded - do post-trade actions safely
     risk_manager.release_lock(pair)
     risk_manager.record_trade(pair)
 
@@ -558,7 +558,7 @@ def test_telegram():
     try:
         import requests as test_req
         msg = (
-            "✅ *AutoTrader Pro — Test Message*\n\n"
+            "✅ *AutoTrader Pro - Test Message*\n\n"
             "Telegram is connected and working!\n"
             "You will receive alerts for every trade.\n\n"
             "_Sent from your Railway bot_"
@@ -579,7 +579,7 @@ def test_telegram():
 
 @app.route('/api/sniper/test')
 def test_sniper():
-    """Test endpoint — verify sniper is working correctly"""
+    """Test endpoint - verify sniper is working correctly"""
     if not sniper:
         return jsonify({'error': 'Sniper not initialised'}), 400
     try:
@@ -625,7 +625,7 @@ if __name__ == '__main__':
     log.info(f"AutoTrader Pro starting on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
 else:
-    # Running under gunicorn — init in background thread so server starts fast
+    # Running under gunicorn - init in background thread so server starts fast
     log.info("AutoTrader Pro starting under gunicorn...")
     _init_thread = threading.Thread(target=init_trader, daemon=True)
     _init_thread.start()
