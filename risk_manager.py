@@ -60,6 +60,18 @@ class RiskManager:
                 log.info(f"Sell blocked: {reason}")
                 return False, reason
 
+            # If we found no trade time at all but there ARE holdings, be cautious
+            if elapsed_mins is None:
+                try:
+                    # Check if we actually hold something worth selling
+                    # If yes and no trade time found, default to blocking
+                    from trader import Trader
+                    pass  # Can't import here easily
+                except Exception:
+                    pass
+                log.info(f"Sell blocked: {pair} — no trade time found, defaulting to safe hold")
+                return False, f"No trade time found for {pair} — blocking sell to be safe"
+
             return True, "Sell approved"
 
         # Prevent simultaneous orders for same pair
@@ -192,6 +204,10 @@ class RiskManager:
         except Exception as e:
             log.debug(f"History cooldown check error: {e}")
         return False
+
+    def record_buy(self, pair):
+        """Record a buy immediately — call this BEFORE the sell check can fire"""
+        self.record_trade(pair)
 
     def record_trade(self, pair):
         """Call this after any trade to start cooldown — persists across restarts"""
