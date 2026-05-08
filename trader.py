@@ -159,7 +159,7 @@ class Trader:
                 price = float(ticker['price'])
                 pair_name = f"{base}/USDT"
 
-                # Find most recent buy price — only show gain if position is open
+                # Find most recent buy price - only show gain if position is open
                 buy_price = None
                 try:
                     pair_trades = [t for t in history if t.get('pair') == pair_name]
@@ -328,7 +328,7 @@ class Trader:
                 self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
             except Exception as le:
                 log.warning(f"Could not log buy trade: {le}")
-            # Place OCO order — wrap in try so a failed OCO doesn't lose the trade
+            # Place OCO order - wrap in try so a failed OCO doesn't lose the trade
             try:
                 self._place_oco_order(symbol, pair, quantity, buy_price)
             except Exception as oco_err:
@@ -361,7 +361,7 @@ class Trader:
                 sell_price = price
             log.info(f"SELL {symbol}: qty={quantity} at ${sell_price:.6f}")
             self._last_trade_time[pair] = datetime.now()
-            # Wrap post-trade logging safely — never crash after Binance order succeeds
+            # Wrap post-trade logging safely - never crash after Binance order succeeds
             try:
                 pnl = self._calculate_pnl(pair, sell_price, quantity)
             except Exception:
@@ -396,7 +396,7 @@ class Trader:
                 'orderListId': oco.get('orderListId'),
                 'symbol': symbol, 'tp_price': tp_price, 'sl_price': sl_price
             }
-            log.info(f"OCO placed for {symbol} — TP: ${tp_price} ({tp_pct}%) | SL: ${sl_price} ({sl_pct}%)")
+            log.info(f"OCO placed for {symbol} - TP: ${tp_price} ({tp_pct}%) | SL: ${sl_price} ({sl_pct}%)")
         except BinanceAPIException as e:
             log.warning(f"OCO order failed for {symbol}: {e}")
         except Exception as e:
@@ -419,7 +419,7 @@ class Trader:
         log.info(f"Trailing stop init for {symbol} @ ${buy_price:.4f}")
 
     def update_trailing_stop(self, symbol, current_price):
-        """Update trailing stop — returns (should_sell, reason) if stop hit"""
+        """Update trailing stop - returns (should_sell, reason) if stop hit"""
         state = self.__class__._trailing_stops.get(symbol)
         if not state:
             return False, None
@@ -456,7 +456,7 @@ class Trader:
         self.__class__._trailing_stops.pop(symbol, None)
 
     def check_all_trailing_stops(self):
-        """Called every cycle — check if any trailing stops need executing"""
+        """Called every cycle - check if any trailing stops need executing"""
         if not self.__class__._trailing_stops:
             return
         for symbol in list(self.__class__._trailing_stops.keys()):
@@ -491,7 +491,7 @@ class Trader:
         log.info(f"Pyramid state reset for {symbol}")
 
     def should_pyramid(self, symbol, current_price):
-        """Returns (bool, reason) — whether to add to existing position"""
+        """Returns (bool, reason) - whether to add to existing position"""
         if not getattr(self.config, 'pyramid_enabled', False):
             return False, "Pyramiding disabled"
         state = self.get_pyramid_state(symbol)
@@ -509,13 +509,13 @@ class Trader:
         max_drop = getattr(self.config, 'pyramid_max_drop', 10.0)
         trigger  = getattr(self.config, 'pyramid_drop_trigger', 4.0)
         if drop_from_first > max_drop:
-            return False, f"Down {drop_from_first:.1f}% from first buy — too risky"
+            return False, f"Down {drop_from_first:.1f}% from first buy - too risky"
         if drop_from_last < trigger:
             return False, f"Only down {drop_from_last:.1f}% from last buy (need {trigger}%)"
-        return True, f"Down {drop_from_last:.1f}% from last buy — adding position #{state['count']+1}"
+        return True, f"Down {drop_from_last:.1f}% from last buy - adding position #{state['count']+1}"
 
     def _cancel_all_open_orders(self, symbol):
-        """Cancel ALL open orders for a symbol — releases locked balance"""
+        """Cancel ALL open orders for a symbol - releases locked balance"""
         try:
             open_orders = self.client.get_open_orders(symbol=symbol)
             if not open_orders:
