@@ -1,624 +1,300 @@
 """
-AutoTrader Pro - Main Flask Server
-Added: market regime endpoint
+AutoTrader Pro - Risk Manager
+Fixed: open positions count (ignores dust), max positions increased to 6
 """
 
-from flask import Flask, jsonify, request, send_file
-from datetime import datetime
-from flask_cors import CORS
-import threading
 import logging
-import os
-import requests as req
-from trader import Trader
-from sniper import ListingSniper
-from signals import SignalEngine
-from risk_manager import RiskManager
-from config import Config
+from datetime import datetime
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
 
-app = Flask(__name__)
-CORS(app)
 
-config = Config()
-trader = None
-sniper = None
-signal_engine = None
-risk_manager = RiskManager(config)
+class RiskManager:
+    _trade_times = {}   # Class-level cooldown tracking persists across calls
+    _trading_now = set()  # Pairs currently being traded (prevents simultaneous orders)
+    def __init__(self, config):
+        self.config = config
 
+    def reload(self, config):
+        self.config = config
 
-def send_telegram(message):
-    if not config.telegram_token:
-        log.warning("Telegram: TELEGRAM_TOKEN not set")
-        return
-    if not config.telegram_chat_id:
-        log.warning("Telegram: TELEGRAM_CHAT_ID not set")
-        return
-    try:
-        log.info(f"Sending Telegram message to chat_id={config.telegram_chat_id}")
-        r = req.post(
-            f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
-            json={'chat_id': str(config.telegram_chat_id), 'text': message, 'parse_mode': 'Markdown'},
-            timeout=10
-        )
-        data = r.json()
-        if data.get('ok'):
-            log.info("Telegram message sent successfully")
-        else:
-            log.warning(f"Telegram failed: {data.get('description', 'Unknown error')}")
-    except Exception as e:
-        log.warning(f"Telegram exception: {e}")
+    def check_trade(self, pair, action, confidence):
+        """
+        Returns (approved: bool, reason: str)
+        """
+        # Check minimum hold time before auto-selling
+        if action == 'sell':
+            from datetime import datetime
+            self._load_persistent_times()
+            min_hold = getattr(self.config, 'min_hold_minutes', 120)
+            elapsed_mins = None
 
+            # Method 1: in-memory + persistent file
+            last = RiskManager._trade_times.get(pair)
+            if last:
+                elapsed_mins = (datetime.now() - last).total_seconds() / 60
+                log.info(f"Hold check (memory): {pair} held {elapsed_mins:.1f} mins")
 
-def init_trader():
-    global trader, sniper, signal_engine
-    if config.api_key and config.api_secret:
+            # Method 2: saved trade history (survives restarts)
+            if elapsed_mins is None:
+                try:
+                    history = self.config.load_trade_history()
+                    buys = [t for t in history
+                            if t.get('pair') == pair and t.get('side') == 'buy']
+                    if buys:
+                        ts = buys[0].get('time', '')
+                        for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M']:
+                            try:
+                                dt = datetime.strptime(ts[:16], fmt[:len(fmt)])
+                                elapsed_mins = (datetime.now() - dt).total_seconds() / 60
+                                log.info(f"Hold check (history): {pair} held {elapsed_mins:.1f} mins")
+                                break
+                            except Exception:
+                                continue
+                except Exception as e:
+                    log.debug(f"History hold check error: {e}")
+
+            # Block if under minimum hold time
+            if elapsed_mins is not None and elapsed_mins < min_hold:
+                reason = f"Too soon to sell {pair} — held {elapsed_mins:.0f} mins, minimum is {min_hold} mins"
+                log.info(f"Sell blocked: {reason}")
+                return False, reason
+
+            # If we found no trade time at all but there ARE holdings, be cautious
+            if elapsed_mins is None:
+                try:
+                    # Check if we actually hold something worth selling
+                    # If yes and no trade time found, default to blocking
+                    from trader import Trader
+                    pass  # Can't import here easily
+                except Exception:
+                    pass
+                log.info(f"Sell blocked: {pair} — no trade time found, defaulting to safe hold")
+                return False, f"No trade time found for {pair} — blocking sell to be safe"
+
+            return True, "Sell approved"
+
+        # Prevent simultaneous orders for same pair
+        if pair in RiskManager._trading_now:
+            reason = f"Trade already in progress for {pair}"
+            log.info(f"Risk check failed: {reason}")
+            return False, reason
+        RiskManager._trading_now.add(pair)
+
+        # Check cooldown applies to buys too — prevent re-buying right after a sell
+        if self._is_on_cooldown(pair):
+            reason = f"Cooldown active for {pair} — preventing immediate re-buy"
+            log.info(f"Risk check failed: {reason}")
+            return False, reason
+
+        # Check confidence threshold
+        if confidence < 68:
+            reason = f"Confidence {confidence}% below minimum 65%"
+            log.info(f"Risk check failed for {pair}: {reason}")
+            return False, reason
+
+        # Check daily loss limit
+        if self._daily_loss_exceeded():
+            reason = "Daily loss limit reached — trading paused"
+            log.warning(f"Risk check failed for {pair}: {reason}")
+            return False, reason
+
+        # Check if already holding this specific pair
+        if self._already_holding(pair):
+            reason = f"Already holding {pair} — will not buy more"
+            log.info(f"Risk check failed for {pair}: {reason}")
+            return False, reason
+
+        # Check open positions — only count positions worth $1 or more
+        open_count = self._count_open_positions()
+        max_positions = getattr(self.config, 'max_open_positions', 6)
+        if open_count >= max_positions:
+            reason = f"Max open positions ({max_positions}) reached — currently {open_count} open"
+            log.info(f"Risk check failed for {pair}: {reason}")
+            return False, reason
+
+        log.info(f"Risk check passed: {action} {pair} (confidence: {confidence}%)")
+        return True, "Approved"
+
+    def check_snipe(self, symbol):
+        """Check if a snipe trade is safe — used by sniper.py"""
         try:
-            trader = Trader(config)
-            signal_engine = SignalEngine(config, trader, risk_manager)
-            sniper = ListingSniper(config, trader, risk_manager)
-            if config.sniper_active:
-                sniper_thread = threading.Thread(target=sniper.run, daemon=True)
-                sniper_thread.start()
-            signal_thread = threading.Thread(target=signal_engine.run, daemon=True)
-            signal_thread.start()
-            log.info("Trader, Sniper and Signal Engine initialised.")
-            send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
+            # Check daily snipe budget
+            history = self.config.load_trade_history()
+            today = __import__('datetime').datetime.now().strftime('%Y-%m-%d')
+            snipes = [t for t in history if t.get('date') == today and t.get('trigger') == 'Sniper']
+            daily_spend = sum(t.get('usdt_value', 0) for t in snipes)
+            limit = getattr(self.config, 'sniper_daily_limit_usdt', 200.0)
+            budget = getattr(self.config, 'sniper_budget_usdt', 50.0)
+            if daily_spend + budget > limit:
+                return False, f"Daily snipe budget exhausted (${daily_spend:.0f}/${limit:.0f} used)"
+            # Check not already holding
+            base = symbol.replace('USDT', '')
+            pair = f"{base}/USDT"
+            if self._already_holding(pair):
+                return False, f"Already holding {base}"
+            return True, "Snipe approved"
         except Exception as e:
-            log.error(f"Failed to initialise trader: {e}")
+            return True, f"Check skipped: {e}"
 
+    def release_lock(self, pair):
+        """Release trading lock after trade completes or fails"""
+        RiskManager._trading_now.discard(pair)
 
-@app.route('/')
-def index():
-    return send_file('index.html')
-
-
-@app.route('/api/health')
-def health():
-    return jsonify({
-        'status': 'ok',
-        'connected': trader is not None,
-        'sniper': sniper.active if sniper else False,
-        'auto_mode': config.auto_mode,
-        'version': '1.0.0'
-    })
-
-
-@app.route('/api/config', methods=['POST'])
-def set_config():
-    data = request.json
-    config.api_key = data.get('api_key', '')
-    config.api_secret = data.get('api_secret', '')
-    config.save()
-    init_trader()
-    return jsonify({'success': True})
-
-
-@app.route('/api/portfolio')
-def get_portfolio():
-    if not trader:
-        return jsonify({'error': 'Not connected'}), 400
-    try:
-        return jsonify(trader.get_portfolio())
-    except Exception as e:
-        log.error(f"Portfolio error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/portfolio/history')
-def portfolio_history():
-    try:
-        history = config.load_portfolio_history()
-        return jsonify({'history': history})
-    except Exception as e:
-        return jsonify({'history': [], 'error': str(e)})
-
-
-@app.route('/api/prices')
-def get_prices():
-    if not trader:
-        return jsonify({'pairs': []}), 200
-    try:
-        pairs = trader.get_prices()
-        return jsonify({'pairs': pairs if pairs else []})
-    except Exception as e:
-        log.error(f"Prices error: {e}")
-        # Return empty list instead of 500 so dashboard shows something
-        return jsonify({'pairs': [], 'error': str(e)}), 200
-
-
-@app.route('/api/signals')
-def get_signals():
-    if not signal_engine:
-        return jsonify({'signals': []})
-    try:
-        return jsonify({'signals': signal_engine.get_latest_signals()})
-    except Exception as e:
-        return jsonify({'signals': [], 'error': str(e)})
-
-
-
-@app.route('/api/insights')
-def get_insights():
-    regime = 'neutral'
-    regime_tp = 6.0
-    try:
-        regime = signal_engine.market_regime if signal_engine else 'neutral'
-        regime_tp = signal_engine.regime_tp if signal_engine else 6.0
-    except Exception:
-        pass
-
-    insights = []
-    watchlist = []
-    pair_recs = []
-    risk_warning = ""
-
-    try:
-        import requests as req_lib
-
-        # Pull live Binance market data for all major pairs
-        def get_binance_ticker(symbol):
-            r = req_lib.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}", timeout=5)
-            return r.json() if r.status_code == 200 else {}
-
-        def get_rsi(symbol, interval='1h', period=14):
-            r = req_lib.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={period+1}", timeout=5)
-            if r.status_code != 200: return None
-            closes = [float(k[4]) for k in r.json()]
-            gains, losses = [], []
-            for i in range(1, len(closes)):
-                diff = closes[i] - closes[i-1]
-                gains.append(max(diff, 0))
-                losses.append(max(-diff, 0))
-            avg_gain = sum(gains) / period
-            avg_loss = sum(losses) / period
-            if avg_loss == 0: return 100
-            rs = avg_gain / avg_loss
-            return round(100 - (100 / (1 + rs)), 1)
-
-        # Analyse current trading pairs + additional watchlist candidates
-        analysis_pairs = list(getattr(config, 'trading_pairs', ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT']))
-        watch_candidates = ['AVAXUSDT','INJUSDT','SUIUSDT','APTUSDT','LINKUSDT','DOTUSDT','NEARUSDT']
-
-        pair_data = {}
-        for symbol in analysis_pairs + watch_candidates:
-            try:
-                t = get_binance_ticker(symbol)
-                rsi = get_rsi(symbol)
-                if t and 'lastPrice' in t:
-                    pair_data[symbol] = {
-                        'price': float(t['lastPrice']),
-                        'change': float(t['priceChangePercent']),
-                        'volume': float(t['quoteVolume']),
-                        'high': float(t['highPrice']),
-                        'low': float(t['lowPrice']),
-                        'rsi': rsi
-                    }
-            except Exception:
-                pass
-
-        # BTC analysis
-        btc = pair_data.get('BTCUSDT', {})
-        btc_change = btc.get('change', 0)
-        btc_rsi = btc.get('rsi', 50)
-        btc_price = btc.get('price', 0)
-
-        if btc_price > 0:
-            if btc_change > 3:
-                insights.append({"title": f"BTC Up {btc_change:.1f}% — Momentum Strong",
-                    "body": f"Bitcoin is trading at ${btc_price:,.0f}, up {btc_change:.1f}% in 24h. RSI at {btc_rsi} — {'still room to run' if btc_rsi < 65 else 'approaching overbought, watch for pullback'}. Altcoins typically follow within 4-12 hours.",
-                    "type": "bullish"})
-            elif btc_change < -3:
-                insights.append({"title": f"BTC Down {abs(btc_change):.1f}% — Caution",
-                    "body": f"Bitcoin dropped to ${btc_price:,.0f}, down {abs(btc_change):.1f}% in 24h. RSI at {btc_rsi} — {'oversold, possible bounce zone' if btc_rsi < 35 else 'still room to fall further'}. Bot trend filter is protecting against buying into this dip.",
-                    "type": "bearish"})
-            else:
-                insights.append({"title": f"BTC Consolidating at ${btc_price:,.0f}",
-                    "body": f"Bitcoin is ranging with only {btc_change:+.1f}% change in 24h. RSI at {btc_rsi} — neutral territory. Consolidation phases often precede large moves — {'bull bias given regime' if regime == 'bullish' else 'watch for direction before adding positions'}.",
-                    "type": "neutral"})
-
-        # Find oversold opportunities
-        oversold = [(s, d) for s, d in pair_data.items() if d.get('rsi') and d['rsi'] < 35 and s in analysis_pairs]
-        overbought = [(s, d) for s, d in pair_data.items() if d.get('rsi') and d['rsi'] > 70 and s in analysis_pairs]
-
-        if oversold:
-            names = ', '.join([s.replace('USDT','') for s,_ in oversold[:3]])
-            rsis = ', '.join([str(d['rsi']) for _,d in oversold[:3]])
-            insights.append({"title": f"Oversold: {names}",
-                "body": f"{names} showing RSI readings of {rsis} — technically oversold. {'Trend filter active — bot will only buy if price is near 50MA.' if len(oversold) > 0 else ''} Watch for RSI reversal confirmation before entry.",
-                "type": "bullish"})
-        elif overbought:
-            names = ', '.join([s.replace('USDT','') for s,_ in overbought[:3]])
-            insights.append({"title": f"Overbought Warning: {names}",
-                "body": f"{names} RSI above 70 — overbought territory. Bot will auto-generate sell signals. If holding these, take-profit orders are already active via OCO on Binance.",
-                "type": "warning"})
-        else:
-            insights.append({"title": "RSI Neutral Across Pairs",
-                "body": f"All monitored pairs showing RSI between 35-70 — no extreme readings. Market in balance. Bot confidence threshold at 72% means it will wait for stronger signals before trading.",
-                "type": "neutral"})
-
-        # Volume analysis
-        high_vol = [(s, d) for s, d in pair_data.items() if d.get('volume', 0) > 50_000_000 and abs(d.get('change', 0)) > 2]
-        if high_vol:
-            top = sorted(high_vol, key=lambda x: x[1]['volume'], reverse=True)[0]
-            sym, data = top
-            name = sym.replace('USDT', '')
-            insights.append({"title": f"High Volume Alert: {name}",
-                "body": f"{name} showing ${data['volume']/1e6:.0f}M in 24h volume with {data['change']:+.1f}% price move. High volume moves are more likely to sustain direction. {'Bot has this pair active.' if sym in analysis_pairs else 'Not currently in bot — consider adding via Railway TRADING_PAIRS.'}",
-                "type": "bullish" if data['change'] > 0 else "bearish"})
-
-        # Build watchlist from candidates
-        wl_candidates = [(s, d) for s, d in pair_data.items() if s in watch_candidates and d.get('rsi')]
-        wl_candidates.sort(key=lambda x: x[1]['change'], reverse=True)
-        for sym, data in wl_candidates[:3]:
-            name = sym.replace('USDT', '')
-            rsi = data['rsi']
-            change = data['change']
-            if rsi < 40:
-                signal = "buy"
-                reason = f"RSI oversold at {rsi} with {change:+.1f}% 24h move — potential bounce candidate."
-            elif rsi > 65:
-                signal = "avoid"
-                reason = f"RSI at {rsi} — overbought. Wait for pullback before entry."
-            else:
-                signal = "watch"
-                reason = f"RSI at {rsi}, {change:+.1f}% in 24h — neutral setup, monitor for breakout."
-            watchlist.append({"symbol": sym, "name": name, "reason": reason, "signal": signal})
-
-        # Pair recommendations based on volume + trend
-        for sym in ['AVAXUSDT', 'INJUSDT', 'SUIUSDT', 'NEARUSDT', 'APTUSDT']:
-            if sym in pair_data:
-                d = pair_data[sym]
-                name = sym.replace('USDT', '')
-                in_bot = sym in analysis_pairs
-                if d.get('rsi') and d['rsi'] < 40 and d['volume'] > 20_000_000:
-                    pair_recs.append({"symbol": sym, "name": name, "action": "add" if not in_bot else "keep",
-                        "reason": f"RSI {d['rsi']} oversold + ${d['volume']/1e6:.0f}M volume. Strong entry setup right now."})
-                elif d.get('rsi') and d['rsi'] > 70:
-                    pair_recs.append({"symbol": sym, "name": name, "action": "keep" if in_bot else "avoid",
-                        "reason": f"RSI {d['rsi']} overbought — wait for pullback before adding."})
-                else:
-                    pair_recs.append({"symbol": sym, "name": name, "action": "keep" if in_bot else "add",
-                        "reason": f"{d['change']:+.1f}% 24h, RSI {d['rsi']} — solid mid-cap with good liquidity on Binance."})
-            if len(pair_recs) >= 3:
-                break
-
-        # Risk warning
-        losers = [(s, d) for s, d in pair_data.items() if s in analysis_pairs and d.get('change', 0) < -5]
-        if losers:
-            names = ', '.join([s.replace('USDT','') for s,_ in losers])
-            risk_warning = f"{names} down over 5% today — check your OCO stop loss orders are active in Binance app."
-        elif regime == 'bearish':
-            risk_warning = "Bear market regime detected — bot is using tighter RSI thresholds and lower take-profit targets. Reduce position sizes if uncertain."
-        elif btc_rsi and btc_rsi > 75:
-            risk_warning = f"BTC RSI at {btc_rsi} — historically high. Consider reducing exposure or tightening stop losses on open positions."
-        else:
-            risk_warning = "No major risk signals detected. Ensure OCO orders are active in Binance for all open positions."
-
-    except Exception as e:
-        log.warning(f"Insights data fetch error: {e}")
-        insights = [{"title": "Market data temporarily unavailable", "body": "Could not fetch live Binance data. Check Railway logs for details.", "type": "warning"}]
-        watchlist = []
-        pair_recs = []
-        risk_warning = "Check Railway logs — insights data fetch failed."
-
-    # Try Gemini AI (free, works globally) using the live data we just fetched
-    gemini_key = os.environ.get('GEMINI_API_KEY', '')
-    ai_powered = False
-    if gemini_key and pair_data:
+    def _load_persistent_times(self):
+        """Load trade times from disk into memory on first check"""
+        if getattr(self.__class__, '_times_loaded', False):
+            return
         try:
-            import json
-            data_summary = f"Live Binance data {datetime.now().strftime('%Y-%m-%d %H:%M')}:\n"
-            for sym, d in list(pair_data.items())[:12]:
-                rsi_str = f" RSI:{d['rsi']}" if d.get('rsi') else ""
-                data_summary += f"{sym}: ${d['price']:.4f} {d['change']:+.1f}%{rsi_str}\n"
-            data_summary += f"Regime: {regime}. TP: {regime_tp}%. Bot pairs: {','.join(analysis_pairs)}"
-
-            ai_prompt = (
-                "You are a professional crypto trader analysing live market data. Be specific and direct.\n\n"
-                + data_summary +
-                "\n\nUsing this real data, give specific actionable analysis. Reference actual prices and RSI values. "
-                "Suggest specific coins based on current conditions. Do NOT be generic.\n"
-                "Return ONLY valid JSON, no markdown, no explanation:\n"
-                '{"insights":['
-                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"},'
-                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"},'
-                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"}'
-                '],'
-                '"watchlist":['
-                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"}'
-                '],'
-                '"pair_recommendations":['
-                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"}'
-                '],'
-                '"risk_warning":"1 specific sentence with actual data"}'
-            )
-
-            r = req_lib.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "contents": [{"parts": [{"text": ai_prompt}]}],
-                    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1200}
-                },
-                timeout=30
-            )
-
-            if r.status_code == 200:
-                data = r.json()
-                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                text = text.replace("```json", "").replace("```", "").strip()
-                start = text.find("{")
-                end = text.rfind("}") + 1
-                if start != -1 and end > start:
-                    ai_result = json.loads(text[start:end])
-                    insights = ai_result.get("insights", insights)
-                    watchlist = ai_result.get("watchlist", watchlist)
-                    pair_recs = ai_result.get("pair_recommendations", pair_recs)
-                    risk_warning = ai_result.get("risk_warning", risk_warning)
-                    ai_powered = True
-                    log.info("Gemini AI insights generated successfully")
-                else:
-                    log.warning(f"Could not parse Gemini response: {text[:200]}")
-            else:
-                log.warning(f"Gemini API error {r.status_code}: {r.text[:200]}")
+            import json, os
+            trade_times_file = '/data/trade_times.json'
+            if os.path.exists(trade_times_file):
+                from datetime import datetime
+                with open(trade_times_file, 'r') as f:
+                    saved = json.load(f)
+                for pair, ts in saved.items():
+                    try:
+                        dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                        if pair not in RiskManager._trade_times:
+                            RiskManager._trade_times[pair] = dt
+                    except Exception:
+                        pass
+                log.info(f"Loaded {len(saved)} trade times from disk")
         except Exception as e:
-            log.warning(f"Gemini insights failed: {e}")
+            log.debug(f"Could not load trade times: {e}")
+        self.__class__._times_loaded = True
 
-    return jsonify({
-        "regime": regime,
-        "updated": datetime.now().strftime("%H:%M"),
-        "ai_powered": ai_powered,
-        "insights": insights[:3],
-        "watchlist": watchlist[:3],
-        "pair_recommendations": pair_recs[:3],
-        "risk_warning": risk_warning
-    })
+    def _is_on_cooldown(self, pair):
+        """Check cooldown using both memory AND saved trade history (survives restarts)"""
+        from datetime import datetime
+        self._load_persistent_times()
+        cooldown = getattr(self.config, 'trade_cooldown_minutes', 60)
 
+        # Check in-memory first (fastest)
+        last = RiskManager._trade_times.get(pair)
+        if last:
+            elapsed = (datetime.now() - last).total_seconds() / 60
+            if elapsed < cooldown:
+                log.info(f"Cooldown (memory): {pair} traded {elapsed:.1f} mins ago")
+                return True
 
-@app.route('/api/stats')
-def get_stats():
-    """Per-pair win rate, PnL calendar, and portfolio allocation"""
-    try:
-        trades = trader.get_real_trade_history() if trader else []
-        prices = trader.get_prices() if trader else []
+        # Check saved trade history (survives restarts)
+        try:
+            history = self.config.load_trade_history()
+            pair_name = pair.replace('USDT', '/USDT')
+            recent = [t for t in history if t.get('pair') == pair_name]
+            if recent:
+                last_trade = recent[0]
+                last_time_str = last_trade.get('time', '')
+                if last_time_str:
+                    # Try multiple datetime formats
+                    last_dt = None
+                    for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S']:
+                        try:
+                            last_dt = datetime.strptime(last_time_str[:19], fmt)
+                            break
+                        except Exception:
+                            continue
+                    if last_dt:
+                        elapsed = (datetime.now() - last_dt).total_seconds() / 60
+                        if elapsed < cooldown:
+                            log.info(f"Cooldown (history): {pair} traded {elapsed:.1f} mins ago, need {cooldown} mins")
+                            RiskManager._trade_times[pair] = last_dt  # cache it
+                            return True
+        except Exception as e:
+            log.debug(f"History cooldown check error: {e}")
+        return False
 
-        # Per-pair stats
-        pair_stats = {}
-        for t in trades:
-            pair = t.get('pair', '')
-            if not pair:
-                continue
-            if pair not in pair_stats:
-                pair_stats[pair] = {'wins': 0, 'losses': 0, 'total_pnl': 0.0, 'trades': 0}
-            if t.get('side') == 'sell':
-                pnl = t.get('pnl', 0) or 0
-                pair_stats[pair]['total_pnl'] = round(pair_stats[pair]['total_pnl'] + pnl, 2)
-                pair_stats[pair]['trades'] += 1
-                if pnl > 0:
-                    pair_stats[pair]['wins'] += 1
-                elif pnl < 0:
-                    pair_stats[pair]['losses'] += 1
+    def record_buy(self, pair):
+        """Record a buy immediately — call this BEFORE the sell check can fire"""
+        self.record_trade(pair)
 
-        pair_performance = []
-        for pair, s in pair_stats.items():
-            total = s['wins'] + s['losses']
-            win_rate = round((s['wins'] / total * 100) if total > 0 else 0)
-            pair_performance.append({
-                'pair': pair,
-                'win_rate': win_rate,
-                'total_pnl': s['total_pnl'],
-                'trades': s['trades'],
-                'wins': s['wins'],
-                'losses': s['losses'],
-                'rating': 'good' if win_rate >= 60 and s['total_pnl'] > 0 else 'poor' if win_rate < 40 or s['total_pnl'] < -2 else 'ok'
-            })
-        pair_performance.sort(key=lambda x: x['total_pnl'], reverse=True)
+    def record_trade(self, pair):
+        """Call this after any trade to start cooldown — persists across restarts"""
+        from datetime import datetime
+        import json, os
+        now = datetime.now()
+        RiskManager._trade_times[pair] = now
+        # Save to persistent volume so cooldown survives Railway restarts
+        try:
+            trade_times_file = '/data/trade_times.json'
+            existing = {}
+            if os.path.exists(trade_times_file):
+                with open(trade_times_file, 'r') as f:
+                    existing = json.load(f)
+            existing[pair] = now.strftime('%Y-%m-%d %H:%M:%S')
+            with open(trade_times_file, 'w') as f:
+                json.dump(existing, f)
+        except Exception as e:
+            log.debug(f"Could not persist trade time: {e}")
 
-        # PnL calendar — last 30 days
-        from datetime import datetime, timedelta
-        calendar = {}
-        for i in range(30):
-            d = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-            calendar[d] = {'pnl': 0.0, 'trades': 0}
-        for t in trades:
-            if t.get('side') == 'sell':
-                d = t.get('date', '')
-                if d in calendar:
-                    pnl = t.get('pnl', 0) or 0
-                    calendar[d]['pnl'] = round(calendar[d]['pnl'] + pnl, 2)
-                    calendar[d]['trades'] += 1
-        calendar_list = [{'date': d, **v} for d, v in sorted(calendar.items())]
+    def _already_holding(self, pair):
+        """Returns True if we already have a meaningful position in this pair"""
+        try:
+            from binance.client import Client
+            client = Client(self.config.api_key, self.config.api_secret)
+            base = pair.replace('/USDT', '').replace('USDT', '')
+            account = client.get_account()
+            for b in account['balances']:
+                if b['asset'] == base:
+                    amount = float(b['free']) + float(b['locked'])
+                    if amount <= 0:
+                        return False
+                    ticker = client.get_symbol_ticker(symbol=f"{base}USDT")
+                    value = amount * float(ticker['price'])
+                    if value >= 1.0:
+                        log.info(f"Already holding {base} worth ${value:.2f} — skipping buy")
+                        return True
+            return False
+        except Exception as e:
+            log.debug(f"Holdings check error: {e}")
+            return False
 
-        # Portfolio allocation
-        allocation = []
-        total_val = sum(p.get('value_usdt', 0) for p in prices) if prices else 0
-        for p in prices:
-            val = p.get('value_usdt', 0)
-            if val >= 1.0:
-                allocation.append({
-                    'symbol': p.get('symbol'),
-                    'value': val,
-                    'pct': round((val / total_val * 100) if total_val > 0 else 0, 1)
-                })
-        allocation.sort(key=lambda x: x['value'], reverse=True)
+    def _count_open_positions(self):
+        """Count positions worth $1 or more — ignores dust amounts"""
+        try:
+            from binance.client import Client
+            client = Client(self.config.api_key, self.config.api_secret)
+            account = client.get_account()
+            count = 0
+            for b in account['balances']:
+                asset = b['asset']
+                if asset == 'USDT':
+                    continue
+                amount = float(b['free']) + float(b['locked'])
+                if amount <= 0:
+                    continue
+                try:
+                    ticker = client.get_symbol_ticker(symbol=f"{asset}USDT")
+                    value = amount * float(ticker['price'])
+                    if value >= 1.0:
+                        count += 1
+                except Exception:
+                    pass
+            return count
+        except Exception as e:
+            log.warning(f"Could not count positions: {e}")
+            return 0
 
-        return jsonify({
-            'pair_performance': pair_performance,
-            'calendar': calendar_list,
-            'allocation': allocation
-        })
-    except Exception as e:
-        log.error(f"Stats error: {e}")
-        return jsonify({'pair_performance': [], 'calendar': [], 'allocation': []}), 200
+    def _daily_loss_exceeded(self):
+        try:
+            history = self.config.load_trade_history()
+            today = datetime.now().strftime('%Y-%m-%d')
+            today_trades = [t for t in history if t.get('date') == today]
+            daily_pnl = sum(t.get('pnl', 0) for t in today_trades)
+            limit = self.config.daily_loss_limit_pct
 
+            # Get approximate portfolio value from history
+            snapshots = self.config.load_portfolio_history()
+            if snapshots:
+                portfolio_value = snapshots[-1].get('value', 1000)
+            else:
+                portfolio_value = 1000
 
-@app.route('/api/regime')
-def get_regime():
-    if not signal_engine:
-        return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': 'Bot not initialised'})
-    try:
-        return jsonify(signal_engine.get_regime())
-    except Exception as e:
-        return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': str(e)})
-
-
-@app.route('/api/trade', methods=['POST'])
-def execute_trade():
-    if not trader:
-        return jsonify({'error': 'Not connected'}), 400
-    data = request.json
-    pair = data.get('pair')
-    action = data.get('action')
-    confidence = float(data.get('confidence', 0))
-
-    approved, reason = risk_manager.check_trade(pair, action, confidence)
-    if not approved:
-        return jsonify({'error': f'Risk manager blocked: {reason}'}), 400
-
-    is_manual = data.get('manual', False)
-    if is_manual:
-        log.info(f"Manual trade: {action} {pair}")
-    # Execute the trade
-    try:
-        result = trader.execute_trade(pair, action, config.max_trade_pct)
-    except Exception as e:
-        log.error(f"Trade execution error: {e}")
-        risk_manager.release_lock(pair)
-        send_telegram(f"⚠️ *Trade Failed* — {action.upper()} {pair}\nError: {str(e)[:100]}")
-        return jsonify({'error': str(e)}), 500
-
-    # Trade succeeded — do post-trade actions safely
-    risk_manager.release_lock(pair)
-    risk_manager.record_trade(pair)
-
-    # Send Telegram notification (never crash the response)
-    try:
-        regime = signal_engine.market_regime if signal_engine else 'neutral'
-        source = '👤 Manual' if is_manual else f'🤖 AI Signal ({confidence}%)'
-        icon = '🟢' if action == 'buy' else '🔴'
-        tp = getattr(config, 'dynamic_tp', getattr(config, 'default_tp_pct', 12))
-        sl = getattr(config, 'default_sl_pct', 4)
-        order_id = result.get('orderId', 'N/A') if isinstance(result, dict) else 'N/A'
-        send_telegram(
-            f"{icon} *{action.upper()} {pair}*\n"
-            f"Source: {source}\n"
-            f"Market: {regime.upper()}\n"
-            f"TP: {tp}% · SL: {sl}%\n"
-            f"Order ID: {order_id}"
-        )
-    except Exception as te:
-        log.warning(f"Telegram notification error (trade was successful): {te}")
-
-    return jsonify({'success': True, 'result': result if isinstance(result, dict) else {}})
-
-
-@app.route('/api/history')
-def get_history():
-    try:
-        if trader:
-            return jsonify({'trades': trader.get_real_trade_history()})
-        return jsonify({'trades': config.load_trade_history()})
-    except Exception as e:
-        return jsonify({'trades': [], 'error': str(e)})
-
-
-@app.route('/api/sniper/status')
-def sniper_status():
-    if not sniper:
-        return jsonify({'active': False, 'detections': [], 'watching': 0})
-    return jsonify({
-        'active': sniper.active,
-        'detections': sniper.recent_detections[-10:],
-        'watching': len(sniper.seen_symbols),
-        'status': 'running' if sniper.active else 'paused'
-    })
-
-@app.route('/api/telegram/test')
-def test_telegram():
-    """Send a test Telegram message to verify setup"""
-    if not config.telegram_token or not config.telegram_chat_id:
-        return jsonify({
-            'success': False,
-            'error': 'TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set in Railway Variables',
-            'token_set': bool(config.telegram_token),
-            'chat_id_set': bool(config.telegram_chat_id)
-        })
-    try:
-        import requests as test_req
-        msg = (
-            "✅ *AutoTrader Pro — Test Message*\n\n"
-            "Telegram is connected and working!\n"
-            "You will receive alerts for every trade.\n\n"
-            "_Sent from your Railway bot_"
-        )
-        r = test_req.post(
-            f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
-            json={'chat_id': config.telegram_chat_id, 'text': msg, 'parse_mode': 'Markdown'},
-            timeout=10
-        )
-        data = r.json()
-        if data.get('ok'):
-            return jsonify({'success': True, 'message': 'Test message sent! Check Telegram.'})
-        else:
-            return jsonify({'success': False, 'error': data.get('description', 'Unknown error'), 'response': data})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
-@app.route('/api/sniper/test')
-def test_sniper():
-    """Test endpoint — verify sniper is working correctly"""
-    if not sniper:
-        return jsonify({'error': 'Sniper not initialised'}), 400
-    try:
-        info = trader.client.get_exchange_info()
-        current = {s['symbol'] for s in info['symbols']
-                  if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'}
-        return jsonify({
-            'sniper_active': sniper.active,
-            'pairs_watching': len(sniper.seen_symbols),
-            'pairs_on_binance': len(current),
-            'difference': len(current - sniper.seen_symbols),
-            'new_since_seed': list(current - sniper.seen_symbols)[:10],
-            'message': 'Sniper is working correctly' if len(current - sniper.seen_symbols) == 0 else f'{len(current-sniper.seen_symbols)} untracked pairs detected'
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/sniper/toggle', methods=['POST'])
-def toggle_sniper():
-    if not sniper:
-        return jsonify({'error': 'Not initialised'}), 400
-    sniper.active = request.json.get('active', False)
-    config.sniper_active = sniper.active
-    config.save()
-    return jsonify({'active': sniper.active})
-
-
-@app.route('/api/settings', methods=['GET', 'POST'])
-def settings():
-    if request.method == 'POST':
-        config.update(request.json)
-        config.save()
-        if risk_manager:
-            risk_manager.reload(config)
-        return jsonify({'success': True})
-    return jsonify(config.to_dict())
-
-
-# Initialise when module loads (works with both gunicorn and direct run)
-log.info("AutoTrader Pro module loaded — initialising trader...")
-threading.Thread(target=init_trader, daemon=True).start()
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    log.info(f"AutoTrader Pro starting on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+            loss_threshold = -(portfolio_value * limit / 100)
+            if daily_pnl < loss_threshold:
+                log.warning(f"Daily loss limit hit: {daily_pnl:.2f} < {loss_threshold:.2f}")
+                return True
+        except Exception as e:
+            log.debug(f"Daily loss check error: {e}")
+        return False
