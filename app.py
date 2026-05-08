@@ -68,6 +68,7 @@ def init_trader():
             signal_thread.start()
             global manual_manager
             manual_manager = ManualPositionManager(config, trader)
+            signal_engine.manual_manager = manual_manager  # Pass to signal engine
             manual_thread = threading.Thread(target=manual_manager.run, daemon=True)
             manual_thread.start()
             log.info("Trader, Sniper, Signal Engine and Manual Position Manager initialised.")
