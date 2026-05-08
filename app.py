@@ -12,6 +12,7 @@ import os
 import requests as req
 from trader import Trader
 from sniper import ListingSniper
+from manual_positions import ManualPositionManager
 from signals import SignalEngine
 from risk_manager import RiskManager
 from config import Config
@@ -26,6 +27,7 @@ config = Config()
 trader = None
 sniper = None
 signal_engine = None
+manual_manager = None
 risk_manager = RiskManager(config)
 
 
@@ -64,7 +66,11 @@ def init_trader():
                 sniper_thread.start()
             signal_thread = threading.Thread(target=signal_engine.run, daemon=True)
             signal_thread.start()
-            log.info("Trader, Sniper and Signal Engine initialised.")
+            global manual_manager
+            manual_manager = ManualPositionManager(config, trader)
+            manual_thread = threading.Thread(target=manual_manager.run, daemon=True)
+            manual_thread.start()
+            log.info("Trader, Sniper, Signal Engine and Manual Position Manager initialised.")
             send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
         except Exception as e:
             log.error(f"Failed to initialise trader: {e}")
@@ -485,9 +491,8 @@ def execute_trade():
     is_manual = data.get('manual', False)
     if is_manual:
         log.info(f"Manual trade: {action} {pair}")
-    # For manual buys - record trade time IMMEDIATELY before execution
-    # This prevents signal engine from selling within the hold period
-    if action == 'buy':
+    # For manual buys - register with manual position manager
+    if action == 'buy' and is_manual:
         risk_manager.record_trade(pair)
         log.info(f"Pre-recorded buy time for {pair} to protect hold period")
     # Execute the trade
@@ -502,6 +507,22 @@ def execute_trade():
     # Trade succeeded - do post-trade actions safely
     risk_manager.release_lock(pair)
     risk_manager.record_trade(pair)
+
+    # Register manual buy with position manager
+    if action == 'buy' and is_manual and manual_manager:
+        try:
+            fills = result.get('fills', []) if isinstance(result, dict) else []
+            if fills:
+                total_qty = sum(float(f['qty']) for f in fills)
+                entry_price = sum(float(f['price']) * float(f['qty']) for f in fills) / total_qty
+            else:
+                entry_price = float(result.get('price', 0)) if isinstance(result, dict) else 0
+            qty = float(result.get('executedQty', 0)) if isinstance(result, dict) else 0
+            usdt = entry_price * qty
+            if entry_price > 0 and qty > 0:
+                manual_manager.add_position(pair, entry_price, qty, usdt)
+        except Exception as me:
+            log.warning(f"Could not register manual position: {me}")
 
     # Send Telegram notification (never crash the response)
     try:
@@ -533,6 +554,21 @@ def get_history():
     except Exception as e:
         return jsonify({'trades': [], 'error': str(e)})
 
+
+@app.route('/api/manual/positions')
+def get_manual_positions():
+    if not manual_manager:
+        return jsonify({'positions': {}})
+    return jsonify({'positions': manual_manager.get_all()})
+
+@app.route('/api/manual/close', methods=['POST'])
+def close_manual_position():
+    """Manually close a manual position"""
+    pair = request.json.get('pair')
+    if not pair or not manual_manager:
+        return jsonify({'error': 'Invalid request'}), 400
+    manual_manager.remove_position(pair)
+    return jsonify({'success': True})
 
 @app.route('/api/sniper/status')
 def sniper_status():
