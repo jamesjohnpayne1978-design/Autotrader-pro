@@ -55,26 +55,47 @@ def send_telegram(message):
 
 
 def init_trader():
-    global trader, sniper, signal_engine
-    if config.api_key and config.api_secret:
-        try:
-            trader = Trader(config)
-            signal_engine = SignalEngine(config, trader, risk_manager)
-            sniper = ListingSniper(config, trader, risk_manager)
-            if config.sniper_active:
-                sniper_thread = threading.Thread(target=sniper.run, daemon=True)
-                sniper_thread.start()
-            signal_thread = threading.Thread(target=signal_engine.run, daemon=True)
-            signal_thread.start()
-            global manual_manager
-            manual_manager = ManualPositionManager(config, trader)
-            signal_engine.manual_manager = manual_manager  # Pass to signal engine
-            manual_thread = threading.Thread(target=manual_manager.run, daemon=True)
-            manual_thread.start()
-            log.info("Trader, Sniper, Signal Engine and Manual Position Manager initialised.")
-            send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
-        except Exception as e:
-            log.error(f"Failed to initialise trader: {e}")
+    """Initialise trader, signal engine, sniper, and manual position manager.
+    
+    IMPORTANT: manual_manager must be created and attached to signal_engine
+    BEFORE the signal thread is started, otherwise signal_engine.run() races
+    against the attribute assignment and can crash silently.
+    """
+    global trader, sniper, signal_engine, manual_manager
+    if not (config.api_key and config.api_secret):
+        log.warning("API credentials not set - skipping trader init")
+        return
+    try:
+        log.info("init_trader: creating Trader...")
+        trader = Trader(config)
+
+        log.info("init_trader: creating SignalEngine...")
+        signal_engine = SignalEngine(config, trader, risk_manager)
+
+        log.info("init_trader: creating ListingSniper...")
+        sniper = ListingSniper(config, trader, risk_manager)
+
+        # Create manual_manager and attach to signal_engine BEFORE starting any threads
+        # that depend on it. This was a race condition that caused silent hangs.
+        log.info("init_trader: creating ManualPositionManager...")
+        manual_manager = ManualPositionManager(config, trader)
+        signal_engine.manual_manager = manual_manager
+
+        # Now safe to start background threads
+        if config.sniper_active:
+            log.info("init_trader: starting sniper thread...")
+            threading.Thread(target=sniper.run, daemon=True, name="sniper").start()
+
+        log.info("init_trader: starting signal engine thread...")
+        threading.Thread(target=signal_engine.run, daemon=True, name="signal_engine").start()
+
+        log.info("init_trader: starting manual position monitor thread...")
+        threading.Thread(target=manual_manager.run, daemon=True, name="manual_monitor").start()
+
+        log.info("Trader, Sniper, Signal Engine and Manual Position Manager initialised.")
+        send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
+    except Exception as e:
+        log.error(f"Failed to initialise trader: {e}", exc_info=True)
 
 
 @app.route('/')
@@ -99,7 +120,8 @@ def set_config():
     config.api_key = data.get('api_key', '')
     config.api_secret = data.get('api_secret', '')
     config.save()
-    init_trader()
+    # Run init in background so HTTP response returns immediately
+    threading.Thread(target=init_trader, daemon=True).start()
     return jsonify({'success': True})
 
 
@@ -656,13 +678,20 @@ def settings():
     return jsonify(config.to_dict())
 
 
+# =============================================================================
+# STARTUP - Always init in background, always start Flask
+# =============================================================================
+# Heavy init (Binance connection, market data load, telegram send) is moved off
+# the main thread so Flask can bind to the port immediately. This works whether
+# the process is launched via `python app.py` or via gunicorn (`gunicorn app:app`).
+
+log.info("=" * 60)
+log.info("AutoTrader Pro - module loaded, scheduling background init")
+log.info("=" * 60)
+
+threading.Thread(target=init_trader, daemon=True, name="init_trader").start()
+
 if __name__ == '__main__':
-    init_trader()
     port = int(os.environ.get('PORT', 8080))
-    log.info(f"AutoTrader Pro starting on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
-else:
-    # Running under gunicorn - init in background thread so server starts fast
-    log.info("AutoTrader Pro starting under gunicorn...")
-    _init_thread = threading.Thread(target=init_trader, daemon=True)
-    _init_thread.start()
+    log.info(f"AutoTrader Pro starting Flask on 0.0.0.0:{port}")
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
