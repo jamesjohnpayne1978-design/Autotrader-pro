@@ -56,7 +56,7 @@ class RiskManager:
 
             # Block if under minimum hold time
             if elapsed_mins is not None and elapsed_mins < min_hold:
-                reason = f"Too soon to sell {pair} — held {elapsed_mins:.0f} mins, minimum is {min_hold} mins"
+                reason = f"Too soon to sell {pair} - held {elapsed_mins:.0f} mins, minimum is {min_hold} mins"
                 log.info(f"Sell blocked: {reason}")
                 return False, reason
 
@@ -69,8 +69,8 @@ class RiskManager:
                     pass  # Can't import here easily
                 except Exception:
                     pass
-                log.info(f"Sell blocked: {pair} — no trade time found, defaulting to safe hold")
-                return False, f"No trade time found for {pair} — blocking sell to be safe"
+                log.info(f"Sell blocked: {pair} - no trade time found, defaulting to safe hold")
+                return False, f"No trade time found for {pair} - blocking sell to be safe"
 
             return True, "Sell approved"
 
@@ -81,9 +81,9 @@ class RiskManager:
             return False, reason
         RiskManager._trading_now.add(pair)
 
-        # Check cooldown applies to buys too — prevent re-buying right after a sell
+        # Check cooldown applies to buys too - prevent re-buying right after a sell
         if self._is_on_cooldown(pair):
-            reason = f"Cooldown active for {pair} — preventing immediate re-buy"
+            reason = f"Cooldown active for {pair} - preventing immediate re-buy"
             log.info(f"Risk check failed: {reason}")
             return False, reason
 
@@ -95,21 +95,21 @@ class RiskManager:
 
         # Check daily loss limit
         if self._daily_loss_exceeded():
-            reason = "Daily loss limit reached — trading paused"
+            reason = "Daily loss limit reached - trading paused"
             log.warning(f"Risk check failed for {pair}: {reason}")
             return False, reason
 
         # Check if already holding this specific pair
         if self._already_holding(pair):
-            reason = f"Already holding {pair} — will not buy more"
+            reason = f"Already holding {pair} - will not buy more"
             log.info(f"Risk check failed for {pair}: {reason}")
             return False, reason
 
-        # Check open positions — only count positions worth $1 or more
+        # Check open positions - only count positions worth $1 or more
         open_count = self._count_open_positions()
         max_positions = getattr(self.config, 'max_open_positions', 6)
         if open_count >= max_positions:
-            reason = f"Max open positions ({max_positions}) reached — currently {open_count} open"
+            reason = f"Max open positions ({max_positions}) reached - currently {open_count} open"
             log.info(f"Risk check failed for {pair}: {reason}")
             return False, reason
 
@@ -117,7 +117,7 @@ class RiskManager:
         return True, "Approved"
 
     def check_snipe(self, symbol):
-        """Check if a snipe trade is safe — used by sniper.py"""
+        """Check if a snipe trade is safe - used by sniper.py"""
         try:
             # Check daily snipe budget
             history = self.config.load_trade_history()
@@ -206,11 +206,11 @@ class RiskManager:
         return False
 
     def record_buy(self, pair):
-        """Record a buy immediately — call this BEFORE the sell check can fire"""
+        """Record a buy immediately - call this BEFORE the sell check can fire"""
         self.record_trade(pair)
 
     def record_trade(self, pair):
-        """Call this after any trade to start cooldown — persists across restarts"""
+        """Call this after any trade to start cooldown - persists across restarts"""
         from datetime import datetime
         import json, os
         now = datetime.now()
@@ -243,7 +243,7 @@ class RiskManager:
                     ticker = client.get_symbol_ticker(symbol=f"{base}USDT")
                     value = amount * float(ticker['price'])
                     if value >= 1.0:
-                        log.info(f"Already holding {base} worth ${value:.2f} — skipping buy")
+                        log.info(f"Already holding {base} worth ${value:.2f} - skipping buy")
                         return True
             return False
         except Exception as e:
@@ -251,7 +251,7 @@ class RiskManager:
             return False
 
     def _count_open_positions(self):
-        """Count positions worth $1 or more — ignores dust amounts"""
+        """Count positions worth $1 or more - ignores dust amounts"""
         try:
             from binance.client import Client
             client = Client(self.config.api_key, self.config.api_secret)
