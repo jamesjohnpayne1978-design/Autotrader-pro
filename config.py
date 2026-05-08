@@ -70,6 +70,9 @@ class Config:
         self.max_open_positions = 6
         self.trade_cooldown_minutes = int(os.environ.get('TRADE_COOLDOWN_MINUTES', '60'))
         self.min_hold_minutes = 240  # Never auto-sell within 4 hours of buying
+        # Manual trade settings - separate from signal engine
+        self.manual_tp_pct = 10.0   # Manual trade take profit %
+        self.manual_sl_pct = 5.0    # Manual trade stop loss %
 
         # Sniper settings
         self.sniper_active = True
@@ -164,6 +167,10 @@ class Config:
             self.sniper_sl_pct = float(data['sniper_sl'])
         if 'trade_cooldown_minutes' in data:
             self.trade_cooldown_minutes = int(data['trade_cooldown_minutes'])
+        if 'manual_tp_pct' in data:
+            self.manual_tp_pct = float(data['manual_tp_pct'])
+        if 'manual_sl_pct' in data:
+            self.manual_sl_pct = float(data['manual_sl_pct'])
         if 'pyramid_enabled' in data:
             self.pyramid_enabled = bool(data['pyramid_enabled'])
         if 'pyramid_max_adds' in data:
@@ -195,6 +202,8 @@ class Config:
             'rsi_buy': self.rsi_buy,
             'rsi_sell': self.rsi_sell,
             'trading_pairs': self.trading_pairs,
+            'manual_tp_pct': self.manual_tp_pct,
+            'manual_sl_pct': self.manual_sl_pct,
             'pyramid_enabled': self.pyramid_enabled,
             'pyramid_max_adds': self.pyramid_max_adds,
             'pyramid_drop_trigger': self.pyramid_drop_trigger,
