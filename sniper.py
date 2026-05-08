@@ -27,7 +27,7 @@ class ListingSniper:
         self.seen_news_ids = set()
         self.recent_detections = []
         self._load_seen()
-        log.info("Sniper initialised — watching for new listings")
+        log.info("Sniper initialised - watching for new listings")
 
     def _load_seen(self):
         try:
@@ -50,10 +50,10 @@ class ListingSniper:
             pass
 
     def run(self):
-        log.info("Sniper thread started — seeding known symbols...")
+        log.info("Sniper thread started - seeding known symbols...")
         # Always force-seed on startup to get current state
         self._seed_known_symbols(force=True)
-        log.info(f"Sniper ready — watching {len(self.seen_symbols)} existing pairs for new listings")
+        log.info(f"Sniper ready - watching {len(self.seen_symbols)} existing pairs for new listings")
         check_count = 0
         while True:
             if self.active:
@@ -63,7 +63,7 @@ class ListingSniper:
                     if check_count % 4 == 0:
                         self._check_binance_news()
                     if check_count % 20 == 0:  # Log heartbeat every 5 mins
-                        log.info(f"Sniper heartbeat — watching {len(self.seen_symbols)} pairs, {len(self.recent_detections)} detections so far")
+                        log.info(f"Sniper heartbeat - watching {len(self.seen_symbols)} pairs, {len(self.recent_detections)} detections so far")
                     check_count += 1
                 except Exception as e:
                     log.error(f"Sniper check error: {e}")
@@ -76,7 +76,7 @@ class ListingSniper:
             current = {s['symbol'] for s in info['symbols']
                       if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'}
             if force or not self.seen_symbols:
-                # Always force-seed on startup — never trust stale saved state
+                # Always force-seed on startup - never trust stale saved state
                 self.seen_symbols = current
                 self._save_seen()
                 log.info(f"Sniper seeded with {len(current)} existing USDT pairs (force={force})")
@@ -179,7 +179,7 @@ class ListingSniper:
             'time': datetime.now().strftime('%H:%M:%S'),
             'date': datetime.now().strftime('%Y-%m-%d'),
             'status': 'detected',
-            'action': 'Detected — evaluating...'
+            'action': 'Detected - evaluating...'
         }
         self.recent_detections.insert(0, detection)
         log.info(f"Processing new listing: {symbol} via {source}")
@@ -192,15 +192,15 @@ class ListingSniper:
             log.info(f"Sniper blocked {symbol}: {reason}")
             return
 
-        # Approval mode — log and notify only
+        # Approval mode - log and notify only
         if self.config.approval_mode:
             detection['status'] = 'pending'
-            detection['action'] = 'Waiting — approval mode ON'
+            detection['action'] = 'Waiting - approval mode ON'
             self._send_telegram(symbol, title)
-            log.info(f"Sniper found {symbol} — approval mode ON, not auto-buying")
+            log.info(f"Sniper found {symbol} - approval mode ON, not auto-buying")
             return
 
-        # Auto mode — execute in background thread
+        # Auto mode - execute in background thread
         detection['status'] = 'buying'
         detection['action'] = f'Auto-buying ${self.config.sniper_budget_usdt}'
         t = Thread(target=self._execute_snipe, args=(symbol, detection), daemon=True)
@@ -259,8 +259,8 @@ class ListingSniper:
                 log.debug(f"Monitor error {symbol}: {e}")
             time.sleep(5)
 
-        # Time limit — force sell
-        log.info(f"Snipe time limit {symbol} — selling")
+        # Time limit - force sell
+        log.info(f"Snipe time limit {symbol} - selling")
         try:
             self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
         except Exception as e:
@@ -276,7 +276,7 @@ class ListingSniper:
                 f"Source: {title[:80]}\n\n"
                 f"Budget: ${self.config.sniper_budget_usdt} | "
                 f"TP: +{self.config.sniper_tp_pct}% | SL: -{self.config.sniper_sl_pct}%\n\n"
-                f"⚠️ Approval mode ON — not auto-buying"
+                f"⚠️ Approval mode ON - not auto-buying"
             )
             requests.post(
                 f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
