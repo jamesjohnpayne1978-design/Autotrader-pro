@@ -575,6 +575,14 @@ body {
     <div class="setting-row"><div class="setting-info"><div class="setting-label">MA Cross</div><div class="setting-desc">Golden/Death Cross signals</div></div><div class="toggle on" id="maCrossToggle" onclick="toggleMaCross()"><div class="toggle-thumb"></div></div></div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">MACD Signals</div><div class="setting-desc">MACD crossover signals</div></div><div class="toggle on" id="macdToggle" onclick="toggleMacd()"><div class="toggle-thumb"></div></div></div>
   </div>
+  <div class="section-title">Manual Trade Settings</div>
+  <div class="card">
+    <div style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--gold);line-height:1.5">
+      Manual trades use fixed TP/SL targets — never touched by RSI or MACD signals
+    </div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Manual Take Profit</div><div class="setting-desc">Sell manual buys at this % gain</div></div><input class="setting-input" id="manualTP" value="10" type="number"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Manual Stop Loss</div><div class="setting-desc">Sell manual buys at this % loss</div></div><input class="setting-input" id="manualSL" value="5" type="number"></div>
+  </div>
   <div class="section-title">Pyramiding</div>
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Pyramid Mode</div><div class="setting-desc">Add to positions on dips</div></div><div class="toggle on" id="pyramidToggle" onclick="togglePyramid()"><div class="toggle-thumb"></div></div></div>
@@ -713,7 +721,7 @@ function togglePyramid(){state.pyramid=toggle('pyramidToggle');showToast(state.p
 function toggleMacd(){state.macd=toggle('macdToggle')}
 
 function saveSettings(){
-  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode,pyramid_enabled:state.pyramid,pyramid_max_adds:document.getElementById('pyramidMaxAdds').value,pyramid_drop_trigger:document.getElementById('pyramidTrigger').value,pyramid_max_drop:document.getElementById('pyramidMaxDrop').value};
+  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode,manual_tp_pct:document.getElementById('manualTP').value,manual_sl_pct:document.getElementById('manualSL').value,pyramid_enabled:state.pyramid,pyramid_max_adds:document.getElementById('pyramidMaxAdds').value,pyramid_drop_trigger:document.getElementById('pyramidTrigger').value,pyramid_max_drop:document.getElementById('pyramidMaxDrop').value};
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)}).then(r=>r.json()).then(d=>{showToast(d.success?'Settings saved!':'Save failed')}).catch(()=>showToast('Save failed'));
 }
 
@@ -1335,6 +1343,14 @@ body {
     <div class="setting-row"><div class="setting-info"><div class="setting-label">MA Cross</div><div class="setting-desc">Golden/Death Cross signals</div></div><div class="toggle on" id="maCrossToggle" onclick="toggleMaCross()"><div class="toggle-thumb"></div></div></div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">MACD Signals</div><div class="setting-desc">MACD crossover signals</div></div><div class="toggle on" id="macdToggle" onclick="toggleMacd()"><div class="toggle-thumb"></div></div></div>
   </div>
+  <div class="section-title">Manual Trade Settings</div>
+  <div class="card">
+    <div style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--gold);line-height:1.5">
+      Manual trades use fixed TP/SL targets — never touched by RSI or MACD signals
+    </div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Manual Take Profit</div><div class="setting-desc">Sell manual buys at this % gain</div></div><input class="setting-input" id="manualTP" value="10" type="number"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Manual Stop Loss</div><div class="setting-desc">Sell manual buys at this % loss</div></div><input class="setting-input" id="manualSL" value="5" type="number"></div>
+  </div>
   <div class="section-title">Pyramiding</div>
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Pyramid Mode</div><div class="setting-desc">Add to positions on dips</div></div><div class="toggle on" id="pyramidToggle" onclick="togglePyramid()"><div class="toggle-thumb"></div></div></div>
@@ -1473,7 +1489,7 @@ function togglePyramid(){state.pyramid=toggle('pyramidToggle');showToast(state.p
 function toggleMacd(){state.macd=toggle('macdToggle')}
 
 function saveSettings(){
-  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode,pyramid_enabled:state.pyramid,pyramid_max_adds:document.getElementById('pyramidMaxAdds').value,pyramid_drop_trigger:document.getElementById('pyramidTrigger').value,pyramid_max_drop:document.getElementById('pyramidMaxDrop').value};
+  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode,manual_tp_pct:document.getElementById('manualTP').value,manual_sl_pct:document.getElementById('manualSL').value,pyramid_enabled:state.pyramid,pyramid_max_adds:document.getElementById('pyramidMaxAdds').value,pyramid_drop_trigger:document.getElementById('pyramidTrigger').value,pyramid_max_drop:document.getElementById('pyramidMaxDrop').value};
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)}).then(r=>r.json()).then(d=>{showToast(d.success?'Settings saved!':'Save failed')}).catch(()=>showToast('Save failed'));
 }
 
