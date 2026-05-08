@@ -251,6 +251,25 @@ class SignalEngine:
                 result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
                 self.risk_manager.record_trade(pair)  # Start cooldown
                 log.info(f"Auto-executed: {action.upper()} {pair} — confidence {confidence}% — {result}")
+                # Send Telegram notification for auto trades
+                try:
+                    import requests as _req
+                    if self.config.telegram_token and self.config.telegram_chat_id:
+                        icon = '🟢' if action == 'buy' else '🔴'
+                        tp = getattr(self.config, 'dynamic_tp', self.config.default_tp_pct)
+                        msg = (
+                            f"{icon} *AUTO {action.upper()} {pair}*\n"
+                            f"Confidence: {confidence}%\n"
+                            f"Market: {self.market_regime.upper()}\n"
+                            f"TP: {tp}% · SL: {self.config.default_sl_pct}%"
+                        )
+                        _req.post(
+                            f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
+                            json={'chat_id': str(self.config.telegram_chat_id), 'text': msg, 'parse_mode': 'Markdown'},
+                            timeout=8
+                        )
+                except Exception as te:
+                    log.debug(f"Telegram notification error: {te}")
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
             finally:
