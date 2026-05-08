@@ -15,10 +15,11 @@ ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 
 
 class SignalEngine:
-    def __init__(self, config, trader, risk_manager=None):
+    def __init__(self, config, trader, risk_manager=None, manual_manager=None):
         self.config = config
         self.trader = trader
         self.risk_manager = risk_manager
+        self.manual_manager = manual_manager
         self.latest_signals = []
         self.market_regime = 'neutral'
         self.fear_greed_index = 50
@@ -200,9 +201,8 @@ class SignalEngine:
                 # NEVER auto-sell manual positions - they have their own TP/SL manager
                 if action == 'sell':
                     try:
-                        from app import manual_manager
-                        if manual_manager and manual_manager.has_position(pair):
-                            log.info(f"Skipping auto-sell {pair} - open manual position (managed by TP/SL monitor)")
+                        if self.manual_manager and self.manual_manager.has_position(pair):
+                            log.info(f"Skipping auto-sell {pair} — open manual position (managed by TP/SL monitor)")
                             self.risk_manager.release_lock(pair)
                             continue
                     except Exception:
