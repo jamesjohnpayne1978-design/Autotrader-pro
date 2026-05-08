@@ -69,7 +69,7 @@ class Config:
         self.pyramid_size_pct = 3.0        # Each add uses 3% of portfolio (smaller than initial 5%)
         self.max_open_positions = 6
         self.trade_cooldown_minutes = int(os.environ.get('TRADE_COOLDOWN_MINUTES', '60'))
-        self.min_hold_minutes = 120  # Never auto-sell within 2 hours of buying
+        self.min_hold_minutes = 240  # Never auto-sell within 4 hours of buying
 
         # Sniper settings
         self.sniper_active = True
