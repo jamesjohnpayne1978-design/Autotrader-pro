@@ -14,7 +14,7 @@ from config import Config
 
 log = logging.getLogger(__name__)
 
-GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 
 
