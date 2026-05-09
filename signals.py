@@ -1,7 +1,7 @@
 """
 AutoTrader Pro - AI Signal Engine
 Added: Market regime detection + dynamic take profit adjustment
-AI provider: Gemini (free) primary, Anthropic optional fallback, rule-based safety net
+AI provider chain: OpenAI (primary) -> Gemini (fallback) -> rule-based
 """
 
 import os
@@ -14,8 +14,14 @@ from config import Config
 
 log = logging.getLogger(__name__)
 
-GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
+# ============================================================
+# AI PROVIDER ENDPOINTS AND MODELS
+# ============================================================
+OPENAI_API   = "https://api.openai.com/v1/chat/completions"
+OPENAI_MODEL = "gpt-4o-mini"   # cheap, fast, well-suited to structured JSON output
+
+GEMINI_API   = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
+# ============================================================
 
 
 # ============================================================
@@ -24,31 +30,53 @@ ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 # Lower = more aggressive (more trades, more false signals)
 # Higher = more conservative (fewer trades, higher win rate)
 # These ONLY apply when Auto Mode is ON. Approval mode is unaffected.
-AUTO_EXECUTE_MIN_CONFIDENCE = 60   # was 68 - lowered to catch more setups
-PYRAMID_MIN_CONFIDENCE      = 65   # higher than main threshold because
-                                   # pyramiding stacks risk on existing positions
+AUTO_EXECUTE_MIN_CONFIDENCE = 60
+PYRAMID_MIN_CONFIDENCE      = 65
 # ============================================================
+
+
+def _openai_key():
+    return os.environ.get("OPENAI_API_KEY", "").strip()
 
 
 def _gemini_key():
     return os.environ.get("GEMINI_API_KEY", "").strip()
 
 
-def _anthropic_key():
-    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
-
-
 def _call_ai(prompt, max_tokens=500, _err_state=None):
-    """Call AI to analyse a prompt. Tries Gemini first, then Anthropic.
+    """Call AI to analyse a prompt. Tries OpenAI first, then Gemini.
 
     Returns the raw text response from whichever provider succeeded, or None
     if both failed (or neither is configured). Caller is responsible for
     JSON parsing.
-
-    `_err_state` is an optional dict-like object the caller can pass in to
-    rate-limit error logging across calls.
     """
-    # ---- Gemini (primary) ----
+    # ---- OpenAI (primary) ----
+    okey = _openai_key()
+    if okey:
+        try:
+            r = requests.post(
+                OPENAI_API,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {okey}",
+                },
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.4,
+                },
+                timeout=30,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return data["choices"][0]["message"]["content"].strip()
+            else:
+                _log_ai_error("OpenAI", r.status_code, r.text, _err_state)
+        except Exception as e:
+            _log_ai_error("OpenAI", "exc", str(e), _err_state)
+
+    # ---- Gemini (fallback) ----
     gkey = _gemini_key()
     if gkey:
         try:
@@ -74,32 +102,6 @@ def _call_ai(prompt, max_tokens=500, _err_state=None):
                 _log_ai_error("Gemini", r.status_code, r.text, _err_state)
         except Exception as e:
             _log_ai_error("Gemini", "exc", str(e), _err_state)
-
-    # ---- Anthropic (fallback if user has a key) ----
-    akey = _anthropic_key()
-    if akey:
-        try:
-            r = requests.post(
-                ANTHROPIC_API,
-                headers={
-                    "Content-Type": "application/json",
-                    "x-api-key": akey,
-                    "anthropic-version": "2023-06-01",
-                },
-                json={
-                    "model": "claude-sonnet-4-20250514",
-                    "max_tokens": max_tokens,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=30,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                return data["content"][0]["text"].strip()
-            else:
-                _log_ai_error("Anthropic", r.status_code, r.text, _err_state)
-        except Exception as e:
-            _log_ai_error("Anthropic", "exc", str(e), _err_state)
 
     return None
 
@@ -148,17 +150,17 @@ class SignalEngine:
         self._ai_err_state = {"count": 0}
 
         # Make AI status visible at startup so we never silently run on fallback again
+        openai = bool(_openai_key())
         gemini = bool(_gemini_key())
-        anthropic = bool(_anthropic_key())
-        if gemini and anthropic:
-            log.info("AI providers configured: Gemini (primary) + Anthropic (fallback)")
+        if openai and gemini:
+            log.info(f"AI providers configured: OpenAI/{OPENAI_MODEL} (primary) + Gemini (fallback)")
+        elif openai:
+            log.info(f"AI provider configured: OpenAI/{OPENAI_MODEL}")
         elif gemini:
             log.info("AI provider configured: Gemini (free tier)")
-        elif anthropic:
-            log.info("AI provider configured: Anthropic")
         else:
             log.warning("NO AI PROVIDER CONFIGURED - all signals will use rule-based fallback. "
-                        "Set GEMINI_API_KEY (free) or ANTHROPIC_API_KEY in Railway Variables.")
+                        "Set OPENAI_API_KEY or GEMINI_API_KEY in Railway Variables.")
 
     def run(self):
         self.running = True
@@ -331,8 +333,6 @@ class SignalEngine:
                         current_price = float(prices['price'])
                         should_add, reason = self.trader.should_pyramid(sym, current_price)
                         if should_add:
-                            # Pyramiding stacks risk on an existing position, so we
-                            # require slightly higher confidence than a fresh entry.
                             if confidence < PYRAMID_MIN_CONFIDENCE:
                                 log.info(f"Pyramid skipped for {pair}: confidence {confidence}% below {PYRAMID_MIN_CONFIDENCE}%")
                                 self.risk_manager.release_lock(pair)
@@ -374,7 +374,6 @@ class SignalEngine:
                         self.trader._cancel_all_open_orders(pair)
                     except Exception:
                         pass
-                    # Record buy time BEFORE executing so hold check works immediately
                     self.risk_manager.record_trade(pair)
                 result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
                 self.risk_manager.record_trade(pair)  # Start cooldown
@@ -400,7 +399,7 @@ class SignalEngine:
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
             finally:
-                self.risk_manager.release_lock(pair)  # Always release lock
+                self.risk_manager.release_lock(pair)
 
     def get_latest_signals(self):
         if not self.latest_signals:
@@ -430,13 +429,11 @@ class SignalEngine:
         price = closes[-1]
         price_change = ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
 
-        # Get per-pair RSI thresholds using tier-based auto-assignment
         if hasattr(self.config, 'get_pair_rsi'):
             base_buy, base_sell = self.config.get_pair_rsi(symbol)
         else:
             base_buy, base_sell = self.config.rsi_buy, self.config.rsi_sell
 
-        # Auto-adapt for market regime
         if self.market_regime == 'bearish':
             rsi_buy_threshold = base_buy - 3
             rsi_sell_threshold = base_sell - 5
@@ -497,7 +494,6 @@ class SignalEngine:
                 signal_data['pair'] = symbol.replace('USDT', '') + '/USDT'
                 return signal_data
 
-            # AI unavailable or bad output - rule-based fallback
             return self._fallback_signal(symbol, indicators)
 
         except Exception as e:
@@ -521,18 +517,15 @@ class SignalEngine:
         if rsi < rsi_buy_threshold:
             reasons.append("RSI oversold at " + str(round(rsi, 1)))
 
-            # ── FEAR & GREED FILTER ──────────────────────────────────────
             fg = indicators.get('fear_greed', 50)
             if fg < 15:
                 log.info(f"Fear & Greed {fg} - Extreme Fear, skipping buy {symbol}")
                 action = 'hold'
                 confidence = 35
-            # ── TREND FILTER ─────────────────────────────────────────────
             elif ma50 > 0 and price < ma50 * 0.985:
                 log.info(f"Trend filter: {symbol} downtrend, skipping buy")
                 action = 'hold'
                 confidence = 40
-            # ── VOLUME FILTER ─────────────────────────────────────────────
             elif volume_ratio < 0.8:
                 log.info(f"Volume filter: {symbol} low volume ({volume_ratio:.1f}x), skipping")
                 action = 'hold'
@@ -541,7 +534,6 @@ class SignalEngine:
                 action = 'buy'
                 confidence += 15
 
-                # ── BOLLINGER BAND BOUNCE CONFIRMATION ──────────────────
                 bb_bounce = indicators.get('bb_bounce', False)
                 if bb_bounce:
                     confidence += 12
@@ -549,13 +541,11 @@ class SignalEngine:
                 elif bb and bb.get('position', 50) > 40:
                     confidence -= 8
 
-                # ── RSI DIVERGENCE BONUS ─────────────────────────────────
                 rsi_div = indicators.get('rsi_divergence', 'none')
                 if rsi_div == 'bullish':
                     confidence += 15
                     reasons.append("Bullish RSI divergence detected")
 
-                # ── STOCHASTIC RSI CONFIRMATION ──────────────────────────
                 stoch = indicators.get('stoch_rsi', 50)
                 if stoch < 20:
                     confidence += 10
@@ -563,7 +553,6 @@ class SignalEngine:
                 elif stoch > 50:
                     confidence -= 5
 
-                # ── STANDARD CONFIRMATIONS ───────────────────────────────
                 if price > ma50:
                     confidence += 8
                 if volume_ratio > 1.5:
@@ -640,7 +629,6 @@ class SignalEngine:
         return {'signal': signal, 'histogram': histogram}
 
     def _stochastic_rsi(self, closes, rsi_period=14, stoch_period=14):
-        """Stochastic RSI - faster momentum signal 0-100"""
         try:
             if len(closes) < rsi_period + stoch_period:
                 return 50.0
@@ -660,7 +648,6 @@ class SignalEngine:
             return 50.0
 
     def _detect_rsi_divergence(self, closes, lookback=10):
-        """Detect bullish RSI divergence - price lower low but RSI higher low"""
         try:
             if len(closes) < lookback + 14:
                 return 'none'
@@ -678,7 +665,6 @@ class SignalEngine:
             return 'none'
 
     def _detect_bb_bounce(self, closes, bb):
-        """Detect if price is bouncing off lower Bollinger Band"""
         try:
             if not bb or 'lower' not in bb:
                 return False
