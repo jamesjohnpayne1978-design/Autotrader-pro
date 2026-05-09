@@ -14,6 +14,18 @@ log = logging.getLogger(__name__)
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 
 
+# ============================================================
+# AUTO-EXECUTE CONFIDENCE THRESHOLDS — tune these to taste
+# ============================================================
+# Lower = more aggressive (more trades, more false signals)
+# Higher = more conservative (fewer trades, higher win rate)
+# These ONLY apply when Auto Mode is ON. Approval mode is unaffected.
+AUTO_EXECUTE_MIN_CONFIDENCE = 60   # was 68 — lowered to catch more setups
+PYRAMID_MIN_CONFIDENCE      = 65   # higher than main threshold because
+                                   # pyramiding stacks risk on existing positions
+# ============================================================
+
+
 class SignalEngine:
     def __init__(self, config, trader, risk_manager=None, manual_manager=None):
         self.config = config
@@ -190,8 +202,8 @@ class SignalEngine:
             pair = signal.get('pair')
             if action not in ('buy', 'sell'):
                 continue
-            if confidence < 68:
-                log.info(f"Auto-execute skipped {pair} - confidence {confidence}% below 65%")
+            if confidence < AUTO_EXECUTE_MIN_CONFIDENCE:
+                log.info(f"Auto-execute skipped {pair} - confidence {confidence}% below {AUTO_EXECUTE_MIN_CONFIDENCE}%")
                 continue
             approved, reason = self.risk_manager.check_trade(pair, action, confidence)
             if not approved:
@@ -216,9 +228,10 @@ class SignalEngine:
                         current_price = float(prices['price'])
                         should_add, reason = self.trader.should_pyramid(sym, current_price)
                         if should_add:
-                            # Extra safety: only pyramid if signal confidence is decent
-                            if confidence < 68:
-                                log.info(f"Pyramid skipped for {pair}: confidence {confidence}% too low")
+                            # Pyramiding stacks risk on an existing position, so we
+                            # require slightly higher confidence than a fresh entry.
+                            if confidence < PYRAMID_MIN_CONFIDENCE:
+                                log.info(f"Pyramid skipped for {pair}: confidence {confidence}% below {PYRAMID_MIN_CONFIDENCE}%")
                                 self.risk_manager.release_lock(pair)
                                 continue
                             log.info(f"Pyramid opportunity for {pair}: {reason}")
