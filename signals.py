@@ -300,7 +300,105 @@ class SignalEngine:
         if self.config.auto_mode and self.risk_manager:
             self._auto_execute(signals)
 
+    def _check_pyramid_opportunity(self, signal):
+        """Independent pyramid check that runs for EVERY pair we hold,
+        regardless of what action the AI suggested. Pyramid is fundamentally
+        a 'price dropped from my last buy' decision, not an 'AI says buy
+        right now' decision. This decouples the two.
+
+        Conditions for pyramid to fire:
+        - AI action is NOT 'sell' (don't add to a position the AI wants out of)
+        - AI confidence on the signal is >= PYRAMID_MIN_CONFIDENCE
+          (so we don't add when the AI thinks the asset is junk)
+        - trader.should_pyramid() approves: typically price dropped >=
+          pyramid_drop_trigger% from last buy AND haven't exceeded max adds
+          AND not below max drawdown
+        - Risk manager approves (cooldown elapsed, daily loss limit OK)
+        """
+        pair = signal.get('pair')
+        action = signal.get('action', 'hold')
+        confidence = signal.get('confidence', 0)
+
+        # Don't pyramid if AI actively wants out of this pair
+        if action == 'sell':
+            return
+
+        # Don't pyramid if AI confidence is too low - we'd be adding to junk
+        if confidence < PYRAMID_MIN_CONFIDENCE:
+            return
+
+        # Don't pyramid manual positions - they have their own TP/SL logic
+        try:
+            if self.manual_manager and self.manual_manager.has_position(pair):
+                return
+        except Exception:
+            pass
+
+        try:
+            sym = pair.replace('/', '')
+            prices = self.trader.client.get_symbol_ticker(symbol=sym)
+            current_price = float(prices['price'])
+            should_add, reason = self.trader.should_pyramid(sym, current_price)
+        except Exception as e:
+            log.debug(f"Pyramid should_add check failed for {pair}: {e}")
+            return
+
+        if not should_add:
+            return
+
+        # should_pyramid() returned True - go through risk manager
+        approved, rm_reason = self.risk_manager.check_trade(pair, 'buy', confidence)
+        if not approved:
+            log.info(f"Pyramid {pair} blocked by risk manager: {rm_reason}")
+            try:
+                self.risk_manager.release_lock(pair)
+            except Exception:
+                pass
+            return
+
+        try:
+            log.info(f"Pyramid opportunity for {pair} (AI action={action}, conf={confidence}): {reason}")
+            pyramid_pct = getattr(self.config, 'pyramid_size_pct', 3.0)
+            result = self.trader.execute_trade(pair, 'buy', pyramid_pct)
+            self.risk_manager.record_trade(pair)
+            log.info(f"Pyramid buy executed for {pair}: {result}")
+
+            # Send Telegram notification
+            try:
+                if self.config.telegram_token and self.config.telegram_chat_id:
+                    msg = (
+                        f"🔼 *PYRAMID BUY {pair}*\n"
+                        f"AI action: {action} (conf {confidence}%)\n"
+                        f"Reason: {reason}\n"
+                        f"Size: {pyramid_pct}% of portfolio"
+                    )
+                    requests.post(
+                        f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
+                        json={'chat_id': str(self.config.telegram_chat_id), 'text': msg, 'parse_mode': 'Markdown'},
+                        timeout=8
+                    )
+            except Exception:
+                pass
+        except Exception as e:
+            log.error(f"Pyramid execute failed for {pair}: {e}")
+        finally:
+            try:
+                self.risk_manager.release_lock(pair)
+            except Exception:
+                pass
+
     def _auto_execute(self, signals):
+        # FIRST PASS: Check pyramid opportunities for ALL pairs we hold,
+        # regardless of the AI's buy/sell action. Pyramid logic is about
+        # "price dropped from last buy" not "AI said buy this second".
+        if getattr(self.config, 'pyramid_enabled', False):
+            for signal in signals:
+                try:
+                    self._check_pyramid_opportunity(signal)
+                except Exception as e:
+                    log.debug(f"Pyramid check error: {e}")
+
+        # SECOND PASS: Normal buy/sell auto-execute on AI signals
         for signal in signals:
             action = signal.get('action')
             confidence = signal.get('confidence', 0)
@@ -325,27 +423,7 @@ class SignalEngine:
                     except Exception:
                         pass
 
-                # Check if we should pyramid (add to existing position)
-                if action == 'buy' and getattr(self.config, 'pyramid_enabled', False):
-                    try:
-                        sym = pair.replace('/', '')
-                        prices = self.trader.client.get_symbol_ticker(symbol=sym)
-                        current_price = float(prices['price'])
-                        should_add, reason = self.trader.should_pyramid(sym, current_price)
-                        if should_add:
-                            if confidence < PYRAMID_MIN_CONFIDENCE:
-                                log.info(f"Pyramid skipped for {pair}: confidence {confidence}% below {PYRAMID_MIN_CONFIDENCE}%")
-                                self.risk_manager.release_lock(pair)
-                                continue
-                            log.info(f"Pyramid opportunity for {pair}: {reason}")
-                            pyramid_pct = getattr(self.config, 'pyramid_size_pct', 3.0)
-                            result = self.trader.execute_trade(pair, 'buy', pyramid_pct)
-                            self.risk_manager.record_trade(pair)
-                            log.info(f"Pyramid buy executed for {pair}: {result}")
-                            self.risk_manager.release_lock(pair)
-                            continue
-                    except Exception as e:
-                        log.debug(f"Pyramid check error for {pair}: {e}")
+                # Pyramid was already considered in first pass above - skip here
 
                 # Skip sell if we have no holdings
                 if action == 'sell':
