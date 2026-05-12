@@ -840,6 +840,78 @@ def diagnose_auto_execute():
     return jsonify(out)
 
 
+@app.route('/api/dust/convert', methods=['POST'])
+def convert_dust():
+    """Convert all small balances (<$10 each) to BNB via Binance's dust transfer.
+
+    Binance has a built-in API that batches conversion of dust holdings into BNB
+    at a small fee. This cleans up leftover fragments from previous trades.
+    """
+    if not trader:
+        return jsonify({'error': 'Not connected'}), 400
+
+    try:
+        # Identify dust assets - anything between $0.01 and $10 in non-USDT/BNB assets
+        account = trader.client.get_account()
+        dust_assets = []
+
+        for b in account['balances']:
+            asset = b['asset']
+            free = float(b['free'])
+            locked = float(b['locked'])
+            total = free + locked
+
+            # Skip USDT, BNB, and anything zero
+            if total == 0 or asset in ('USDT', 'BNB', 'BUSD', 'USDC', 'FDUSD'):
+                continue
+
+            try:
+                # Get current price in USDT
+                price_data = trader.client.get_symbol_ticker(symbol=asset + 'USDT')
+                price = float(price_data['price'])
+                value_usdt = total * price
+                # Binance considers dust as anything under their threshold (varies, ~$5-10)
+                if 0 < value_usdt < 10:
+                    dust_assets.append({'asset': asset, 'value_usdt': round(value_usdt, 4)})
+            except Exception:
+                # If we can't price it in USDT, skip silently (might be a delisted asset)
+                pass
+
+        if not dust_assets:
+            return jsonify({
+                'converted': False,
+                'message': 'No dust to convert (all balances either zero, large enough, or already stablecoin)'
+            })
+
+        # Execute the dust transfer via Binance API
+        asset_list = [d['asset'] for d in dust_assets]
+        log.info(f"Converting dust to BNB: {asset_list}")
+        try:
+            result = trader.client.transfer_dust(asset=','.join(asset_list))
+        except Exception:
+            # Some library versions use a list, some use comma-separated string
+            result = trader.client.transfer_dust(asset=asset_list)
+
+        # Telegram notification
+        try:
+            if config.telegram_token and config.telegram_chat_id:
+                assets_str = ', '.join(asset_list)
+                send_telegram(f"🧹 *Dust converted to BNB*\nAssets: {assets_str}")
+        except Exception:
+            pass
+
+        return jsonify({
+            'converted': True,
+            'assets': dust_assets,
+            'asset_count': len(dust_assets),
+            'message': f'Converted {len(dust_assets)} dust assets to BNB'
+        })
+
+    except Exception as e:
+        log.error(f"Dust conversion failed: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     if request.method == 'POST':
