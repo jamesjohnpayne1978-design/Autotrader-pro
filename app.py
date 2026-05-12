@@ -370,7 +370,7 @@ def get_insights():
             )
 
             r = req_lib.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}",
                 headers={"Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": ai_prompt}]}],
@@ -506,18 +506,17 @@ def execute_trade():
     pair = data.get('pair')
     action = data.get('action')
     confidence = float(data.get('confidence', 0))
-
-    approved, reason = risk_manager.check_trade(pair, action, confidence)
-    if not approved:
-        return jsonify({'error': f'Risk manager blocked: {reason}'}), 400
-
     is_manual = data.get('manual', False)
+
+    # Manual trades bypass the risk manager's cooldown/lock checks because the
+    # user has explicitly chosen to trade. Auto trades from the signal engine
+    # still go through the full check.
     if is_manual:
-        log.info(f"Manual trade: {action} {pair}")
-    # For manual buys - register with manual position manager
-    if action == 'buy' and is_manual:
-        risk_manager.record_trade(pair)
-        log.info(f"Pre-recorded buy time for {pair} to protect hold period")
+        log.info(f"Manual trade requested: {action} {pair} - bypassing cooldown")
+    else:
+        approved, reason = risk_manager.check_trade(pair, action, confidence)
+        if not approved:
+            return jsonify({'error': f'Risk manager blocked: {reason}'}), 400
     # Execute the trade
     try:
         result = trader.execute_trade(pair, action, config.max_trade_pct)
@@ -657,7 +656,65 @@ def test_sniper():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/sniper/toggle', methods=['POST'])
+@app.route('/api/sniper/simulate', methods=['POST'])
+def simulate_sniper_detection():
+    """Force a fake detection so we can verify the sniper pipeline end-to-end
+    without waiting for Binance to list something new.
+
+    Default behaviour: detection is logged + a Telegram alert is sent, but NO
+    real buy is placed. Pass {"buy": true} in the POST body to also place a
+    small real buy (use with care - spends real USDT).
+
+    Pass {"pair": "LINKUSDT"} to pick a specific pair, otherwise picks the
+    first pair the sniper is watching.
+    """
+    if not sniper:
+        return jsonify({'error': 'Sniper not initialised'}), 400
+
+    body = request.json or {}
+    do_buy = body.get('buy', False)
+    pair = body.get('pair') or (list(sniper.seen_symbols)[0] if sniper.seen_symbols else None)
+    if not pair:
+        return jsonify({'error': 'No pair available'}), 400
+
+    from datetime import datetime
+    detection = {
+        'symbol': pair,
+        'detected_at': datetime.now().isoformat(timespec='seconds'),
+        'mode': 'SIMULATED',
+        'note': 'Forced via /api/sniper/simulate'
+    }
+
+    # Record detection in sniper history so it appears on the dashboard
+    if not hasattr(sniper, 'recent_detections'):
+        sniper.recent_detections = []
+    sniper.recent_detections.append(detection)
+
+    # Send Telegram alert so user sees the full pipeline working
+    send_telegram(
+        f"🎯 *SNIPER TEST - SIMULATED DETECTION*\n"
+        f"Pair: `{pair}`\n"
+        f"Mode: simulation (no real buy placed)\n"
+        f"This confirms detection + alert pipeline is working."
+    )
+
+    result_summary = {'detection': detection, 'real_buy_placed': False}
+
+    if do_buy:
+        # Optionally place a real small buy to test the full trade path
+        try:
+            r = trader.execute_trade(pair.replace('USDT', '/USDT'), 'buy', 1.0)  # 1% of portfolio
+            result_summary['real_buy_placed'] = True
+            result_summary['trade_result'] = r if isinstance(r, dict) else {'raw': str(r)}
+            send_telegram(f"🟢 SNIPER TEST: real buy placed on {pair}")
+        except Exception as e:
+            result_summary['buy_error'] = str(e)
+            log.error(f"Sniper simulate buy failed: {e}")
+
+    return jsonify(result_summary)
+
+
+
 def toggle_sniper():
     if not sniper:
         return jsonify({'error': 'Not initialised'}), 400
@@ -665,6 +722,122 @@ def toggle_sniper():
     config.sniper_active = sniper.active
     config.save()
     return jsonify({'active': sniper.active})
+
+
+@app.route('/api/diagnose')
+def diagnose_auto_execute():
+    """For every pair the bot is tracking, explain whether it WOULD auto-execute
+    right now and if not, exactly WHY. This is the easiest way to debug 'bot
+    isn't trading' issues without digging through logs.
+    """
+    if not signal_engine:
+        return jsonify({'error': 'Signal engine not initialised'}), 400
+
+    # Read the threshold from signals module so this never drifts
+    try:
+        from signals import AUTO_EXECUTE_MIN_CONFIDENCE
+    except Exception:
+        AUTO_EXECUTE_MIN_CONFIDENCE = 60
+
+    out = {
+        'auto_mode': bool(getattr(config, 'auto_mode', False)),
+        'min_confidence_threshold': AUTO_EXECUTE_MIN_CONFIDENCE,
+        'market_regime': getattr(signal_engine, 'market_regime', 'unknown'),
+        'trading_pairs': list(getattr(config, 'trading_pairs', [])),
+        'pairs': []
+    }
+
+    # If auto mode is off, that's the headline answer
+    if not out['auto_mode']:
+        out['summary'] = ('AUTO MODE IS OFF. The bot will never auto-buy or auto-sell. '
+                         'Turn it on in Settings -> Trading Mode -> Full Auto Mode.')
+
+    latest = []
+    try:
+        latest = signal_engine.get_latest_signals() or []
+    except Exception as e:
+        out['signals_error'] = str(e)
+
+    # Build a per-pair diagnosis
+    signal_by_pair = {s.get('pair', '').replace('/USDT', 'USDT'): s for s in latest}
+
+    for symbol in out['trading_pairs']:
+        pair_slash = symbol.replace('USDT', '/USDT')
+        info = {'pair': pair_slash}
+        signal = signal_by_pair.get(symbol)
+        if not signal:
+            info['status'] = 'NO_SIGNAL'
+            info['reason'] = 'No signal generated yet for this pair (signal engine may not have cycled, or signal generation failed)'
+            out['pairs'].append(info)
+            continue
+
+        action = signal.get('action', 'hold')
+        confidence = signal.get('confidence', 0)
+        info['action'] = action
+        info['confidence'] = confidence
+        info['rsi'] = signal.get('rsi')
+        info['signal_reason'] = signal.get('reason', '')[:120]
+
+        if not out['auto_mode']:
+            info['status'] = 'AUTO_MODE_OFF'
+            info['reason'] = 'Auto Mode toggle is off - bot only suggests, never trades'
+        elif action not in ('buy', 'sell'):
+            info['status'] = 'SKIPPED'
+            info['reason'] = f'Action is "{action}" - bot only auto-executes buy/sell'
+        elif confidence < AUTO_EXECUTE_MIN_CONFIDENCE:
+            info['status'] = 'SKIPPED'
+            info['reason'] = f'Confidence {confidence}% below threshold {AUTO_EXECUTE_MIN_CONFIDENCE}%'
+        else:
+            # Check risk manager state for this pair
+            try:
+                approved, reason = risk_manager.check_trade(pair_slash, action, confidence)
+                # Release lock immediately because we were just testing
+                try:
+                    risk_manager.release_lock(pair_slash)
+                except Exception:
+                    pass
+                if approved:
+                    info['status'] = 'WOULD_EXECUTE'
+                    info['reason'] = f'Bot would auto-{action} this pair on next cycle'
+                else:
+                    info['status'] = 'BLOCKED'
+                    info['reason'] = f'Risk manager: {reason}'
+            except Exception as e:
+                info['status'] = 'ERROR'
+                info['reason'] = f'Risk check error: {e}'
+
+        # For SELL signals, also note if there's nothing to sell
+        if action == 'sell' and trader:
+            try:
+                base = symbol.replace('USDT', '')
+                acct = trader.client.get_account()
+                bal = next((float(b['free']) + float(b['locked']) for b in acct['balances'] if b['asset'] == base), 0.0)
+                price_data = trader.client.get_symbol_ticker(symbol=symbol)
+                value = bal * float(price_data['price'])
+                info['holdings_usdt'] = round(value, 2)
+                if value < 2.0:
+                    info['status'] = 'SKIPPED'
+                    info['reason'] = f'Sell signal but holdings value (${value:.2f}) below $2 minimum'
+            except Exception:
+                pass
+
+        out['pairs'].append(info)
+
+    # Generate plain-english summary at the end
+    if 'summary' not in out:
+        would_exec = [p for p in out['pairs'] if p.get('status') == 'WOULD_EXECUTE']
+        blocked = [p for p in out['pairs'] if p.get('status') == 'BLOCKED']
+        skipped_low_conf = [p for p in out['pairs'] if p.get('status') == 'SKIPPED' and 'below threshold' in p.get('reason', '')]
+        if would_exec:
+            out['summary'] = f"{len(would_exec)} pair(s) ready to auto-execute on next cycle: {', '.join(p['pair'] for p in would_exec)}"
+        elif blocked:
+            out['summary'] = f"All buy/sell signals are being BLOCKED by risk manager. Common reasons: cooldown not elapsed, or daily loss limit hit."
+        elif skipped_low_conf:
+            out['summary'] = f"All signals are below the {AUTO_EXECUTE_MIN_CONFIDENCE}% confidence threshold. Lower threshold in signals.py or wait for stronger setups."
+        else:
+            out['summary'] = "No actionable buy/sell signals right now. AI is recommending hold/watch on all pairs."
+
+    return jsonify(out)
 
 
 @app.route('/api/settings', methods=['GET', 'POST'])
