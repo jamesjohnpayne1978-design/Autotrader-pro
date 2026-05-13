@@ -177,6 +177,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="portfolio-label">Total Portfolio Value</div>
     <div class="portfolio-value" id="portfolioValue">$0.00</div>
     <div class="pnl-row"><div class="portfolio-pnl up" id="portfolioPnl">Today: +$0.00 (0.00%)</div></div>
+    <div class="pnl-row" style="margin-top:6px"><div class="portfolio-pnl" id="portfolioOverall" onclick="resetBaseline()" title="Tap to reset baseline" style="cursor:pointer;font-size:0.85rem;opacity:0.85">Overall: 0.00%</div></div>
     <div class="portfolio-stats">
       <div class="stat"><div class="stat-label">Trades</div><div class="stat-value" id="tradesToday">0</div></div>
       <div class="stat"><div class="stat-label">Win %</div><div class="stat-value up" id="winRate">-</div></div>
@@ -361,7 +362,21 @@ async function loadChart(){try{const r=await fetch(API_BASE+'/api/portfolio/hist
 
 async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime();loadFearGreed()}
 
-async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const pnl=d.pnl_today||0;const pct=d.pnl_pct||0;const el=document.getElementById('portfolioPnl');el.textContent='Today: '+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+pct.toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');document.getElementById('tradesToday').textContent=d.trades_today||0;document.getElementById('winRate').textContent=d.win_rate?d.win_rate+'%':'-';document.getElementById('openPositions').textContent=d.open_positions||0;document.getElementById('freeUsdt').textContent='$'+(d.free_usdt||0).toFixed(0);state.apiConnected=true;updateApiStatus(true)}catch(e){}}
+async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const pnl=d.pnl_today||0;const pct=d.pnl_pct||0;const el=document.getElementById('portfolioPnl');el.textContent='Today: '+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+pct.toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');
+let baseline=parseFloat(localStorage.getItem('portfolio_baseline')||'0');
+if(baseline<=0&&d.total_usdt>0){baseline=d.total_usdt;localStorage.setItem('portfolio_baseline',baseline.toString());localStorage.setItem('portfolio_baseline_date',new Date().toISOString());}
+if(baseline>0){const overallDollar=d.total_usdt-baseline;const overallPct=(overallDollar/baseline)*100;const overallEl=document.getElementById('portfolioOverall');if(overallEl){const dSign=overallDollar>=0?'+':'-';const pSign=overallPct>=0?'+':'';overallEl.textContent='Overall: '+dSign+'$'+Math.abs(overallDollar).toFixed(2)+' ('+pSign+overallPct.toFixed(2)+'%) · tap to reset';overallEl.className='portfolio-pnl '+(overallPct>=0?'up':'down');overallEl.style.cursor='pointer';overallEl.style.fontSize='0.85rem';overallEl.style.opacity='0.85';}}
+document.getElementById('tradesToday').textContent=d.trades_today||0;document.getElementById('winRate').textContent=d.win_rate?d.win_rate+'%':'-';document.getElementById('openPositions').textContent=d.open_positions||0;document.getElementById('freeUsdt').textContent='$'+(d.free_usdt||0).toFixed(0);state.apiConnected=true;updateApiStatus(true)}catch(e){}}
+
+function resetBaseline(){
+  const v=parseFloat(document.getElementById('portfolioValue').textContent.replace('$','').replace(',',''));
+  if(!v||v<=0){showToast('Portfolio value not loaded yet');return;}
+  if(!confirm('Reset overall % gain baseline to current value $'+v.toFixed(2)+'?\\n\\nThis sets your "starting" balance to right now, so going forward "Overall %" measures growth from this moment.')) return;
+  localStorage.setItem('portfolio_baseline',v.toString());
+  localStorage.setItem('portfolio_baseline_date',new Date().toISOString());
+  showToast('✅ Baseline reset to $'+v.toFixed(2));
+  loadPortfolio();
+}
 
 async function loadPrices(){try{const r=await fetch(API_BASE+'/api/prices');const d=await r.json();renderPairs(d.pairs)}catch(e){}}
 function renderPairs(pairs){if(!pairs||!pairs.length){document.getElementById('pairsCard').innerHTML='<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.9rem;">No pairs loaded.</div>';return}const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',RENDER:'R',LINK:'🔗',ARB:'A'};document.getElementById('pairsCard').innerHTML=pairs.map(p=>{let gainHtml='';if(p.gain_pct!==null&&p.gain_pct!==undefined&&p.value_usdt>=1.0){const g=p.gain_pct;const toTp=p.to_tp;const gainCls=g>=0?'up':'down';const tpColor=toTp!==null&&toTp<=1?'var(--green)':toTp!==null&&toTp<=3?'var(--gold)':'var(--text-2)';gainHtml='<div style="font-size:0.72rem;margin-top:4px;font-family:var(--mono);display:flex;gap:8px;"><span class="'+gainCls+'">'+(g>=0?'+':'')+g.toFixed(2)+'%</span><span style="color:var(--text-3)">·</span><span style="color:'+tpColor+'">'+(toTp!==null?'TP in '+toTp.toFixed(2)+'%':'')+'</span></div>'}return'<div class="pair-row" onclick="openPairModal(\''+p.symbol+'\',\''+p.base+'\')" style="cursor:pointer"><div class="pair-info"><div class="pair-icon">'+(icons[p.base]||'●')+'</div><div><div class="pair-name">'+p.symbol+'</div><div class="pair-holdings">'+p.holdings+' '+p.base+' · $'+p.value_usdt+'</div>'+gainHtml+'</div></div><div class="pair-prices"><div class="pair-price">$'+Number(p.price).toLocaleString()+'</div><div class="pair-change '+(p.change>=0?'up':'down')+'">'+(p.change>=0?'+':'')+p.change+'%</div></div></div>'}).join('')}
