@@ -182,9 +182,210 @@ class SignalEngine:
                         self.trader.check_all_trailing_stops()
                 except Exception as e:
                     log.debug(f"Trailing stop check error: {e}")
+                # Run our high-level trailing stop monitor (separate from
+                # trader.py's stop logic - works on the portfolio level)
+                try:
+                    self._check_portfolio_trailing_stops()
+                except Exception as e:
+                    log.debug(f"Portfolio trailing stop error: {e}")
+                # Check for over-concentration in any single position
+                try:
+                    self._check_position_concentration()
+                except Exception as e:
+                    log.debug(f"Concentration check error: {e}")
             except Exception as e:
                 log.error(f"Signal refresh error: {e}")
             time.sleep(300)
+
+    def _check_portfolio_trailing_stops(self):
+        """Portfolio-level trailing stop loss. Tracks the high-water mark for
+        every open position. When price drops more than `trailing_stop_pct`
+        from the peak (and we're already in profit by `trailing_stop_activate_pct`),
+        triggers a sell.
+
+        This runs independently of trader.py's own stop-loss logic. Both can fire;
+        whichever fires first wins, the second one is a no-op.
+
+        Disabled by default - enable via config.trailing_stop_enabled = True.
+        """
+        if not getattr(self.config, 'trailing_stop_enabled', False):
+            return
+        if not self.trader:
+            return
+
+        # Init high-water mark tracker
+        if not hasattr(self, 'high_water_marks'):
+            self.high_water_marks = {}  # {symbol: {entry_price, peak_price}}
+
+        trail_pct = float(getattr(self.config, 'trailing_stop_pct', 3.0))
+        activate_pct = float(getattr(self.config, 'trailing_stop_activate_pct', 2.0))
+
+        try:
+            account = self.trader.client.get_account()
+            prices = self.trader.client.get_all_tickers()
+            price_map = {p['symbol']: float(p['price']) for p in prices}
+
+            for balance in account['balances']:
+                asset = balance['asset']
+                if asset in ('USDT', 'BNB', 'BUSD', 'USDC', 'FDUSD'):
+                    continue
+                total = float(balance['free']) + float(balance['locked'])
+                if total <= 0:
+                    continue
+                symbol = f"{asset}USDT"
+                if symbol not in price_map:
+                    continue
+                current_price = price_map[symbol]
+                value = total * current_price
+                if value < 5.0:  # Skip dust
+                    continue
+
+                # Initialise entry if first time we've seen this position
+                if symbol not in self.high_water_marks:
+                    self.high_water_marks[symbol] = {
+                        'entry_price': current_price,
+                        'peak_price': current_price,
+                    }
+                    continue  # Wait one cycle before tracking
+
+                hwm = self.high_water_marks[symbol]
+                # Update peak
+                if current_price > hwm['peak_price']:
+                    hwm['peak_price'] = current_price
+
+                # Calculate position state
+                gain_from_entry = ((current_price - hwm['entry_price']) / hwm['entry_price']) * 100
+                drop_from_peak = ((hwm['peak_price'] - current_price) / hwm['peak_price']) * 100
+
+                # Don't trail unless we're up by the activation threshold
+                if gain_from_entry < activate_pct:
+                    continue
+
+                # Skip if it's a manual position - manual manager handles those
+                pair_slash = symbol.replace('USDT', '/USDT')
+                try:
+                    if self.manual_manager and self.manual_manager.has_position(pair_slash):
+                        continue
+                except Exception:
+                    pass
+
+                # Trigger sell if dropped from peak by trailing percentage
+                if drop_from_peak >= trail_pct:
+                    log.info(f"TRAILING STOP triggered for {symbol}: peak ${hwm['peak_price']:.4f}, "
+                             f"current ${current_price:.4f} (drop {drop_from_peak:.1f}%), "
+                             f"locked-in gain {gain_from_entry:.1f}%")
+                    try:
+                        if self.risk_manager:
+                            approved, _ = self.risk_manager.check_trade(pair_slash, 'sell', 100)
+                            if not approved:
+                                continue
+                        result = self.trader.execute_trade(pair_slash, 'sell', 100.0)  # Sell all
+                        log.info(f"Trailing stop SELL executed for {pair_slash}: {result}")
+                        # Clear tracker so next entry starts fresh
+                        del self.high_water_marks[symbol]
+                        # Telegram alert
+                        try:
+                            if self.config.telegram_token and self.config.telegram_chat_id:
+                                msg = (
+                                    f"🎯 *TRAILING STOP SELL {pair_slash}*\n"
+                                    f"Locked in {gain_from_entry:.1f}% gain\n"
+                                    f"Peak: ${hwm['peak_price']:.4f}\n"
+                                    f"Exit: ${current_price:.4f} ({drop_from_peak:.1f}% from peak)"
+                                )
+                                requests.post(
+                                    f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
+                                    json={'chat_id': str(self.config.telegram_chat_id), 'text': msg, 'parse_mode': 'Markdown'},
+                                    timeout=8
+                                )
+                        except Exception:
+                            pass
+                        if self.risk_manager:
+                            self.risk_manager.release_lock(pair_slash)
+                    except Exception as e:
+                        log.error(f"Trailing stop sell failed for {pair_slash}: {e}")
+                        if self.risk_manager:
+                            try:
+                                self.risk_manager.release_lock(pair_slash)
+                            except Exception:
+                                pass
+        except Exception as e:
+            log.debug(f"Portfolio trailing stop scan error: {e}")
+
+    def _check_position_concentration(self):
+        """Send a Telegram alert when any single position exceeds 25% of the
+        total portfolio value. Helps catch over-concentration risk before a
+        single bad trade tanks the whole portfolio.
+
+        Alerts are throttled to once every 4 hours per pair to avoid spam.
+        """
+        if not self.trader:
+            return
+
+        threshold_pct = float(getattr(self.config, 'concentration_alert_pct', 25.0))
+        cooldown_hours = 4
+
+        if not hasattr(self, '_last_concentration_alert'):
+            self._last_concentration_alert = {}
+
+        try:
+            account = self.trader.client.get_account()
+            prices = self.trader.client.get_all_tickers()
+            price_map = {p['symbol']: float(p['price']) for p in prices}
+
+            # Calculate value of every non-stable balance
+            holdings = {}
+            usdt_balance = 0.0
+            for balance in account['balances']:
+                asset = balance['asset']
+                total = float(balance['free']) + float(balance['locked'])
+                if total <= 0:
+                    continue
+                if asset == 'USDT':
+                    usdt_balance = total
+                    continue
+                symbol = f"{asset}USDT"
+                if symbol not in price_map:
+                    continue
+                value = total * price_map[symbol]
+                if value >= 1.0:
+                    holdings[asset] = value
+
+            total_value = sum(holdings.values()) + usdt_balance
+            if total_value < 10:
+                return  # Too small to bother
+
+            # Find over-concentrated positions
+            now = time.time()
+            for asset, value in holdings.items():
+                pct = (value / total_value) * 100
+                if pct < threshold_pct:
+                    continue
+                # Check cooldown
+                last_alert = self._last_concentration_alert.get(asset, 0)
+                if now - last_alert < cooldown_hours * 3600:
+                    continue
+
+                log.info(f"Concentration alert: {asset} is {pct:.1f}% of portfolio (${value:.2f} / ${total_value:.2f})")
+                self._last_concentration_alert[asset] = now
+
+                # Send Telegram
+                try:
+                    if self.config.telegram_token and self.config.telegram_chat_id:
+                        msg = (
+                            f"⚖️ *CONCENTRATION ALERT*\n"
+                            f"{asset} is *{pct:.1f}%* of your portfolio (${value:.2f}).\n"
+                            f"Total portfolio: ${total_value:.2f}\n"
+                            f"Consider taking partial profit to rebalance."
+                        )
+                        requests.post(
+                            f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
+                            json={'chat_id': str(self.config.telegram_chat_id), 'text': msg, 'parse_mode': 'Markdown'},
+                            timeout=8
+                        )
+                except Exception:
+                    pass
+        except Exception as e:
+            log.debug(f"Concentration check error: {e}")
 
     def _fetch_fear_greed(self):
         """Fetch crypto Fear & Greed index - 0=extreme fear, 100=extreme greed"""
@@ -227,7 +428,8 @@ class SignalEngine:
                 f"RSI (14): {round(rsi, 1)}\n"
                 f"Price vs 7-day MA: {'above' if price > ma7 else 'below'}\n"
                 f"Price vs 14-day MA: {'above' if price > ma14 else 'below'}\n"
-                f"Volume trend (3d vs 14d avg): {round(volume_trend, 2)}x\n\n"
+                f"Volume trend (3d vs 14d avg): {round(volume_trend, 2)}x\n"
+                f"Crypto Fear & Greed Index: {self.fear_greed_index}/100 ({self.fear_greed_label})\n\n"
                 f"Determine:\n"
                 f"1. Market regime: bullish, bearish, or neutral\n"
                 f"2. Recommended take profit %: bullish=15, neutral=6, bearish=8\n\n"
@@ -550,6 +752,8 @@ class SignalEngine:
 
             prompt = (
                 f"Analyse {symbol} for trading signal. Market regime: {self.market_regime}.\n"
+                f"Fear & Greed Index: {indicators.get('fear_greed', 50)}/100 "
+                f"({self.fear_greed_label}) - extreme values often signal reversals.\n"
                 f"RSI: {round(rsi, 1)}, MACD: {macd_signal} ({round(macd_hist, 4)})\n"
                 f"Price: {round(price, 4)}, 50MA: {round(ma50, 4)}, 200MA: {ma200_str}\n"
                 f"Above 50MA: {price > ma50}, BB position: {round(bb_pos, 0)}%\n"
