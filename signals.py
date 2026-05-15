@@ -671,23 +671,38 @@ class SignalEngine:
                 self.risk_manager.record_trade(pair)  # Start cooldown
                 log.info(f"Auto-executed: {action.upper()} {pair} - confidence {confidence}% - {result}")
                 # Send Telegram notification for auto trades
+                # Use defensive attribute access - settings key names vary
+                # (default_sl vs default_sl_pct) and missing attrs were silently
+                # killing Telegram alerts. Now logged at WARNING level if it fails.
                 try:
-                    if self.config.telegram_token and self.config.telegram_chat_id:
+                    tok = getattr(self.config, 'telegram_token', '') or ''
+                    chat = getattr(self.config, 'telegram_chat_id', '') or ''
+                    if tok and chat:
                         icon = '🟢' if action == 'buy' else '🔴'
-                        tp = getattr(self.config, 'dynamic_tp', self.config.default_tp_pct)
+                        tp_val = (getattr(self.config, 'dynamic_tp', None)
+                                  or getattr(self.config, 'default_tp_pct', None)
+                                  or getattr(self.config, 'default_tp', 6.0))
+                        sl_val = (getattr(self.config, 'default_sl_pct', None)
+                                  or getattr(self.config, 'default_sl', 4.0))
                         msg = (
                             f"{icon} *AUTO {action.upper()} {pair}*\n"
                             f"Confidence: {confidence}%\n"
                             f"Market: {self.market_regime.upper()}\n"
-                            f"TP: {tp}% · SL: {self.config.default_sl_pct}%"
+                            f"TP: {tp_val}% · SL: {sl_val}%"
                         )
-                        requests.post(
-                            f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
-                            json={'chat_id': str(self.config.telegram_chat_id), 'text': msg, 'parse_mode': 'Markdown'},
+                        r = requests.post(
+                            f"https://api.telegram.org/bot{tok}/sendMessage",
+                            json={'chat_id': str(chat), 'text': msg, 'parse_mode': 'Markdown'},
                             timeout=8
                         )
+                        if r.status_code != 200:
+                            log.warning(f"Telegram returned {r.status_code} for {pair}: {r.text[:200]}")
+                        else:
+                            log.info(f"Telegram alert sent for {action} {pair}")
+                    else:
+                        log.warning(f"Telegram not configured (token or chat_id missing) - skipping alert for {pair}")
                 except Exception as te:
-                    log.debug(f"Telegram notification error: {te}")
+                    log.warning(f"Telegram notification failed for {pair}: {te}")
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
             finally:
