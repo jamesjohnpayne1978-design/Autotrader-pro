@@ -190,6 +190,37 @@ def refresh_signals_now():
         return jsonify({'error': str(e)}), 400
 
 
+@app.route('/api/risk/clear-locks', methods=['POST'])
+def clear_risk_locks():
+    """Clear stuck risk manager locks across all trading pairs. Use when
+    /api/diagnose shows multiple pairs as 'Trade already in progress' but
+    no trades are actually running (this happens when a previous trade
+    crashed mid-execution and didn't release its lock cleanly)."""
+    if not risk_manager:
+        return jsonify({'error': 'Risk manager not initialised'}), 400
+    cleared = []
+    errors = []
+    try:
+        pairs = list(getattr(config, 'trading_pairs', []))
+        for symbol in pairs:
+            pair_slash = symbol.replace('USDT', '/USDT')
+            try:
+                risk_manager.release_lock(pair_slash)
+                cleared.append(pair_slash)
+            except Exception as e:
+                errors.append({'pair': pair_slash, 'error': str(e)})
+        log.info(f"Manual lock clear: released {len(cleared)} pairs")
+        return jsonify({
+            'success': True,
+            'cleared_count': len(cleared),
+            'cleared_pairs': cleared,
+            'errors': errors
+        })
+    except Exception as e:
+        log.error(f"Clear locks failed: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
 @app.route('/api/insights')
 def get_insights():
     regime = 'neutral'
