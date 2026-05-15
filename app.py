@@ -168,6 +168,27 @@ def get_signals():
         return jsonify({'signals': [], 'error': str(e)})
 
 
+@app.route('/api/signals/refresh', methods=['POST'])
+def refresh_signals_now():
+    """Force an immediate full refresh of signals - bypasses the 5-min cycle
+    timer. Use when you've just added a new pair, changed thresholds, or
+    want to re-analyse without waiting."""
+    if not signal_engine:
+        return jsonify({'error': 'Signal engine not initialised'}), 400
+    try:
+        log.info("Manual signal refresh requested")
+        signal_engine.detect_market_regime()
+        signal_engine.refresh_signals()
+        return jsonify({
+            'success': True,
+            'signals': signal_engine.get_latest_signals(),
+            'market_regime': signal_engine.market_regime,
+            'count': len(signal_engine.get_latest_signals())
+        })
+    except Exception as e:
+        log.error(f"Manual refresh failed: {e}")
+        return jsonify({'error': str(e)}), 400
+
 
 @app.route('/api/insights')
 def get_insights():
