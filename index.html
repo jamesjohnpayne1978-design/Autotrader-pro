@@ -211,7 +211,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button onclick="openTradeModal()" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">+ Manual Trade</button>
   </div>
   <div class="card" id="pairsCard"><div class="loading-row"><div class="spinner"></div> Loading prices...</div></div>
-  <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 14px"><div class="section-title" style="margin:0">AI Signals</div><button onclick="refreshSignalsNow()" id="refreshSignalsBtn" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">🔄 Refresh</button></div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 14px"><div class="section-title" style="margin:0">AI Signals</div><div style="display:flex;gap:8px"><button onclick="clearRiskLocks()" id="clearLocksBtn" style="background:transparent;border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text-2);font-family:var(--sans);font-size:0.78rem;font-weight:600;padding:8px 12px;cursor:pointer">🔓 Clear Locks</button><button onclick="refreshSignalsNow()" id="refreshSignalsBtn" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">🔄 Refresh</button></div></div>
   <div id="signalsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
 </div>
 
@@ -440,6 +440,24 @@ async function executeTrade(pair,action,confidence){
   try{const r=await fetch(API_BASE+'/api/trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pair,action,confidence})});const d=await r.json();showToast(d.success?pair+' '+action+' executed!':'Error: '+d.error)}catch(e){showToast('Could not reach trading server')}
 }
 function skipSignal(pair){showToast('Skipped '+pair);loadSignals()}
+
+async function clearRiskLocks(){
+  const btn=document.getElementById('clearLocksBtn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Clearing...';btn.style.opacity='0.6';}
+  try{
+    const r=await fetch(API_BASE+'/api/risk/clear-locks',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(d.success){
+      showToast('✅ Cleared locks on '+d.cleared_count+' pairs');
+    } else {
+      showToast('Failed: '+(d.error||'unknown'));
+    }
+  }catch(e){
+    showToast('Could not reach server');
+  } finally {
+    if(btn){btn.disabled=false;btn.textContent='🔓 Clear Locks';btn.style.opacity='1';}
+  }
+}
 
 async function refreshSignalsNow(){
   const btn=document.getElementById('refreshSignalsBtn');
