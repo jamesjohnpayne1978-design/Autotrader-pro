@@ -190,6 +190,125 @@ def refresh_signals_now():
         return jsonify({'error': str(e)}), 400
 
 
+@app.route('/api/pyramid/status')
+def pyramid_status():
+    """Diagnostic for pyramid mode. For each held position, shows whether
+    trader.should_pyramid() would fire RIGHT NOW and exactly why or why not.
+    Use this to verify the pyramid backend is actually working, not just
+    configured."""
+    if not signal_engine or not trader:
+        return jsonify({'error': 'Not initialised'}), 400
+
+    try:
+        from signals import PYRAMID_MIN_CONFIDENCE
+    except Exception:
+        PYRAMID_MIN_CONFIDENCE = 65
+
+    out = {
+        'pyramid_enabled': bool(getattr(config, 'pyramid_enabled', False)),
+        'pyramid_max_adds': getattr(config, 'pyramid_max_adds', 2),
+        'pyramid_drop_trigger_pct': getattr(config, 'pyramid_drop_trigger', 4.0),
+        'pyramid_max_drop_pct': getattr(config, 'pyramid_max_drop', 10.0),
+        'min_confidence_required': PYRAMID_MIN_CONFIDENCE,
+        'positions': []
+    }
+
+    if not out['pyramid_enabled']:
+        out['summary'] = 'Pyramid Mode is OFF - turn it on in Settings'
+        return jsonify(out)
+
+    # Walk through each held position and check pyramid conditions
+    latest_signals = {s.get('pair', ''): s for s in (signal_engine.get_latest_signals() or [])}
+
+    try:
+        account = trader.client.get_account()
+    except Exception as e:
+        return jsonify({'error': f'Could not fetch balances: {e}'}), 400
+
+    for b in account['balances']:
+        asset = b['asset']
+        if asset in ('USDT', 'BNB', 'USDC', 'BUSD', 'FDUSD'):
+            continue
+        bal = float(b['free']) + float(b['locked'])
+        if bal == 0:
+            continue
+
+        symbol = asset + 'USDT'
+        pair_slash = asset + '/USDT'
+
+        # Skip if not in trading_pairs (e.g. dust from old trades)
+        if symbol not in getattr(config, 'trading_pairs', []):
+            continue
+
+        info = {'pair': pair_slash, 'balance': bal}
+
+        try:
+            price_data = trader.client.get_symbol_ticker(symbol=symbol)
+            current_price = float(price_data['price'])
+            info['current_price'] = current_price
+            info['value_usdt'] = round(bal * current_price, 2)
+        except Exception as e:
+            info['error'] = f'Price fetch failed: {e}'
+            out['positions'].append(info)
+            continue
+
+        if info['value_usdt'] < 2.0:
+            info['status'] = 'SKIP_DUST'
+            info['reason'] = f'Position value ${info["value_usdt"]} below $2 - treated as dust'
+            out['positions'].append(info)
+            continue
+
+        # Check current AI signal for this pair
+        signal = latest_signals.get(pair_slash)
+        if signal:
+            info['ai_action'] = signal.get('action')
+            info['ai_confidence'] = signal.get('confidence')
+            if signal.get('action') == 'sell':
+                info['status'] = 'BLOCKED_AI_SAYS_SELL'
+                info['reason'] = 'AI wants to exit - pyramid declined'
+                out['positions'].append(info)
+                continue
+            if (signal.get('confidence') or 0) < PYRAMID_MIN_CONFIDENCE:
+                info['status'] = 'BLOCKED_LOW_CONFIDENCE'
+                info['reason'] = f'AI confidence {signal.get("confidence")}% below {PYRAMID_MIN_CONFIDENCE}% required for pyramid'
+                out['positions'].append(info)
+                continue
+        else:
+            info['ai_action'] = 'no signal yet'
+
+        # The critical test: ask trader.should_pyramid()
+        try:
+            should_add, reason = trader.should_pyramid(symbol, current_price)
+            info['should_pyramid_returns'] = bool(should_add)
+            info['trader_reason'] = str(reason)
+            if should_add:
+                info['status'] = 'WOULD_PYRAMID_NOW'
+            else:
+                info['status'] = 'NO_PYRAMID_YET'
+        except AttributeError:
+            info['status'] = 'ERROR'
+            info['reason'] = 'trader.should_pyramid method does not exist - check trader.py'
+        except Exception as e:
+            info['status'] = 'ERROR'
+            info['reason'] = f'should_pyramid raised: {e}'
+
+        out['positions'].append(info)
+
+    # Summary
+    would = [p for p in out['positions'] if p.get('status') == 'WOULD_PYRAMID_NOW']
+    errors = [p for p in out['positions'] if p.get('status') == 'ERROR']
+    if errors:
+        out['summary'] = f'⚠️ {len(errors)} pair(s) errored - trader.should_pyramid may be broken. See positions[].reason for details.'
+    elif would:
+        out['summary'] = f'✅ Pyramid READY to fire on {len(would)} position(s) next cycle: {", ".join(p["pair"] for p in would)}'
+    elif out['positions']:
+        out['summary'] = '✅ Pyramid backend wired up correctly - no positions meet conditions right now (waiting for price to drop %s%% from last entry)' % out['pyramid_drop_trigger_pct']
+    else:
+        out['summary'] = 'No real positions held - pyramid cannot fire without existing positions (it adds to positions, does not open them)'
+
+    return jsonify(out)
+
+
 @app.route('/api/risk/clear-locks', methods=['POST'])
 def clear_risk_locks():
     """Clear stuck risk manager locks across all trading pairs. Use when
