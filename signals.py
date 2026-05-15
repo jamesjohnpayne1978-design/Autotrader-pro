@@ -554,7 +554,9 @@ class SignalEngine:
             current_price = float(prices['price'])
             should_add, reason = self.trader.should_pyramid(sym, current_price)
         except Exception as e:
-            log.debug(f"Pyramid should_add check failed for {pair}: {e}")
+            # Was log.debug - bumped to WARNING so we can see if trader.should_pyramid
+            # is broken, doesn't exist, or throws. Silent fails were hiding real bugs.
+            log.warning(f"Pyramid should_pyramid check failed for {pair}: {e}")
             return
 
         if not should_add:
