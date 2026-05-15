@@ -489,6 +489,18 @@ class SignalEngine:
         }
 
     def refresh_signals(self):
+        # Belt-and-suspenders: release any locks left behind by a crashed
+        # auto-execute thread from the previous cycle. The cycle thread is
+        # single-threaded so by the time refresh runs, no legitimate lock
+        # should still be held. If one is, it's stale and must be cleared.
+        if self.risk_manager:
+            for symbol in self.config.trading_pairs:
+                pair_slash = symbol.replace('USDT', '/USDT')
+                try:
+                    self.risk_manager.release_lock(pair_slash)
+                except Exception:
+                    pass
+
         signals = []
         for symbol in self.config.trading_pairs:
             try:
