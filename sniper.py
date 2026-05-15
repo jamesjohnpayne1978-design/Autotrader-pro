@@ -1,6 +1,11 @@
 """
 AutoTrader Pro - New Listing Sniper
 Detects new Binance listings via exchange info polling (most reliable method)
+
+NOTE: The sniper deliberately bypasses the global `approval_mode` setting.
+Snipes are time-sensitive (listing pumps last minutes), so waiting for human
+approval defeats the purpose of having a sniper. AI signal trades still respect
+approval_mode normally. To pause sniping entirely, turn off the Sniper toggle.
 """
 
 import time
@@ -16,6 +21,22 @@ log = logging.getLogger(__name__)
 BINANCE_API = "https://api.binance.com/api/v3"
 BINANCE_NEWS_API = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=20"
 BINANCE_NEWS_API_V2 = "https://www.binance.com/en/support/announcement/new-cryptocurrency-listing?c=48&navId=48"
+
+
+def _sniper_budget(config):
+    """Read sniper budget defensively - config key has been spelled both
+    `sniper_budget_usdt` and `sniper_budget` in different versions, and we
+    fall back to a sane default if neither exists."""
+    val = getattr(config, 'sniper_budget_usdt', None)
+    if val is None:
+        val = getattr(config, 'sniper_budget', None)
+    if val is None:
+        val = 50.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 50.0
+
 
 class ListingSniper:
     def __init__(self, config, trader, risk_manager):
@@ -192,21 +213,18 @@ class ListingSniper:
             log.info(f"Sniper blocked {symbol}: {reason}")
             return
 
-        # Approval mode - log and notify only
-        if self.config.approval_mode:
-            detection['status'] = 'pending'
-            detection['action'] = 'Waiting - approval mode ON'
-            self._send_telegram(symbol, title)
-            log.info(f"Sniper found {symbol} - approval mode ON, not auto-buying")
-            return
-
-        # Auto mode - execute in background thread
+        # NOTE: Sniper intentionally bypasses the global `approval_mode` setting.
+        # Listing pumps happen within seconds and waiting for human approval is
+        # too slow. To pause sniper buying, toggle off the Sniper switch on the
+        # dashboard. AI signal trades still respect approval_mode separately.
+        budget = _sniper_budget(self.config)
         detection['status'] = 'buying'
-        detection['action'] = f'Auto-buying ${self.config.sniper_budget_usdt}'
-        t = Thread(target=self._execute_snipe, args=(symbol, detection), daemon=True)
+        detection['action'] = f'Auto-buying ${budget:.0f}'
+        self._send_telegram_buying(symbol, title, budget)
+        t = Thread(target=self._execute_snipe, args=(symbol, detection, budget), daemon=True)
         t.start()
 
-    def _execute_snipe(self, symbol: str, detection: dict):
+    def _execute_snipe(self, symbol: str, detection: dict, budget: float):
         """Execute the snipe trade"""
         try:
             # Wait up to 30s for trading to open
@@ -217,20 +235,25 @@ class ListingSniper:
                 except Exception:
                     time.sleep(1)
 
-            result = self.trader.snipe_listing(symbol, self.config.sniper_budget_usdt)
+            result = self.trader.snipe_listing(symbol, budget)
             if result.get('success'):
                 detection['status'] = 'bought'
-                detection['action'] = f"Bought ${self.config.sniper_budget_usdt:.0f}"
+                detection['action'] = f"Bought ${budget:.0f}"
                 log.info(f"Snipe executed: {symbol}")
+                self._send_telegram_bought(symbol, budget, result)
                 # Monitor in background
                 Thread(target=self._monitor_position, args=(symbol,), daemon=True).start()
             else:
                 detection['status'] = 'failed'
-                detection['action'] = f"Failed: {result.get('error', 'unknown')}"
+                err = result.get('error', 'unknown')
+                detection['action'] = f"Failed: {err}"
+                log.error(f"Snipe failed for {symbol}: {err}")
+                self._send_telegram_failed(symbol, err)
         except Exception as e:
             detection['status'] = 'error'
             detection['action'] = str(e)
             log.error(f"Snipe error for {symbol}: {e}")
+            self._send_telegram_failed(symbol, str(e))
 
     def _monitor_position(self, symbol: str):
         """Monitor sniped position for TP/SL"""
@@ -266,22 +289,50 @@ class ListingSniper:
         except Exception as e:
             log.error(f"Force sell failed: {e}")
 
-    def _send_telegram(self, symbol: str, title: str):
+    def _telegram_post(self, text: str):
+        """Internal helper - actually sends the message. Silent on failure."""
         if not self.config.telegram_token or not self.config.telegram_chat_id:
             return
         try:
-            msg = (
-                f"🎯 *New Listing Detected!*\n\n"
-                f"Symbol: `{symbol}`\n"
-                f"Source: {title[:80]}\n\n"
-                f"Budget: ${self.config.sniper_budget_usdt} | "
-                f"TP: +{self.config.sniper_tp_pct}% | SL: -{self.config.sniper_sl_pct}%\n\n"
-                f"⚠️ Approval mode ON - not auto-buying"
-            )
             requests.post(
                 f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
-                json={'chat_id': self.config.telegram_chat_id, 'text': msg, 'parse_mode': 'Markdown'},
+                json={'chat_id': str(self.config.telegram_chat_id), 'text': text, 'parse_mode': 'Markdown'},
                 timeout=5
             )
         except Exception as e:
             log.debug(f"Telegram failed: {e}")
+
+    def _send_telegram_buying(self, symbol: str, title: str, budget: float):
+        """Alert: sniper detected a listing and is attempting to buy."""
+        msg = (
+            f"🎯 *NEW LISTING DETECTED*\n\n"
+            f"Symbol: `{symbol}`\n"
+            f"Source: {title[:80]}\n\n"
+            f"Attempting buy: ${budget:.0f}\n"
+            f"TP: +{self.config.sniper_tp_pct}% · SL: -{self.config.sniper_sl_pct}%\n"
+            f"Max hold: 30 min"
+        )
+        self._telegram_post(msg)
+
+    def _send_telegram_bought(self, symbol: str, budget: float, result: dict):
+        """Alert: sniper successfully bought the listing."""
+        msg = (
+            f"✅ *SNIPE EXECUTED*\n\n"
+            f"Symbol: `{symbol}`\n"
+            f"Size: ${budget:.0f}\n\n"
+            f"Now monitoring for TP/SL..."
+        )
+        self._telegram_post(msg)
+
+    def _send_telegram_failed(self, symbol: str, error: str):
+        """Alert: sniper buy attempt failed."""
+        msg = (
+            f"❌ *SNIPE FAILED*\n\n"
+            f"Symbol: `{symbol}`\n"
+            f"Reason: {str(error)[:200]}"
+        )
+        self._telegram_post(msg)
+
+    # Kept for backward compatibility in case other code still calls it
+    def _send_telegram(self, symbol: str, title: str):
+        self._send_telegram_buying(symbol, title, _sniper_budget(self.config))
