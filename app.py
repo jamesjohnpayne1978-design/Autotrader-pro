@@ -964,15 +964,101 @@ def convert_dust():
         return jsonify({'error': str(e)}), 400
 
 
+# =============================================================================
+# Extra settings persistence
+# Some new toggles (trailing stop, concentration alert) aren't in the legacy
+# Config schema. Rather than touch Config, we persist them in our own JSON file
+# and merge them into the response. Loaded on startup, written on POST.
+# =============================================================================
+import os as _os_extra
+_EXTRA_SETTINGS_PATH = '/data/extra_settings.json'
+_EXTRA_KEYS = [
+    'trailing_stop_enabled',
+    'trailing_stop_pct',
+    'trailing_stop_activate_pct',
+    'concentration_alert_pct',
+]
+
+
+def _load_extra_settings():
+    try:
+        with open(_EXTRA_SETTINGS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_extra_settings(data):
+    try:
+        _os_extra.makedirs(_os_extra.path.dirname(_EXTRA_SETTINGS_PATH), exist_ok=True)
+        with open(_EXTRA_SETTINGS_PATH, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        log.warning(f"Could not save extra settings: {e}")
+
+
+def _apply_extras_to_config():
+    """Push extra-settings values onto config so signals.py can read them."""
+    extras = _load_extra_settings()
+    for k, v in extras.items():
+        try:
+            setattr(config, k, v)
+        except Exception:
+            pass
+    return extras
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     if request.method == 'POST':
-        config.update(request.json)
+        payload = request.json or {}
+        config.update(payload)
         config.save()
+
+        # Handle our extra fields separately - Config may silently drop them
+        existing = _load_extra_settings()
+        for k in _EXTRA_KEYS:
+            if k in payload:
+                # Normalise to proper types
+                v = payload[k]
+                if k == 'trailing_stop_enabled':
+                    v = bool(v) if not isinstance(v, str) else (v.lower() == 'true')
+                else:
+                    try:
+                        v = float(v)
+                    except Exception:
+                        pass
+                existing[k] = v
+                # Apply immediately to config so signals.py sees it this cycle
+                try:
+                    setattr(config, k, v)
+                except Exception:
+                    pass
+        _save_extra_settings(existing)
+        log.info(f"Settings saved - extras: { {k: existing.get(k) for k in _EXTRA_KEYS if k in existing} }")
+
         if risk_manager:
             risk_manager.reload(config)
         return jsonify({'success': True})
-    return jsonify(config.to_dict())
+
+    # GET - return Config's dict, then layer in extras (which take precedence)
+    result = config.to_dict()
+    extras = _load_extra_settings()
+    for k in _EXTRA_KEYS:
+        if k in extras:
+            result[k] = extras[k]
+        elif hasattr(config, k):
+            result[k] = getattr(config, k)
+    return jsonify(result)
+
+
+# Apply any persisted extras to config at module load so the signal engine
+# picks them up on first cycle, not just after a manual save.
+try:
+    _apply_extras_to_config()
+    log.info("Extra settings (trailing stop / concentration) loaded from disk")
+except Exception as _e:
+    log.debug(f"No extra settings to load: {_e}")
 
 
 # =============================================================================
