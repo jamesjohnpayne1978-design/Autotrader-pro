@@ -1,8 +1,12 @@
 """
 AutoTrader Pro - Binance Trading Engine
 Fixed: Real PnL from Binance trade history, OCO orders, gain%, free USDT
+Patched: Pyramid state now persisted to /data/pyramid_state.json and rehydrated
+from Binance trade history on startup so it survives Railway restarts.
 """
 
+import json
+import os
 import logging
 import math
 from datetime import datetime, timedelta
@@ -13,6 +17,9 @@ log = logging.getLogger(__name__)
 
 
 class Trader:
+    # File where pyramid state is persisted. /data is the Railway volume mount.
+    _PYRAMID_STATE_PATH = '/data/pyramid_state.json'
+
     def __init__(self, config):
         self.config = config
         self.client = Client(config.api_key, config.api_secret)
@@ -20,6 +27,16 @@ class Trader:
         self._symbol_info_cache = {}
         self._last_trade_time = {}
         self._open_oco_orders = {}
+
+        # Load persisted pyramid state from disk (survives restarts)
+        self.__class__._load_pyramid_state()
+        # Rehydrate pyramid state from Binance trade history for any held
+        # positions that don't have state yet (recovers from previous restarts
+        # before persistence was added, or positions opened manually outside the bot)
+        try:
+            self._rehydrate_pyramid_from_binance()
+        except Exception as e:
+            log.warning(f"Pyramid rehydration error during init: {e}")
 
     def _verify_connection(self):
         try:
@@ -474,6 +491,120 @@ class Trader:
     # ─── PYRAMIDING ────────────────────────────────────────────────
     _pyramid_state = {}  # class-level: {symbol: {count, first_price, last_price}}
 
+    @classmethod
+    def _load_pyramid_state(cls):
+        """Load pyramid state from disk on startup. If the file doesn't exist
+        (first deploy ever), start with empty state."""
+        try:
+            if os.path.exists(cls._PYRAMID_STATE_PATH):
+                with open(cls._PYRAMID_STATE_PATH, 'r') as f:
+                    cls._pyramid_state = json.load(f) or {}
+                log.info(f"Pyramid state loaded from disk: {len(cls._pyramid_state)} symbols tracked")
+            else:
+                cls._pyramid_state = {}
+                log.info("No persisted pyramid state found - starting fresh")
+        except Exception as e:
+            log.warning(f"Could not load pyramid state from disk: {e}")
+            cls._pyramid_state = {}
+
+    @classmethod
+    def _save_pyramid_state(cls):
+        """Persist pyramid state to disk. Called after every change so we never
+        lose state on restart."""
+        try:
+            os.makedirs(os.path.dirname(cls._PYRAMID_STATE_PATH), exist_ok=True)
+            with open(cls._PYRAMID_STATE_PATH, 'w') as f:
+                json.dump(cls._pyramid_state, f)
+        except Exception as e:
+            log.warning(f"Could not save pyramid state to disk: {e}")
+
+    def _rehydrate_pyramid_from_binance(self):
+        """Reconstruct pyramid state from Binance trade history for any held
+        pairs that don't currently have state. This recovers positions opened
+        in previous deployments (before persistence existed) and also picks
+        up positions opened manually via the Binance app.
+
+        Logic:
+          - For each held pair, look at Binance trade history
+          - Find the most recent SELL (if any) - that's the boundary
+          - All BUYS after the last sell are "unmatched buys" still open
+          - Initialise pyramid state: count = number of unmatched buys,
+            first_price = oldest unmatched buy, last_price = newest unmatched buy
+        """
+        rehydrated = 0
+        for symbol in self.config.trading_pairs:
+            # Skip if already have state for this symbol
+            if symbol in self.__class__._pyramid_state:
+                continue
+
+            # Check actual holdings
+            base = symbol.replace('USDT', '')
+            try:
+                balance = self._get_total_balance(base)
+                if balance == 0:
+                    continue
+                price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
+                value = balance * price
+                if value < 5.0:  # Skip dust positions
+                    continue
+            except Exception as e:
+                log.debug(f"Skip rehydrate for {symbol}: {e}")
+                continue
+
+            # Pull recent trades from Binance
+            try:
+                trades = self.client.get_my_trades(symbol=symbol, limit=50)
+            except Exception as e:
+                log.debug(f"Could not fetch trades for {symbol} rehydrate: {e}")
+                continue
+
+            if not trades:
+                continue
+
+            # Sort oldest first
+            trades = sorted(trades, key=lambda t: int(t['time']))
+
+            # Find time of the most recent SELL (any buys before this are matched)
+            last_sell_time = None
+            for t in reversed(trades):
+                if not t['isBuyer']:  # sell
+                    last_sell_time = int(t['time'])
+                    break
+
+            # Collect unmatched buys (buys after the last sell, or all buys if no sell)
+            unmatched_buys = []
+            for t in trades:
+                if t['isBuyer']:  # buy
+                    if last_sell_time is None or int(t['time']) > last_sell_time:
+                        unmatched_buys.append({
+                            'price': float(t['price']),
+                            'qty': float(t['qty']),
+                            'time': int(t['time']),
+                        })
+
+            if not unmatched_buys:
+                continue
+
+            # Initialise pyramid state from the unmatched buys
+            first_price = unmatched_buys[0]['price']
+            last_price = unmatched_buys[-1]['price']
+            count = len(unmatched_buys)
+
+            self.__class__._pyramid_state[symbol] = {
+                'count': count,
+                'first_price': first_price,
+                'last_price': last_price,
+            }
+            rehydrated += 1
+            log.info(f"Pyramid rehydrated {symbol}: count={count}, "
+                     f"first=${first_price:.4f}, last=${last_price:.4f}")
+
+        if rehydrated > 0:
+            self.__class__._save_pyramid_state()
+            log.info(f"Pyramid rehydration complete: {rehydrated} new symbols initialised from Binance trade history")
+        else:
+            log.info("Pyramid rehydration: no new symbols needed initialising")
+
     def get_pyramid_state(self, symbol):
         return self.__class__._pyramid_state.get(symbol, {'count': 0, 'first_price': 0.0, 'last_price': 0.0})
 
@@ -484,10 +615,12 @@ class Trader:
         state['last_price'] = price
         state['count'] = state['count'] + 1
         self.__class__._pyramid_state[symbol] = state
+        self.__class__._save_pyramid_state()  # Persist every change
         log.info(f"Pyramid {symbol}: buy #{state['count']} @ ${price:.4f} (first: ${state['first_price']:.4f})")
 
     def reset_pyramid_state(self, symbol):
         self.__class__._pyramid_state.pop(symbol, None)
+        self.__class__._save_pyramid_state()  # Persist every change
         log.info(f"Pyramid state reset for {symbol}")
 
     def should_pyramid(self, symbol, current_price):
