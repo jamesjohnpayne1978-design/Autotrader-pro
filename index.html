@@ -211,7 +211,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button onclick="openTradeModal()" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">+ Manual Trade</button>
   </div>
   <div class="card" id="pairsCard"><div class="loading-row"><div class="spinner"></div> Loading prices...</div></div>
-  <div class="section-title">AI Signals</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 14px"><div class="section-title" style="margin:0">AI Signals</div><button onclick="refreshSignalsNow()" id="refreshSignalsBtn" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">🔄 Refresh</button></div>
   <div id="signalsContainer"><div class="loading-row"><div class="spinner"></div> Analysing market...</div></div>
 </div>
 
@@ -440,6 +440,30 @@ async function executeTrade(pair,action,confidence){
   try{const r=await fetch(API_BASE+'/api/trade',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pair,action,confidence})});const d=await r.json();showToast(d.success?pair+' '+action+' executed!':'Error: '+d.error)}catch(e){showToast('Could not reach trading server')}
 }
 function skipSignal(pair){showToast('Skipped '+pair);loadSignals()}
+
+async function refreshSignalsNow(){
+  const btn=document.getElementById('refreshSignalsBtn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Analysing...';btn.style.opacity='0.6';}
+  document.getElementById('signalsContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Running full AI analysis on all pairs...</div>';
+  showToast('🔄 Forcing full signal refresh — this may take 10-20 seconds');
+  try{
+    const r=await fetch(API_BASE+'/api/signals/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(d.success){
+      renderSignals(d.signals);
+      showToast('✅ Refreshed - '+d.count+' signals · regime: '+d.market_regime);
+      loadRegime();
+    } else {
+      showToast('Refresh failed: '+(d.error||'unknown'));
+      loadSignals();
+    }
+  }catch(e){
+    showToast('Refresh failed - check connection');
+    loadSignals();
+  } finally {
+    if(btn){btn.disabled=false;btn.textContent='🔄 Refresh';btn.style.opacity='1';}
+  }
+}
 function toggle(id){const el=document.getElementById(id);el.classList.toggle('on');return el.classList.contains('on')}
 function toggleSniper(){state.sniperActive=toggle('sniperToggle');document.getElementById('sniperDot').className='sniper-dot '+(state.sniperActive?'active':'inactive');document.getElementById('sniperLabel').textContent=state.sniperActive?'Sniper Active':'Sniper Paused';fetch(API_BASE+'/api/sniper/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:state.sniperActive})}).catch(()=>{});showToast(state.sniperActive?'Sniper activated':'Sniper paused')}
 
