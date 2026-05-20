@@ -32,6 +32,16 @@ GEMINI_API   = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2
 # These ONLY apply when Auto Mode is ON. Approval mode is unaffected.
 AUTO_EXECUTE_MIN_CONFIDENCE = 60
 PYRAMID_MIN_CONFIDENCE      = 65
+
+# Minimum minutes the bot must HOLD a position before AI-driven sells are allowed.
+# This prevents "AI changed its mind during normal price noise" exits that have
+# been the main source of losses. TP/SL via OCO orders still execute normally -
+# this only blocks AI-action-based sells. Set to 0 to disable.
+MIN_HOLD_MINUTES_BEFORE_AI_SELL = 240  # 4 hours
+
+# File where we persist per-pair last buy timestamps so restarts don't reset
+# the hold period and let the AI sell immediately on next cycle.
+_BUY_TIMES_PATH = '/data/buy_times.json'
 # ============================================================
 
 
@@ -149,6 +159,10 @@ class SignalEngine:
         # Shared error state so we can rate-limit log spam if AI is down
         self._ai_err_state = {"count": 0}
 
+        # Load per-pair last buy times for hold-period enforcement. Seeded from
+        # Binance trade history on first run, persisted to disk thereafter.
+        self._last_buy_times = self._load_buy_times()
+
         # Make AI status visible at startup so we never silently run on fallback again
         openai = bool(_openai_key())
         gemini = bool(_gemini_key())
@@ -161,6 +175,85 @@ class SignalEngine:
         else:
             log.warning("NO AI PROVIDER CONFIGURED - all signals will use rule-based fallback. "
                         "Set OPENAI_API_KEY or GEMINI_API_KEY in Railway Variables.")
+
+    # ─── HOLD PERIOD ENFORCEMENT ──────────────────────────────────
+    def _load_buy_times(self):
+        """Load per-pair last buy times from disk. If file doesn't exist (first
+        run after this feature was added), seed from Binance trade history so
+        existing positions get hold-period protection retroactively."""
+        try:
+            with open(_BUY_TIMES_PATH, 'r') as f:
+                data = json.load(f) or {}
+                log.info(f"Buy times loaded from disk: {len(data)} pairs")
+                return data
+        except FileNotFoundError:
+            log.info("No buy times file - seeding from Binance trade history")
+            return self._seed_buy_times_from_binance()
+        except Exception as e:
+            log.warning(f"Could not load buy times: {e}")
+            return {}
+
+    def _seed_buy_times_from_binance(self):
+        """One-time seed: for each trading pair, find the most recent BUY in
+        Binance trade history and use its timestamp as the hold-period start."""
+        times = {}
+        if not self.trader:
+            return times
+        try:
+            for symbol in self.config.trading_pairs:
+                pair = symbol.replace('USDT', '/USDT')
+                try:
+                    trades = self.trader.client.get_my_trades(symbol=symbol, limit=20)
+                    buys = [t for t in trades if t.get('isBuyer')]
+                    if buys:
+                        last_buy = max(buys, key=lambda t: int(t['time']))
+                        ts = datetime.fromtimestamp(int(last_buy['time']) / 1000)
+                        times[pair] = ts.isoformat()
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f"Buy time seeding failed: {e}")
+        if times:
+            log.info(f"Seeded buy times from Binance for {len(times)} pairs")
+            self._last_buy_times = times
+            self._save_buy_times()
+        return times
+
+    def _save_buy_times(self):
+        """Persist buy times to disk so restarts don't reset hold periods."""
+        try:
+            os.makedirs(os.path.dirname(_BUY_TIMES_PATH), exist_ok=True)
+            with open(_BUY_TIMES_PATH, 'w') as f:
+                json.dump(self._last_buy_times, f)
+        except Exception as e:
+            log.warning(f"Could not save buy times: {e}")
+
+    def _record_buy_time(self, pair):
+        """Mark the start of a new hold period for this pair. Called after any
+        successful buy (initial entry, pyramid add, manual)."""
+        self._last_buy_times[pair] = datetime.now().isoformat()
+        self._save_buy_times()
+
+    def _check_min_hold(self, pair):
+        """Returns None if AI is allowed to sell this pair, or a string reason
+        if blocked by the hold period. TP/SL via OCO orders are NOT affected -
+        they execute at the exchange independent of this check."""
+        if MIN_HOLD_MINUTES_BEFORE_AI_SELL <= 0:
+            return None
+        last_buy = self._last_buy_times.get(pair)
+        if not last_buy:
+            return None  # no record - allow sell
+        try:
+            last_buy_dt = datetime.fromisoformat(last_buy)
+            elapsed_min = (datetime.now() - last_buy_dt).total_seconds() / 60
+            if elapsed_min < MIN_HOLD_MINUTES_BEFORE_AI_SELL:
+                remaining = MIN_HOLD_MINUTES_BEFORE_AI_SELL - elapsed_min
+                return (f"hold period active ({elapsed_min:.0f} min since buy, "
+                        f"need {MIN_HOLD_MINUTES_BEFORE_AI_SELL}) - "
+                        f"{remaining:.0f} min remaining. TP/SL still active.")
+        except Exception:
+            pass
+        return None
 
     def run(self):
         self.running = True
@@ -577,6 +670,7 @@ class SignalEngine:
             pyramid_pct = getattr(self.config, 'pyramid_size_pct', 3.0)
             result = self.trader.execute_trade(pair, 'buy', pyramid_pct)
             self.risk_manager.record_trade(pair)
+            self._record_buy_time(pair)  # Reset hold period on pyramid add
             log.info(f"Pyramid buy executed for {pair}: {result}")
 
             # Send Telegram notification
@@ -629,6 +723,16 @@ class SignalEngine:
                 log.info(f"Auto-execute blocked {pair}: {reason}")
                 continue
             try:
+                # NEW: Hold-period check - prevent AI from selling within
+                # MIN_HOLD_MINUTES_BEFORE_AI_SELL of buying. This was the main
+                # source of small-win/big-loss pattern. TP/SL via OCO still execute.
+                if action == 'sell':
+                    hold_reason = self._check_min_hold(pair)
+                    if hold_reason is not None:
+                        log.info(f"Skipping auto-sell {pair} - {hold_reason}")
+                        self.risk_manager.release_lock(pair)
+                        continue
+
                 # NEVER auto-sell manual positions - they have their own TP/SL manager
                 if action == 'sell':
                     try:
@@ -671,6 +775,9 @@ class SignalEngine:
                     self.risk_manager.record_trade(pair)
                 result = self.trader.execute_trade(pair, action, self.config.max_trade_pct)
                 self.risk_manager.record_trade(pair)  # Start cooldown
+                # Track buy time so the hold-period check can block premature AI sells
+                if action == 'buy':
+                    self._record_buy_time(pair)
                 log.info(f"Auto-executed: {action.upper()} {pair} - confidence {confidence}% - {result}")
                 # Send Telegram notification for auto trades
                 # Use defensive attribute access - settings key names vary
@@ -780,7 +887,11 @@ class SignalEngine:
             bb_pos = bb.get('position', 50)
 
             prompt = (
-                f"Analyse {symbol} for trading signal. Market regime: {self.market_regime}.\n"
+                f"You are a disciplined crypto swing trader analysing {symbol}. "
+                f"You operate a position-trading bot with a 4-hour minimum hold period - "
+                f"meaning premature sell signals are costly and you should NOT generate "
+                f"sell signals based on short-term price noise.\n\n"
+                f"Market regime: {self.market_regime}.\n"
                 f"Fear & Greed Index: {indicators.get('fear_greed', 50)}/100 "
                 f"({self.fear_greed_label}) - extreme values often signal reversals.\n"
                 f"RSI: {round(rsi, 1)}, MACD: {macd_signal} ({round(macd_hist, 4)})\n"
@@ -791,8 +902,19 @@ class SignalEngine:
                 f"sell threshold: {indicators.get('rsi_sell_threshold')} "
                 f"(auto-adjusted for {self.market_regime} regime)\n"
                 f"Recommended TP for this regime: {self.regime_tp}%\n\n"
-                f"Decide whether to buy, sell, watch, or hold. Use confidence 0-100 to express conviction. "
-                f"Higher confidence = stronger signal with multiple confirming indicators.\n"
+                f"DECISION RULES (apply strictly):\n"
+                f"• BUY: RSI below buy threshold AND (MACD bullish OR clear bullish divergence) AND "
+                f"price not in a strong downtrend. Confidence 60-90 based on indicator agreement.\n"
+                f"• SELL: Only when MULTIPLE bearish signals align - RSI above sell threshold AND "
+                f"MACD turning bearish AND volume confirms (>1.2x avg) AND price breaking below 50MA. "
+                f"A single bearish indicator is NOT enough. Sell confidence must be >= 75. "
+                f"Take-profit (TP) and stop-loss (SL) are handled by exchange-level OCO orders, NOT by you - "
+                f"you only generate sell signals for genuine reversals, not for normal pullbacks.\n"
+                f"• WATCH: Mixed signals, RSI between buy/sell thresholds, or only one indicator firing. "
+                f"This is the DEFAULT when in doubt. Prefer 'watch' over 'sell' if you're hesitating.\n"
+                f"• HOLD: No actionable signal, market is in a range.\n\n"
+                f"Be conservative on sells: the cost of selling too early in normal volatility is high. "
+                f"If RSI is mid-range (40-60) and MACD just barely bearish, that is WATCH not SELL.\n\n"
                 f"Return ONLY valid JSON, no markdown, no explanation:\n"
                 f'{{"action":"buy|sell|watch|hold","confidence":75,"reason":"2-3 sentences",'
                 f'"rsi":{round(rsi)},"macd":"bullish|bearish|neutral","trend":"up|down|sideways"}}'
