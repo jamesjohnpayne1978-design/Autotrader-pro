@@ -237,12 +237,20 @@ class ListingSniper:
 
             result = self.trader.snipe_listing(symbol, budget)
             if result.get('success'):
+                # Capture fill details so the dashboard can show live P&L
                 detection['status'] = 'bought'
                 detection['action'] = f"Bought ${budget:.0f}"
-                log.info(f"Snipe executed: {symbol}")
+                detection['buy_price'] = result.get('fill_price', 0)
+                detection['qty'] = result.get('quantity', 0)
+                detection['usdt_spent'] = result.get('usdt_spent', budget)
+                detection['bought_at'] = datetime.now().isoformat(timespec='seconds')
+                detection['tp_pct'] = float(self.config.sniper_tp_pct)
+                detection['sl_pct'] = float(self.config.sniper_sl_pct)
+                detection['max_hold_min'] = 30
+                log.info(f"Snipe executed: {symbol} @ ${detection['buy_price']:.6f} qty={detection['qty']}")
                 self._send_telegram_bought(symbol, budget, result)
-                # Monitor in background
-                Thread(target=self._monitor_position, args=(symbol,), daemon=True).start()
+                # Monitor in background - pass detection so we can update live data
+                Thread(target=self._monitor_position, args=(symbol, detection), daemon=True).start()
             else:
                 detection['status'] = 'failed'
                 err = result.get('error', 'unknown')
@@ -255,27 +263,49 @@ class ListingSniper:
             log.error(f"Snipe error for {symbol}: {e}")
             self._send_telegram_failed(symbol, str(e))
 
-    def _monitor_position(self, symbol: str):
-        """Monitor sniped position for TP/SL"""
+    def _monitor_position(self, symbol: str, detection: dict = None):
+        """Monitor sniped position for TP/SL. Mutates `detection` dict on every
+        loop so the dashboard can read live current_price, change_pct, etc."""
         tp = self.config.sniper_tp_pct / 100
         sl = self.config.sniper_sl_pct / 100
-        buy_price = None
+        # Use buy price from detection if available, else first observation
+        buy_price = detection.get('buy_price') if detection else None
         start = time.time()
         max_hold = 30 * 60  # 30 minutes
 
         while time.time() - start < max_hold:
             try:
                 price = float(self.trader.client.get_symbol_ticker(symbol=symbol)['price'])
-                if buy_price is None:
+                if buy_price is None or buy_price <= 0:
                     buy_price = price
+                    if detection is not None:
+                        detection['buy_price'] = price
                     continue
                 change = (price - buy_price) / buy_price
+                elapsed_min = (time.time() - start) / 60
+
+                # Push live state into the detection so dashboard /api/sniper/status can show it
+                if detection is not None:
+                    detection['current_price'] = price
+                    detection['change_pct'] = round(change * 100, 2)
+                    detection['unrealised_usdt'] = round((price - buy_price) * detection.get('qty', 0), 2)
+                    detection['time_remaining_min'] = round(max(0, (max_hold / 60) - elapsed_min), 1)
+                    detection['monitoring'] = True
+
                 if change >= tp:
                     log.info(f"Snipe TP hit {symbol}: +{change*100:.1f}%")
+                    if detection is not None:
+                        detection['status'] = 'tp_hit'
+                        detection['action'] = f"TP hit +{change*100:.1f}%"
+                        detection['monitoring'] = False
                     self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
                     return
                 if change <= -sl:
                     log.info(f"Snipe SL hit {symbol}: {change*100:.1f}%")
+                    if detection is not None:
+                        detection['status'] = 'sl_hit'
+                        detection['action'] = f"SL hit {change*100:.1f}%"
+                        detection['monitoring'] = False
                     self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
                     return
             except Exception as e:
@@ -284,6 +314,10 @@ class ListingSniper:
 
         # Time limit - force sell
         log.info(f"Snipe time limit {symbol} - selling")
+        if detection is not None:
+            detection['status'] = 'time_exit'
+            detection['action'] = f"30-min timer expired"
+            detection['monitoring'] = False
         try:
             self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
         except Exception as e:
