@@ -350,12 +350,10 @@ class Trader:
                 self._place_oco_order(symbol, pair, quantity, buy_price)
             except Exception as oco_err:
                 log.warning(f"OCO order failed for {symbol} (trade still executed): {oco_err}")
-            # Start trailing stop tracking
-            if getattr(self.config, 'trailing_stop_enabled', False):
-                try:
-                    self.init_trailing_stop(symbol, buy_price)
-                except Exception:
-                    pass
+            # Trailing stop tracking is now handled by signals.py
+            # _check_portfolio_trailing_stops (uses real entry from Binance + breakeven
+            # + persistence). The old init_trailing_stop here is intentionally NOT
+            # called to avoid two competing systems firing sells on the same position.
 
         elif action == 'sell':
             # Cancel any open OCO orders first (releases locked balance)
