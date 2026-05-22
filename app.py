@@ -1195,6 +1195,7 @@ _EXTRA_KEYS = [
     'trailing_stop_enabled',
     'trailing_stop_pct',
     'trailing_stop_activate_pct',
+    'trailing_breakeven_trigger',
     'concentration_alert_pct',
     'approval_mode',
 ]
