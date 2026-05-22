@@ -774,6 +774,106 @@ def sniper_status():
         'status': 'running' if sniper.active else 'paused'
     })
 
+
+@app.route('/api/sniper/positions')
+def sniper_positions():
+    """Returns current snipe positions with live P&L. Sources data from:
+    1. sniper.recent_detections (preferred - has buy price from live monitor)
+    2. Binance balance + recent trade history (fallback - works even after a
+       Railway restart has wiped the sniper's in-memory monitor state)
+    """
+    if not trader:
+        return jsonify({'error': 'Not initialised'}), 400
+
+    positions = []
+    detections_by_symbol = {}
+    try:
+        if sniper and hasattr(sniper, 'recent_detections'):
+            for d in sniper.recent_detections:
+                sym = d.get('symbol', '')
+                if sym and d.get('status') in ('bought', 'tp_hit', 'sl_hit', 'time_exit'):
+                    detections_by_symbol[sym] = d
+    except Exception:
+        pass
+
+    try:
+        account = trader.client.get_account()
+        trading_pairs = set(getattr(config, 'trading_pairs', []))
+
+        for b in account['balances']:
+            asset = b['asset']
+            if asset in ('USDT', 'BNB', 'USDC', 'BUSD', 'FDUSD'):
+                continue
+            bal = float(b['free']) + float(b['locked'])
+            if bal == 0:
+                continue
+
+            symbol = asset + 'USDT'
+            # Skip if this is in the regular trading list - it's AI-managed not sniper
+            if symbol in trading_pairs:
+                continue
+
+            try:
+                current_price = float(trader.client.get_symbol_ticker(symbol=symbol)['price'])
+                value = bal * current_price
+                if value < 1.0:  # Skip dust
+                    continue
+            except Exception:
+                continue
+
+            entry = {
+                'symbol': symbol,
+                'pair': f"{asset}/USDT",
+                'qty': round(bal, 6),
+                'current_price': current_price,
+                'value_usdt': round(value, 2),
+            }
+
+            # Prefer live monitor data if available
+            det = detections_by_symbol.get(symbol)
+            if det and det.get('buy_price'):
+                entry['buy_price'] = det['buy_price']
+                entry['change_pct'] = round(((current_price - det['buy_price']) / det['buy_price']) * 100, 2)
+                entry['unrealised_usdt'] = round((current_price - det['buy_price']) * bal, 2)
+                entry['bought_at'] = det.get('bought_at')
+                entry['tp_pct'] = det.get('tp_pct', float(getattr(config, 'sniper_tp_pct', 20)))
+                entry['sl_pct'] = det.get('sl_pct', float(getattr(config, 'sniper_sl_pct', 10)))
+                entry['time_remaining_min'] = det.get('time_remaining_min')
+                entry['monitoring'] = det.get('monitoring', False)
+                entry['status'] = det.get('status', 'bought')
+                entry['source'] = 'monitor'
+            else:
+                # Fallback: infer entry price from Binance trade history
+                try:
+                    trades = trader.client.get_my_trades(symbol=symbol, limit=20)
+                    buys = [t for t in trades if t.get('isBuyer')]
+                    if buys:
+                        most_recent = max(buys, key=lambda t: int(t['time']))
+                        entry['buy_price'] = float(most_recent['price'])
+                        entry['change_pct'] = round(((current_price - entry['buy_price']) / entry['buy_price']) * 100, 2)
+                        entry['unrealised_usdt'] = round((current_price - entry['buy_price']) * bal, 2)
+                        entry['bought_at'] = datetime.fromtimestamp(int(most_recent['time']) / 1000).isoformat(timespec='seconds')
+                except Exception:
+                    pass
+                entry['tp_pct'] = float(getattr(config, 'sniper_tp_pct', 20))
+                entry['sl_pct'] = float(getattr(config, 'sniper_sl_pct', 10))
+                entry['monitoring'] = False
+                entry['status'] = 'orphaned'  # bought but no live monitor (e.g. after a restart)
+                entry['source'] = 'inferred'
+
+            positions.append(entry)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+    # Sort: largest unrealised P&L first (most interesting first)
+    positions.sort(key=lambda p: abs(p.get('unrealised_usdt', 0)), reverse=True)
+
+    return jsonify({
+        'positions': positions,
+        'count': len(positions),
+    })
+
+
 @app.route('/api/telegram/test')
 def test_telegram():
     """Send a test Telegram message to verify setup"""
