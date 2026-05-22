@@ -697,7 +697,67 @@ class SignalEngine:
             except Exception:
                 pass
 
+    def _notify_pending_signals(self, signals):
+        """When approval mode is ON, send a Telegram alert summarising
+        actionable signals that need user approval. Rate-limited per pair to
+        avoid spamming - only re-notifies if action changes or confidence
+        shifts by 10+ points since the last notification."""
+        if not hasattr(self, '_last_notified_signal'):
+            self._last_notified_signal = {}  # pair -> {action, confidence}
+
+        pending = []
+        for sig in signals:
+            action = sig.get('action')
+            conf = sig.get('confidence', 0)
+            pair = sig.get('pair', '')
+            if action not in ('buy', 'sell') or conf < AUTO_EXECUTE_MIN_CONFIDENCE:
+                continue
+
+            last = self._last_notified_signal.get(pair, {})
+            # Skip if same action and confidence within 10 points - don't re-spam
+            if last.get('action') == action and abs(last.get('confidence', 0) - conf) < 10:
+                continue
+            self._last_notified_signal[pair] = {'action': action, 'confidence': conf}
+            pending.append(sig)
+
+        if not pending:
+            return
+
+        try:
+            tok = getattr(self.config, 'telegram_token', '') or ''
+            chat = getattr(self.config, 'telegram_chat_id', '') or ''
+            if not tok or not chat:
+                return
+
+            lines = ["⏸️ *APPROVAL NEEDED*", "_Auto-trade is OFF (approval mode). Review and decide manually._\n"]
+            for sig in pending:
+                icon = '🟢' if sig['action'] == 'buy' else '🔴'
+                reason = (sig.get('reason') or '')[:100]
+                lines.append(f"{icon} *{sig['action'].upper()} {sig['pair']}* — {sig['confidence']}%")
+                if reason:
+                    lines.append(f"   _{reason}_")
+            lines.append("\nOpen the dashboard to act on these.")
+
+            requests.post(
+                f"https://api.telegram.org/bot{tok}/sendMessage",
+                json={'chat_id': str(chat), 'text': '\n'.join(lines), 'parse_mode': 'Markdown'},
+                timeout=8
+            )
+            log.info(f"Approval-needed notification sent for {len(pending)} signal(s)")
+        except Exception as e:
+            log.warning(f"Pending signal notification failed: {e}")
+
     def _auto_execute(self, signals):
+        # APPROVAL MODE: When ON, the bot generates signals and notifies via
+        # Telegram, but DOES NOT auto-execute anything. User must manually
+        # buy/sell from the dashboard. Applies to all auto-trade paths
+        # (regular signals, pyramid). Sniper has its own bypass and is unaffected.
+        if getattr(self.config, 'approval_mode', False):
+            self._notify_pending_signals(signals)
+            log.info("Auto-execute SKIPPED entirely - approval mode is ON. "
+                     "Disable approval_mode in Settings to enable auto-trading.")
+            return
+
         # FIRST PASS: Check pyramid opportunities for ALL pairs we hold,
         # regardless of the AI's buy/sell action. Pyramid logic is about
         # "price dropped from last buy" not "AI said buy this second".
