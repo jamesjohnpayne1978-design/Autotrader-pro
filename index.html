@@ -505,6 +505,28 @@ async function testSniper(){
   }
 }
 
+async function snipeSellNow(pair,symbol,valueUsdt,pctChange){
+  const pctStr=pctChange===null||isNaN(pctChange)?'?':((pctChange>=0?'+':'')+pctChange+'%');
+  if(!confirm('Sell entire '+pair+' position?\n\nValue: $'+valueUsdt+'\nP&L: '+pctStr+'\n\nThis cancels any open OCO order and sells at market price.')){return;}
+  showToast('Selling '+pair+'...');
+  try{
+    const r=await fetch(API_BASE+'/api/trade',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pair:pair,action:'sell',manual:true,confidence:100})
+    });
+    const d=await r.json();
+    if(d.error){
+      showToast('Failed: '+d.error.substring(0,80));
+    } else {
+      showToast('✅ Sold '+pair+' '+pctStr);
+      setTimeout(loadSniperPositions, 1500);
+    }
+  }catch(e){
+    showToast('Could not reach server');
+  }
+}
+
 async function loadSniperPositions(){
   try{
     const r=await fetch(API_BASE+'/api/sniper/positions');
@@ -538,13 +560,14 @@ async function loadSniperPositions(){
               <div style="font-family:var(--mono);font-size:0.78rem;color:${color}">${usdStr}</div>
             </div>
           </div>
-          <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.72rem;color:var(--text-3);font-family:var(--mono)">
+          <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.72rem;color:var(--text-3);font-family:var(--mono);margin-bottom:10px">
             <span>Entry: ${buyPriceStr}</span>
             <span>Now: ${currentPriceStr}</span>
             <span>Qty: ${p.qty}</span>
             <span>Value: $${p.value_usdt.toFixed(2)}</span>
             <span>TP: +${p.tp_pct}% · SL: -${p.sl_pct}%</span>
           </div>
+          <button onclick="snipeSellNow('${p.pair}','${p.symbol}',${p.value_usdt.toFixed(2)},${pct==null?'null':pct.toFixed(2)})" style="background:var(--red-dim);border:1px solid rgba(255,77,109,0.35);border-radius:var(--radius-sm);color:var(--red);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:9px 18px;cursor:pointer;width:100%">Sell Now</button>
         </div>`;
     }).join('');
   }catch(e){
