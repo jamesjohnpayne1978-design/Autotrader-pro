@@ -1196,6 +1196,7 @@ _EXTRA_KEYS = [
     'trailing_stop_pct',
     'trailing_stop_activate_pct',
     'concentration_alert_pct',
+    'approval_mode',
 ]
 
 
@@ -1240,7 +1241,7 @@ def settings():
             if k in payload:
                 # Normalise to proper types
                 v = payload[k]
-                if k == 'trailing_stop_enabled':
+                if k in ('trailing_stop_enabled', 'approval_mode'):
                     v = bool(v) if not isinstance(v, str) else (v.lower() == 'true')
                 else:
                     try:
