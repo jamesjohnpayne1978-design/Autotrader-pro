@@ -239,6 +239,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Stop Loss</div><div class="setting-desc">Auto-sell at this loss %</div></div><input class="setting-input" id="sniperSL" value="10" type="number"></div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Approval Mode</div><div class="setting-desc">Ask before buying new listings</div></div><div class="toggle on" id="approvalToggle" onclick="toggleApproval()"><div class="toggle-thumb"></div></div></div>
   </div>
+  <div class="section-title">Active Snipes</div>
+  <div class="card" id="sniperPositions"><div style="text-align:center;padding:20px;color:var(--text-2);font-size:0.9rem;">Loading positions...</div></div>
+
   <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 14px"><div class="section-title" style="margin:0">Recent Detections</div><button onclick="testSniper()" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">🧪 Test Sniper</button></div>
   <div class="card" id="sniperHistory"><div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.95rem;">No new listings detected yet.</div></div>
 </div>
@@ -337,7 +340,7 @@ let portfolioChart=null,chartRange='24h',allSnapshots=[];
 let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false};
 let selectedManualPair='';
 
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='sniper')loadSniperHistory()}
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
 function showApiModal(){document.getElementById('apiModal').classList.add('show')}
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
@@ -498,6 +501,54 @@ async function testSniper(){
     }
   }catch(e){
     showToast('Could not reach server');
+  }
+}
+
+async function loadSniperPositions(){
+  try{
+    const r=await fetch(API_BASE+'/api/sniper/positions');
+    const d=await r.json();
+    const el=document.getElementById('sniperPositions');
+    if(!el) return;
+    if(!d.positions||d.positions.length===0){
+      el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text-2);font-size:0.9rem;">No active snipe positions.</div>';
+      return;
+    }
+    el.innerHTML=d.positions.map(p=>{
+      const pct=p.change_pct;
+      const up=pct>=0;
+      const pctStr=(pct==null)?'-':(up?'+':'')+pct.toFixed(2)+'%';
+      const usd=p.unrealised_usdt;
+      const usdStr=(usd==null)?'-':(usd>=0?'+$':'-$')+Math.abs(usd).toFixed(2);
+      const color=up?'var(--green)':'var(--red)';
+      const buyPriceStr=p.buy_price?'$'+p.buy_price.toPrecision(4):'?';
+      const currentPriceStr='$'+p.current_price.toPrecision(4);
+      const monStatus=p.monitoring?'🟢 Monitoring':(p.status==='orphaned'?'⚠️ No monitor':'⚫ Done');
+      const timeStr=p.time_remaining_min!=null?p.time_remaining_min.toFixed(0)+' min left':'';
+      return `
+        <div style="padding:14px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+            <div>
+              <div style="font-family:var(--mono);font-weight:700;font-size:1rem">${p.pair}</div>
+              <div style="font-size:0.7rem;color:var(--text-3);margin-top:2px">${monStatus} ${timeStr?'· '+timeStr:''}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-family:var(--mono);font-weight:700;color:${color};font-size:1.05rem">${pctStr}</div>
+              <div style="font-family:var(--mono);font-size:0.78rem;color:${color}">${usdStr}</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.72rem;color:var(--text-3);font-family:var(--mono)">
+            <span>Entry: ${buyPriceStr}</span>
+            <span>Now: ${currentPriceStr}</span>
+            <span>Qty: ${p.qty}</span>
+            <span>Value: $${p.value_usdt.toFixed(2)}</span>
+            <span>TP: +${p.tp_pct}% · SL: -${p.sl_pct}%</span>
+          </div>
+        </div>`;
+    }).join('');
+  }catch(e){
+    const el=document.getElementById('sniperPositions');
+    if(el) el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text-3);font-size:0.85rem;">Could not load positions.</div>';
   }
 }
 
@@ -786,7 +837,7 @@ async function loadStats(){
   }
 }
 
-window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000)});
+window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000);setInterval(()=>{if(document.getElementById('page-sniper')?.classList.contains('active')){loadSniperPositions();}},10000);});
 document.getElementById('apiModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show')});
 
 </script>
