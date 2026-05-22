@@ -291,33 +291,47 @@ class SignalEngine:
             time.sleep(300)
 
     def _check_portfolio_trailing_stops(self):
-        """Portfolio-level trailing stop loss. Tracks the high-water mark for
-        every open position. When price drops more than `trailing_stop_pct`
-        from the peak (and we're already in profit by `trailing_stop_activate_pct`),
-        triggers a sell.
+        """Walks every open position and applies a smart trailing stop:
 
-        This runs independently of trader.py's own stop-loss logic. Both can fire;
-        whichever fires first wins, the second one is a no-op.
+          1. Get the REAL entry price from Binance trade history (not current
+             price at first sighting - that's wrong if bot just restarted into
+             a position that's already moved).
+          2. Once position is up by `activate_pct` (default 2%): start trailing.
+          3. Once position is up by `breakeven_trigger` (default 3%): force
+             stop_price to the entry price (lock in zero loss, no matter what).
+          4. As price climbs, stop trails `trail_pct` (default 5%) below the peak.
+             Stop_price never moves DOWN, only up.
+          5. When current price drops below stop_price -> SELL.
 
-        Disabled by default - enable via config.trailing_stop_enabled = True.
+        State persists to /data/trailing_stops.json so restarts don't reset the
+        peak tracking. Without persistence, a restart in a winning position
+        would reset peak to current price = trailing stop right behind it = sell
+        immediately on the next dip.
         """
         if not getattr(self.config, 'trailing_stop_enabled', False):
             return
         if not self.trader:
             return
 
-        # Init high-water mark tracker
-        if not hasattr(self, 'high_water_marks'):
-            self.high_water_marks = {}  # {symbol: {entry_price, peak_price}}
+        # Load persisted state on first call after startup
+        if not hasattr(self, '_trail_state_loaded'):
+            self._trail_state_loaded = True
+            self.high_water_marks = self._load_trailing_stops()
 
-        trail_pct = float(getattr(self.config, 'trailing_stop_pct', 3.0))
+        if not hasattr(self, 'high_water_marks'):
+            self.high_water_marks = {}
+
+        trail_pct = float(getattr(self.config, 'trailing_stop_pct', 5.0))
         activate_pct = float(getattr(self.config, 'trailing_stop_activate_pct', 2.0))
+        breakeven_trigger = float(getattr(self.config, 'trailing_breakeven_trigger', 3.0))
 
         try:
             account = self.trader.client.get_account()
             prices = self.trader.client.get_all_tickers()
             price_map = {p['symbol']: float(p['price']) for p in prices}
+            state_changed = False
 
+            held_symbols = set()
             for balance in account['balances']:
                 asset = balance['asset']
                 if asset in ('USDT', 'BNB', 'BUSD', 'USDC', 'FDUSD'):
@@ -332,27 +346,50 @@ class SignalEngine:
                 value = total * current_price
                 if value < 5.0:  # Skip dust
                     continue
+                held_symbols.add(symbol)
 
-                # Initialise entry if first time we've seen this position
+                # First sighting: pull real entry price from Binance trade history
                 if symbol not in self.high_water_marks:
+                    entry_price = self._get_entry_price_from_binance(symbol) or current_price
                     self.high_water_marks[symbol] = {
-                        'entry_price': current_price,
-                        'peak_price': current_price,
+                        'entry_price': entry_price,
+                        'peak_price': max(entry_price, current_price),
+                        'stop_price': entry_price * (1 - float(getattr(self.config, 'default_sl', getattr(self.config, 'default_sl_pct', 5.0))) / 100),
                     }
-                    continue  # Wait one cycle before tracking
+                    state_changed = True
+                    log.info(f"Trailing stop init {symbol}: entry ${entry_price:.6f}, current ${current_price:.6f}")
+                    continue  # Wait one cycle before evaluating
 
                 hwm = self.high_water_marks[symbol]
+                entry_price = hwm['entry_price']
+
                 # Update peak
                 if current_price > hwm['peak_price']:
                     hwm['peak_price'] = current_price
+                    state_changed = True
 
-                # Calculate position state
-                gain_from_entry = ((current_price - hwm['entry_price']) / hwm['entry_price']) * 100
+                gain_from_entry = ((current_price - entry_price) / entry_price) * 100
                 drop_from_peak = ((hwm['peak_price'] - current_price) / hwm['peak_price']) * 100
 
-                # Don't trail unless we're up by the activation threshold
+                # Need to be up by activate_pct before trailing kicks in at all
                 if gain_from_entry < activate_pct:
                     continue
+
+                # BREAKEVEN: once up by breakeven_trigger, lock stop at entry (+ tiny buffer)
+                # This guarantees you never lose money on a position that was winning
+                if gain_from_entry >= breakeven_trigger:
+                    new_stop = entry_price * 1.001  # tiny buffer above entry
+                    if new_stop > hwm.get('stop_price', 0):
+                        hwm['stop_price'] = new_stop
+                        state_changed = True
+                        log.info(f"Trailing stop {symbol}: moved to breakeven @ ${new_stop:.6f}")
+
+                # TRAILING: stop = trail_pct below peak, but never moves down
+                trailed_stop = hwm['peak_price'] * (1 - trail_pct / 100)
+                if trailed_stop > hwm.get('stop_price', 0):
+                    hwm['stop_price'] = trailed_stop
+                    state_changed = True
+                    log.info(f"Trailing stop {symbol}: trailed to ${trailed_stop:.6f} ({trail_pct}% below peak ${hwm['peak_price']:.6f})")
 
                 # Skip if it's a manual position - manual manager handles those
                 pair_slash = symbol.replace('USDT', '/USDT')
@@ -362,32 +399,41 @@ class SignalEngine:
                 except Exception:
                     pass
 
-                # Trigger sell if dropped from peak by trailing percentage
-                if drop_from_peak >= trail_pct:
-                    log.info(f"TRAILING STOP triggered for {symbol}: peak ${hwm['peak_price']:.4f}, "
-                             f"current ${current_price:.4f} (drop {drop_from_peak:.1f}%), "
-                             f"locked-in gain {gain_from_entry:.1f}%")
+                # FIRE: if current price has fallen to or below stop
+                if current_price <= hwm.get('stop_price', 0):
+                    locked_in = ((hwm['stop_price'] - entry_price) / entry_price) * 100
+                    log.info(f"TRAILING STOP FIRED for {symbol}: current ${current_price:.6f} "
+                             f"<= stop ${hwm['stop_price']:.6f}, locked-in {locked_in:+.1f}% from entry")
                     try:
                         if self.risk_manager:
                             approved, _ = self.risk_manager.check_trade(pair_slash, 'sell', 100)
                             if not approved:
                                 continue
-                        result = self.trader.execute_trade(pair_slash, 'sell', 100.0)  # Sell all
+                        # Cancel any open OCO orders first so the sell has free balance
+                        try:
+                            self.trader._cancel_all_open_orders(symbol)
+                        except Exception:
+                            pass
+                        result = self.trader.execute_trade(pair_slash, 'sell', 100.0)
                         log.info(f"Trailing stop SELL executed for {pair_slash}: {result}")
                         # Clear tracker so next entry starts fresh
                         del self.high_water_marks[symbol]
+                        state_changed = True
                         # Telegram alert
                         try:
-                            if self.config.telegram_token and self.config.telegram_chat_id:
+                            tok = getattr(self.config, 'telegram_token', '')
+                            chat = getattr(self.config, 'telegram_chat_id', '')
+                            if tok and chat:
                                 msg = (
                                     f"🎯 *TRAILING STOP SELL {pair_slash}*\n"
-                                    f"Locked in {gain_from_entry:.1f}% gain\n"
-                                    f"Peak: ${hwm['peak_price']:.4f}\n"
-                                    f"Exit: ${current_price:.4f} ({drop_from_peak:.1f}% from peak)"
+                                    f"Locked in {locked_in:+.1f}% from entry\n"
+                                    f"Entry: ${entry_price:.6f}\n"
+                                    f"Peak:  ${hwm['peak_price']:.6f}\n"
+                                    f"Exit:  ${current_price:.6f} ({drop_from_peak:.1f}% from peak)"
                                 )
                                 requests.post(
-                                    f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage",
-                                    json={'chat_id': str(self.config.telegram_chat_id), 'text': msg, 'parse_mode': 'Markdown'},
+                                    f"https://api.telegram.org/bot{tok}/sendMessage",
+                                    json={'chat_id': str(chat), 'text': msg, 'parse_mode': 'Markdown'},
                                     timeout=8
                                 )
                         except Exception:
@@ -401,8 +447,72 @@ class SignalEngine:
                                 self.risk_manager.release_lock(pair_slash)
                             except Exception:
                                 pass
+
+            # Garbage collect: remove tracking for symbols we no longer hold
+            for symbol in list(self.high_water_marks.keys()):
+                if symbol not in held_symbols:
+                    log.info(f"Trailing stop cleared {symbol} - no longer held")
+                    del self.high_water_marks[symbol]
+                    state_changed = True
+
+            if state_changed:
+                self._save_trailing_stops()
+
         except Exception as e:
             log.debug(f"Portfolio trailing stop scan error: {e}")
+
+    def _get_entry_price_from_binance(self, symbol):
+        """Compute the weighted-average buy price from Binance trade history
+        for buys that haven't been matched by a sell yet. This is the REAL
+        entry price for the current position - critical for trailing stops
+        because using 'price at first bot sighting' is wrong if bot restarted."""
+        try:
+            trades = self.trader.client.get_my_trades(symbol=symbol, limit=50)
+            trades = sorted(trades, key=lambda t: int(t['time']))
+            # Find most recent sell (boundary)
+            last_sell_time = None
+            for t in reversed(trades):
+                if not t['isBuyer']:
+                    last_sell_time = int(t['time'])
+                    break
+            # Collect unmatched buys
+            unmatched = []
+            for t in trades:
+                if t['isBuyer'] and (last_sell_time is None or int(t['time']) > last_sell_time):
+                    unmatched.append({'price': float(t['price']), 'qty': float(t['qty'])})
+            if not unmatched:
+                return None
+            total_qty = sum(b['qty'] for b in unmatched)
+            if total_qty <= 0:
+                return None
+            return sum(b['price'] * b['qty'] for b in unmatched) / total_qty
+        except Exception as e:
+            log.debug(f"Could not fetch entry price for {symbol}: {e}")
+            return None
+
+    _TRAILING_STOPS_PATH = '/data/trailing_stops.json'
+
+    def _load_trailing_stops(self):
+        """Load persisted trailing stop state from disk. If file missing
+        (first run), return empty dict - state will be initialised lazily."""
+        try:
+            if os.path.exists(self._TRAILING_STOPS_PATH):
+                with open(self._TRAILING_STOPS_PATH, 'r') as f:
+                    data = json.load(f) or {}
+                    log.info(f"Trailing stops loaded from disk: {len(data)} positions tracked")
+                    return data
+        except Exception as e:
+            log.warning(f"Could not load trailing stops: {e}")
+        return {}
+
+    def _save_trailing_stops(self):
+        """Persist trailing stop state so a restart doesn't lose peak tracking."""
+        try:
+            os.makedirs(os.path.dirname(self._TRAILING_STOPS_PATH), exist_ok=True)
+            with open(self._TRAILING_STOPS_PATH, 'w') as f:
+                json.dump(self.high_water_marks, f)
+        except Exception as e:
+            log.warning(f"Could not save trailing stops: {e}")
 
     def _check_position_concentration(self):
         """Send a Telegram alert when any single position exceeds 25% of the
@@ -792,6 +902,27 @@ class SignalEngine:
                         log.info(f"Skipping auto-sell {pair} - {hold_reason}")
                         self.risk_manager.release_lock(pair)
                         continue
+
+                # NEW: Block AI sells on positions already in meaningful profit.
+                # Once a position is up 2%+, the trailing stop is the right
+                # exit mechanism. The AI saying "sell" on a winner usually just
+                # means "RSI overbought" - which on a strong trend is a buy
+                # signal, not a sell signal. Let the trailing stop ride.
+                if action == 'sell' and getattr(self.config, 'trailing_stop_enabled', False):
+                    try:
+                        base = pair.replace('/USDT', '').replace('/', '')
+                        sym = base + 'USDT'
+                        entry = (self.high_water_marks.get(sym, {}).get('entry_price')
+                                 if hasattr(self, 'high_water_marks') else None)
+                        if entry:
+                            cur = float(self.trader.client.get_symbol_ticker(symbol=sym)['price'])
+                            gain_pct = ((cur - entry) / entry) * 100
+                            if gain_pct >= 2.0:
+                                log.info(f"Skipping auto-sell {pair} - position up {gain_pct:.1f}%, trailing stop will handle exit")
+                                self.risk_manager.release_lock(pair)
+                                continue
+                    except Exception as e:
+                        log.debug(f"Profit check error for {pair}: {e}")
 
                 # NEVER auto-sell manual positions - they have their own TP/SL manager
                 if action == 'sell':
