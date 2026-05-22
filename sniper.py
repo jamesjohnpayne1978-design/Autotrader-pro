@@ -225,7 +225,9 @@ class ListingSniper:
         t.start()
 
     def _execute_snipe(self, symbol: str, detection: dict, budget: float):
-        """Execute the snipe trade"""
+        """Execute the snipe trade, then place an OCO order at Binance to handle
+        TP and SL at the exchange level. No more 30-min force-sell - position
+        runs until OCO triggers OR the user manually closes."""
         try:
             # Wait up to 30s for trading to open
             for _ in range(30):
@@ -237,19 +239,56 @@ class ListingSniper:
 
             result = self.trader.snipe_listing(symbol, budget)
             if result.get('success'):
-                # Capture fill details so the dashboard can show live P&L
+                buy_price = result.get('fill_price', 0)
+                qty = result.get('quantity', 0)
+                tp_pct = float(self.config.sniper_tp_pct)
+                sl_pct = float(self.config.sniper_sl_pct)
+
+                # Capture fill details for the dashboard
                 detection['status'] = 'bought'
                 detection['action'] = f"Bought ${budget:.0f}"
-                detection['buy_price'] = result.get('fill_price', 0)
-                detection['qty'] = result.get('quantity', 0)
+                detection['buy_price'] = buy_price
+                detection['qty'] = qty
                 detection['usdt_spent'] = result.get('usdt_spent', budget)
                 detection['bought_at'] = datetime.now().isoformat(timespec='seconds')
-                detection['tp_pct'] = float(self.config.sniper_tp_pct)
-                detection['sl_pct'] = float(self.config.sniper_sl_pct)
-                detection['max_hold_min'] = 30
-                log.info(f"Snipe executed: {symbol} @ ${detection['buy_price']:.6f} qty={detection['qty']}")
+                detection['tp_pct'] = tp_pct
+                detection['sl_pct'] = sl_pct
+                log.info(f"Snipe executed: {symbol} @ ${buy_price:.6f} qty={qty}")
                 self._send_telegram_bought(symbol, budget, result)
-                # Monitor in background - pass detection so we can update live data
+
+                # Place OCO order at Binance - this is now the primary exit mechanism
+                # rather than a 30-min in-memory force-sell. Position survives bot
+                # restarts because the OCO lives at the exchange.
+                try:
+                    # Give Binance ~1s to settle the buy before placing the OCO
+                    time.sleep(1)
+                    oco_result = self.trader.place_snipe_oco(symbol, qty, buy_price, tp_pct, sl_pct)
+                    if oco_result.get('success'):
+                        detection['oco_placed'] = True
+                        detection['oco_tp_price'] = oco_result.get('tp_price')
+                        detection['oco_sl_price'] = oco_result.get('sl_price')
+                        log.info(f"Snipe OCO active: TP ${oco_result.get('tp_price')} SL ${oco_result.get('sl_price')}")
+                        self._telegram_post(
+                            f"🛡️ *Snipe protected by OCO*\n`{symbol}`\n"
+                            f"TP: ${oco_result.get('tp_price')} (+{tp_pct}%)\n"
+                            f"SL: ${oco_result.get('sl_price')} (-{sl_pct}%)\n"
+                            f"_Position runs until TP or SL hits - no 30-min force sell._"
+                        )
+                    else:
+                        detection['oco_placed'] = False
+                        detection['oco_error'] = oco_result.get('error', 'unknown')
+                        log.warning(f"OCO failed for {symbol}: {detection['oco_error']}. Falling back to monitor.")
+                        self._telegram_post(
+                            f"⚠️ *Snipe OCO failed for {symbol}*\n"
+                            f"Reason: {detection['oco_error'][:120]}\n"
+                            f"_Position is UNPROTECTED - sell manually when ready._"
+                        )
+                except Exception as e:
+                    detection['oco_placed'] = False
+                    detection['oco_error'] = str(e)
+                    log.error(f"OCO placement exception for {symbol}: {e}")
+
+                # Light monitor thread for dashboard live data only (no force-sell)
                 Thread(target=self._monitor_position, args=(symbol, detection), daemon=True).start()
             else:
                 detection['status'] = 'failed'
@@ -264,16 +303,20 @@ class ListingSniper:
             self._send_telegram_failed(symbol, str(e))
 
     def _monitor_position(self, symbol: str, detection: dict = None):
-        """Monitor sniped position for TP/SL. Mutates `detection` dict on every
-        loop so the dashboard can read live current_price, change_pct, etc."""
-        tp = self.config.sniper_tp_pct / 100
-        sl = self.config.sniper_sl_pct / 100
-        # Use buy price from detection if available, else first observation
-        buy_price = detection.get('buy_price') if detection else None
-        start = time.time()
-        max_hold = 30 * 60  # 30 minutes
+        """Watches a sniped position for dashboard purposes - updates current
+        price and P&L in the detection dict every few seconds. The actual exit
+        (TP/SL) is handled by the OCO order at Binance, not by this thread.
 
-        while time.time() - start < max_hold:
+        Stops when the position is sold (balance goes to ~0) or after 24 hours
+        as a safety bound. No force-sell."""
+        buy_price = detection.get('buy_price') if detection else None
+        tp_pct = (detection.get('tp_pct') if detection else None) or float(self.config.sniper_tp_pct)
+        sl_pct = (detection.get('sl_pct') if detection else None) or float(self.config.sniper_sl_pct)
+        start = time.time()
+        max_watch_seconds = 24 * 60 * 60  # safety: stop watching after 24h
+        base = symbol.replace('USDT', '')
+
+        while time.time() - start < max_watch_seconds:
             try:
                 price = float(self.trader.client.get_symbol_ticker(symbol=symbol)['price'])
                 if buy_price is None or buy_price <= 0:
@@ -281,47 +324,50 @@ class ListingSniper:
                     if detection is not None:
                         detection['buy_price'] = price
                     continue
-                change = (price - buy_price) / buy_price
-                elapsed_min = (time.time() - start) / 60
 
-                # Push live state into the detection so dashboard /api/sniper/status can show it
+                change_pct = ((price - buy_price) / buy_price) * 100
                 if detection is not None:
                     detection['current_price'] = price
-                    detection['change_pct'] = round(change * 100, 2)
+                    detection['change_pct'] = round(change_pct, 2)
                     detection['unrealised_usdt'] = round((price - buy_price) * detection.get('qty', 0), 2)
-                    detection['time_remaining_min'] = round(max(0, (max_hold / 60) - elapsed_min), 1)
                     detection['monitoring'] = True
 
-                if change >= tp:
-                    log.info(f"Snipe TP hit {symbol}: +{change*100:.1f}%")
-                    if detection is not None:
-                        detection['status'] = 'tp_hit'
-                        detection['action'] = f"TP hit +{change*100:.1f}%"
-                        detection['monitoring'] = False
-                    self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
-                    return
-                if change <= -sl:
-                    log.info(f"Snipe SL hit {symbol}: {change*100:.1f}%")
-                    if detection is not None:
-                        detection['status'] = 'sl_hit'
-                        detection['action'] = f"SL hit {change*100:.1f}%"
-                        detection['monitoring'] = False
-                    self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
-                    return
+                # Check if position has been closed (OCO fired or manual sell)
+                # If we have <5% of original quantity, position is essentially closed
+                try:
+                    account = self.trader.client.get_account()
+                    current_qty = next(
+                        (float(b['free']) + float(b['locked']) for b in account['balances'] if b['asset'] == base),
+                        0.0
+                    )
+                    original_qty = detection.get('qty', 0) if detection else 0
+                    if original_qty > 0 and current_qty < original_qty * 0.05:
+                        # Position closed - determine exit type by comparing to TP/SL prices
+                        if detection is not None:
+                            if change_pct >= tp_pct * 0.9:  # within 10% of TP target
+                                detection['status'] = 'tp_hit'
+                                detection['action'] = f"TP filled +{change_pct:.1f}%"
+                            elif change_pct <= -sl_pct * 0.9:
+                                detection['status'] = 'sl_hit'
+                                detection['action'] = f"SL filled {change_pct:.1f}%"
+                            else:
+                                detection['status'] = 'closed'
+                                detection['action'] = f"Closed {change_pct:+.1f}%"
+                            detection['monitoring'] = False
+                        log.info(f"Snipe position closed: {symbol} at {change_pct:+.1f}%")
+                        self._telegram_post(
+                            f"✅ *Snipe closed*\n`{symbol}`\nResult: {change_pct:+.1f}%"
+                        )
+                        return
+                except Exception:
+                    pass
+
             except Exception as e:
                 log.debug(f"Monitor error {symbol}: {e}")
-            time.sleep(5)
+            time.sleep(15)  # Check every 15s - no rush since OCO does the actual work
 
-        # Time limit - force sell
-        log.info(f"Snipe time limit {symbol} - selling")
         if detection is not None:
-            detection['status'] = 'time_exit'
-            detection['action'] = f"30-min timer expired"
             detection['monitoring'] = False
-        try:
-            self.trader.execute_trade(f"{symbol.replace('USDT','/USDT')}", 'sell', 100)
-        except Exception as e:
-            log.error(f"Force sell failed: {e}")
 
     def _telegram_post(self, text: str):
         """Internal helper - actually sends the message. Silent on failure."""
