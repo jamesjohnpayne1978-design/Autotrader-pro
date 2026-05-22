@@ -771,6 +771,38 @@ class Trader:
         except Exception as e:
             log.warning(f"Could not save trade history: {e}")
 
+    def place_snipe_oco(self, symbol, quantity, buy_price, tp_pct, sl_pct):
+        """Place an OCO sell order specifically for a sniped position.
+        Uses the sniper's TP/SL config (typically wider than regular AI trades
+        because new listings are more volatile). Returns dict with success/error.
+        """
+        try:
+            tp_price = self._round_price(symbol, buy_price * (1 + tp_pct / 100))
+            sl_price = self._round_price(symbol, buy_price * (1 - sl_pct / 100))
+            sl_limit_price = self._round_price(symbol, sl_price * 0.99)  # Wider buffer for volatile listings
+            # Adjust quantity to lot size (some of the position may be locked in fees)
+            adjusted_qty = self._adjust_quantity(symbol, quantity * 0.999)
+            if adjusted_qty <= 0:
+                return {'success': False, 'error': 'Adjusted quantity is zero'}
+            log.info(f"Placing snipe OCO for {symbol}: TP=${tp_price} (+{tp_pct}%) SL=${sl_price} (-{sl_pct}%) qty={adjusted_qty}")
+            oco = self.client.create_oco_order(
+                symbol=symbol, side='SELL', quantity=adjusted_qty,
+                price=str(tp_price), stopPrice=str(sl_price),
+                stopLimitPrice=str(sl_limit_price), stopLimitTimeInForce='GTC'
+            )
+            return {
+                'success': True,
+                'orderListId': oco.get('orderListId'),
+                'tp_price': tp_price,
+                'sl_price': sl_price,
+            }
+        except BinanceAPIException as e:
+            log.warning(f"Snipe OCO failed for {symbol}: {e}")
+            return {'success': False, 'error': str(e)}
+        except Exception as e:
+            log.warning(f"Snipe OCO error for {symbol}: {e}")
+            return {'success': False, 'error': str(e)}
+
     def snipe_listing(self, symbol, usdt_amount):
         try:
             price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
