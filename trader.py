@@ -778,6 +778,21 @@ class Trader:
             if quantity <= 0:
                 return {'success': False, 'error': 'Invalid quantity'}
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
-            return {'success': True, 'orderId': order['orderId']}
+            # Compute weighted average fill price from order fills
+            fills = order.get('fills', [])
+            if fills:
+                total_qty = sum(float(f['qty']) for f in fills)
+                fill_price = (sum(float(f['price']) * float(f['qty']) for f in fills) / total_qty) if total_qty > 0 else price
+                exec_qty = total_qty
+            else:
+                fill_price = price
+                exec_qty = float(order.get('executedQty', quantity))
+            return {
+                'success': True,
+                'orderId': order['orderId'],
+                'fill_price': fill_price,
+                'quantity': exec_qty,
+                'usdt_spent': fill_price * exec_qty,
+            }
         except Exception as e:
             return {'success': False, 'error': str(e)}
