@@ -268,19 +268,23 @@ class SignalEngine:
 
             try:
                 self.detect_market_regime()
+                # Populate trailing stop state FIRST so the AI-sell-block in
+                # _auto_execute can look up entry prices and block AI sells on
+                # winning positions. If this runs AFTER refresh_signals, the
+                # block can't fire on the first cycle because high_water_marks
+                # is still empty - which is why NEAR-type winners get sold.
+                try:
+                    self._check_portfolio_trailing_stops()
+                except Exception as e:
+                    log.debug(f"Portfolio trailing stop error: {e}")
+                # Now run signal analysis + auto-execute (which uses the state above)
                 self.refresh_signals()
-                # Check trailing stops every cycle
+                # trader.py's own trailing stop system (in-memory, separate from above)
                 try:
                     if self.trader:
                         self.trader.check_all_trailing_stops()
                 except Exception as e:
                     log.debug(f"Trailing stop check error: {e}")
-                # Run our high-level trailing stop monitor (separate from
-                # trader.py's stop logic - works on the portfolio level)
-                try:
-                    self._check_portfolio_trailing_stops()
-                except Exception as e:
-                    log.debug(f"Portfolio trailing stop error: {e}")
                 # Check for over-concentration in any single position
                 try:
                     self._check_position_concentration()
@@ -970,43 +974,74 @@ class SignalEngine:
                 if action == 'buy':
                     self._record_buy_time(pair)
                 log.info(f"Auto-executed: {action.upper()} {pair} - confidence {confidence}% - {result}")
-                # Send Telegram notification for auto trades
-                # Use defensive attribute access - settings key names vary
-                # (default_sl vs default_sl_pct) and missing attrs were silently
-                # killing Telegram alerts. Now logged at WARNING level if it fails.
+                # Always try to send the Telegram alert. Use the dedicated helper
+                # which logs aggressively on failure so we can see WHY any alert
+                # is missing in Railway logs instead of silently swallowing.
                 try:
-                    tok = getattr(self.config, 'telegram_token', '') or ''
-                    chat = getattr(self.config, 'telegram_chat_id', '') or ''
-                    if tok and chat:
-                        icon = '🟢' if action == 'buy' else '🔴'
-                        tp_val = (getattr(self.config, 'dynamic_tp', None)
-                                  or getattr(self.config, 'default_tp_pct', None)
-                                  or getattr(self.config, 'default_tp', 6.0))
-                        sl_val = (getattr(self.config, 'default_sl_pct', None)
-                                  or getattr(self.config, 'default_sl', 4.0))
-                        msg = (
-                            f"{icon} *AUTO {action.upper()} {pair}*\n"
-                            f"Confidence: {confidence}%\n"
-                            f"Market: {self.market_regime.upper()}\n"
-                            f"TP: {tp_val}% · SL: {sl_val}%"
-                        )
-                        r = requests.post(
-                            f"https://api.telegram.org/bot{tok}/sendMessage",
-                            json={'chat_id': str(chat), 'text': msg, 'parse_mode': 'Markdown'},
-                            timeout=8
-                        )
-                        if r.status_code != 200:
-                            log.warning(f"Telegram returned {r.status_code} for {pair}: {r.text[:200]}")
-                        else:
-                            log.info(f"Telegram alert sent for {action} {pair}")
-                    else:
-                        log.warning(f"Telegram not configured (token or chat_id missing) - skipping alert for {pair}")
+                    icon = '🟢' if action == 'buy' else '🔴'
+                    tp_val = (getattr(self.config, 'dynamic_tp', None)
+                              or getattr(self.config, 'default_tp_pct', None)
+                              or getattr(self.config, 'default_tp', 6.0))
+                    sl_val = (getattr(self.config, 'default_sl_pct', None)
+                              or getattr(self.config, 'default_sl', 4.0))
+                    regime_str = (self.market_regime or 'unknown').upper()
+                    msg = (
+                        f"{icon} *AUTO {action.upper()} {pair}*\n"
+                        f"Confidence: {confidence}%\n"
+                        f"Market: {regime_str}\n"
+                        f"TP: {tp_val}% / SL: {sl_val}%"
+                    )
+                    sent = self._tg_send(msg, context=f"auto-{action}-{pair}")
+                    if not sent:
+                        # Last-resort fallback: send a minimal plain-text alert so the
+                        # user gets SOMETHING, even if the rich format was rejected.
+                        self._tg_send(f"AUTO {action.upper()} {pair} at {confidence}%",
+                                      context=f"auto-{action}-{pair}-fallback",
+                                      use_markdown=False)
                 except Exception as te:
-                    log.warning(f"Telegram notification failed for {pair}: {te}")
+                    log.warning(f"Telegram block crashed for {pair}: {te}")
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
             finally:
                 self.risk_manager.release_lock(pair)
+
+    def _tg_send(self, message, context='generic', use_markdown=True):
+        """Robust Telegram sender used by ALL alert paths in signals.py
+        (auto-trades, trailing stop, approval mode, pyramid). Replaces multiple
+        inline `requests.post` calls that were each independently buggy.
+
+        Returns True on success, False on any failure. Logs aggressively so
+        any failure is visible in Railway logs - no silent swallowing.
+        """
+        tok = getattr(self.config, 'telegram_token', '') or ''
+        chat = getattr(self.config, 'telegram_chat_id', '') or ''
+        if not tok or not chat:
+            log.warning(f"Telegram skipped ({context}): token={'set' if tok else 'MISSING'} "
+                        f"chat_id={'set' if chat else 'MISSING'}")
+            return False
+
+        payload = {'chat_id': str(chat), 'text': message}
+        if use_markdown:
+            payload['parse_mode'] = 'Markdown'
+
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{tok}/sendMessage",
+                json=payload,
+                timeout=10
+            )
+            if r.status_code == 200:
+                log.info(f"Telegram sent ({context})")
+                return True
+            else:
+                log.warning(f"Telegram returned {r.status_code} ({context}): {r.text[:300]}")
+                return False
+        except requests.exceptions.Timeout:
+            log.warning(f"Telegram timeout after 10s ({context})")
+            return False
+        except Exception as e:
+            log.warning(f"Telegram exception ({context}): {type(e).__name__}: {e}")
+            return False
 
     def get_latest_signals(self):
         if not self.latest_signals:
