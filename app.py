@@ -321,9 +321,19 @@ def execute_trade():
     action = data.get('action')
     confidence = float(data.get('confidence', 0))
     is_manual = data.get('manual', False)
+    amount_usdt = data.get('amount_usdt')  # Optional explicit USDT amount
+    if amount_usdt is not None:
+        try:
+            amount_usdt = float(amount_usdt)
+            if amount_usdt <= 0:
+                amount_usdt = None
+        except (TypeError, ValueError):
+            amount_usdt = None
 
     if is_manual:
-        log.info(f"Manual trade requested: {action} {pair} - bypassing cooldown")
+        log.info(f"Manual trade requested: {action} {pair}"
+                 + (f" for ${amount_usdt}" if amount_usdt else "")
+                 + " - bypassing cooldown")
     else:
         approved, reason = risk_manager.check_trade(pair, action, confidence)
         if not approved:
@@ -336,7 +346,7 @@ def execute_trade():
         log.debug(f"Could not apply regime strategy: {e}")
 
     try:
-        result = trader.execute_trade(pair, action, config.max_trade_pct)
+        result = trader.execute_trade(pair, action, config.max_trade_pct, amount_usdt=amount_usdt)
     except Exception as e:
         log.error(f"Trade execution error: {e}")
         risk_manager.release_lock(pair)
