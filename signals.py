@@ -978,15 +978,17 @@ class SignalEngine:
         elif rsi > 60:
             score -= 4
 
-        # MACD - histogram magnitude adds to base signal
+        # MACD - histogram magnitude as % of price (so it's comparable
+        # between BTC at $77k and DOGE at $0.10)
         macd_sig = macd.get('signal', 'neutral')
         macd_hist = abs(macd.get('histogram', 0))
+        macd_strength_pct = (macd_hist / price * 100) if price > 0 else 0
         if macd_sig == 'bullish':
-            w = 8 + min(macd_hist * 100, 5)
+            w = 8 + min(macd_strength_pct * 4, 5)
             score += w
             factors.append(f"MACD bullish")
         elif macd_sig == 'bearish':
-            w = 8 + min(macd_hist * 100, 5)
+            w = 8 + min(macd_strength_pct * 4, 5)
             score -= w
             factors.append(f"MACD bearish")
 
@@ -1187,13 +1189,43 @@ class SignalEngine:
             ema = p * k + ema * (1 - k)
         return ema
 
+    def _ema_series(self, closes, period):
+        """Return the full EMA series, not just the final value. Needed by
+        MACD signal line which is EMA(9) OF THE MACD LINE, not of closes."""
+        if len(closes) < period:
+            return [closes[-1]] if closes else []
+        k = 2 / (period + 1)
+        series = [closes[0]]
+        for p in closes[1:]:
+            series.append(p * k + series[-1] * (1 - k))
+        return series
+
     def _macd(self, closes):
-        if len(closes) < 26:
+        """Standard MACD:
+          MACD line  = EMA(12, closes) - EMA(26, closes)        # series
+          Signal     = EMA(9, MACD line)                         # series
+          Histogram  = MACD line - Signal line
+
+        The previous implementation computed `signal_line = EMA(9, closes)`
+        which for high-priced assets like BTC made the signal line ≈ price
+        itself, giving nonsense histograms (e.g. -76610) and biasing the
+        cross to always 'bearish'. Fixed.
+        """
+        if len(closes) < 26 + 9:
             return {'signal': 'neutral', 'histogram': 0}
-        macd_line = self._ema(closes, 12) - self._ema(closes, 26)
-        signal_line = self._ema(closes[-9:], 9)
+        ema12 = self._ema_series(closes, 12)
+        ema26 = self._ema_series(closes, 26)
+        macd_line_series = [a - b for a, b in zip(ema12, ema26)]
+        signal_line_series = self._ema_series(macd_line_series, 9)
+        macd_line = macd_line_series[-1]
+        signal_line = signal_line_series[-1]
         histogram = macd_line - signal_line
-        signal = 'bullish' if macd_line > signal_line else 'bearish' if macd_line < signal_line else 'neutral'
+        if macd_line > signal_line:
+            signal = 'bullish'
+        elif macd_line < signal_line:
+            signal = 'bearish'
+        else:
+            signal = 'neutral'
         return {'signal': signal, 'histogram': histogram}
 
     def _stochastic_rsi(self, closes, rsi_period=14, stoch_period=14):
