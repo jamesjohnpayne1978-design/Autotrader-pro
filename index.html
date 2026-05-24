@@ -167,7 +167,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 <div class="modal-overlay" id="apiModal"><div class="modal"><div class="modal-title">🔑 Connect Binance</div><input class="modal-input" id="apiKey" placeholder="API Key" type="password"><input class="modal-input" id="apiSecret" placeholder="API Secret" type="password"><div class="modal-note">Keys stored locally on your device only.</div><button class="modal-btn" onclick="saveApiKeys()">Connect Account</button></div></div>
 
-<div class="modal-overlay" id="tradeModal"><div class="modal"><div class="modal-title">Manual Trade</div><div style="background:var(--surface2);border-radius:var(--radius-sm);padding:4px;margin-bottom:18px"><div id="pairButtonsContainer" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px"></div></div><div style="font-size:0.82rem;color:var(--text-2);margin-bottom:16px;text-align:center">Selected: <span id="selectedPairLabel" style="color:var(--gold);font-family:var(--mono);font-weight:700">Tap a pair below</span></div><div style="background:var(--blue-dim);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--blue-bright)">Manual trades use their own TP/SL - signal engine won't touch them</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px"><button class="btn" id="tradeBuyBtn" style="background:var(--green);color:#000;padding:18px;font-size:1rem;opacity:0.5" onclick="submitManualTrade('buy')" disabled>✓ BUY</button><button class="btn" id="tradeSellBtn" style="background:var(--red);color:white;padding:18px;font-size:1rem;opacity:0.5" onclick="submitManualTrade('sell')" disabled>✕ SELL</button></div><button class="btn btn-skip" style="width:100%;margin-top:8px;padding:14px" onclick="document.getElementById('tradeModal').classList.remove('show')">Cancel</button></div></div>
+<div class="modal-overlay" id="tradeModal"><div class="modal"><div class="modal-title">Manual Trade</div><div style="background:var(--surface2);border-radius:var(--radius-sm);padding:4px;margin-bottom:18px"><div id="pairButtonsContainer" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px"></div></div><div style="font-size:0.82rem;color:var(--text-2);margin-bottom:16px;text-align:center">Selected: <span id="selectedPairLabel" style="color:var(--gold);font-family:var(--mono);font-weight:700">Tap a pair below</span></div>
+<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;margin-bottom:14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:0.8rem;color:var(--text-2);font-weight:600">Amount (USDT)</div><div id="manualAmountHint" style="font-size:0.7rem;color:var(--text-3);font-family:var(--mono)">leave blank = default size</div></div><div style="display:flex;gap:6px;align-items:stretch"><input id="manualAmountInput" type="number" step="any" min="0" placeholder="e.g. 50" style="flex:1;background:var(--bg);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:1rem;padding:11px 14px"><button onclick="setManualAmount(25)" style="background:var(--surface3);border:1px solid var(--border2);color:var(--text-2);border-radius:8px;padding:0 10px;font-size:0.78rem;font-family:var(--mono);font-weight:600;cursor:pointer">$25</button><button onclick="setManualAmount(50)" style="background:var(--surface3);border:1px solid var(--border2);color:var(--text-2);border-radius:8px;padding:0 10px;font-size:0.78rem;font-family:var(--mono);font-weight:600;cursor:pointer">$50</button><button onclick="setManualAmount(100)" style="background:var(--surface3);border:1px solid var(--border2);color:var(--text-2);border-radius:8px;padding:0 10px;font-size:0.78rem;font-family:var(--mono);font-weight:600;cursor:pointer">$100</button></div><div id="manualAmountBalance" style="font-size:0.7rem;color:var(--text-3);font-family:var(--mono);margin-top:6px;text-align:right">-</div></div>
+<div style="background:var(--blue-dim);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--blue-bright)">Manual trades use their own TP/SL - signal engine won't touch them</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px"><button class="btn" id="tradeBuyBtn" style="background:var(--green);color:#000;padding:18px;font-size:1rem;opacity:0.5" onclick="submitManualTrade('buy')" disabled>✓ BUY</button><button class="btn" id="tradeSellBtn" style="background:var(--red);color:white;padding:18px;font-size:1rem;opacity:0.5" onclick="submitManualTrade('sell')" disabled>✕ SELL</button></div><button class="btn btn-skip" style="width:100%;margin-top:8px;padding:14px" onclick="document.getElementById('tradeModal').classList.remove('show')">Cancel</button></div></div>
 
 <div class="modal-overlay" id="pairModal"><div class="modal" style="padding:0;border-radius:var(--radius) var(--radius) 0 0;overflow:hidden;max-height:85vh;display:flex;flex-direction:column"><div style="padding:22px 22px 0;background:var(--surface)"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><div style="font-size:1.2rem;font-weight:800;font-family:var(--mono)" id="pairModalTitle">BTC/USDT</div><button onclick="document.getElementById('pairModal').classList.remove('show')" style="background:var(--surface2);border:1px solid var(--border2);border-radius:8px;color:var(--text-2);font-size:0.88rem;padding:7px 14px;cursor:pointer;font-family:var(--sans)">✕ Close</button></div><div style="display:flex;gap:20px;margin-bottom:18px"><div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">Price</div><div style="font-family:var(--mono);font-weight:700;font-size:1.2rem" id="pairModalPrice">-</div></div><div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">24h</div><div style="font-family:var(--mono);font-weight:600;font-size:1.2rem" id="pairModalChange">-</div></div><div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">Holdings</div><div style="font-family:var(--mono);font-weight:600;font-size:1.2rem" id="pairModalHoldings">-</div></div><div><div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">P&L</div><div style="font-family:var(--mono);font-weight:600;font-size:1.2rem" id="pairModalPnl">-</div></div></div><canvas id="pairChart" height="140" style="width:100%"></canvas></div><div style="padding:18px 22px;overflow-y:auto;flex:1"><div style="font-size:0.72rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-3);margin-bottom:12px">Trade History</div><div id="pairModalTrades"></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px"><button class="btn" style="background:var(--green);color:#000;padding:16px;font-size:0.95rem;" onclick="manualFromPair('buy')">✓ Buy</button><button class="btn" style="background:var(--red);color:white;padding:16px;font-size:0.95rem;" onclick="manualFromPair('sell')">✕ Sell</button></div></div></div></div>
 
@@ -808,6 +810,35 @@ function drawPairChart(trades){
 // MANUAL TRADE MODAL — button-based pair selection
 // ============================================================
 
+function setManualAmount(usd){
+  const inp = document.getElementById('manualAmountInput');
+  if(inp){ inp.value = usd; inp.focus(); }
+}
+
+async function _refreshManualBalance(){
+  // Show the user how much USDT is free (for buys) or how much they hold of
+  // the selected pair (for sells). Best-effort - silently no-ops if API fails.
+  const balEl = document.getElementById('manualAmountBalance');
+  if(!balEl) return;
+  if(!selectedManualPair){ balEl.textContent = '-'; return; }
+  try{
+    const [portfolioR, pricesR] = await Promise.all([
+      fetch(API_BASE+'/api/portfolio'),
+      fetch(API_BASE+'/api/prices')
+    ]);
+    const portfolio = await portfolioR.json();
+    const prices = await pricesR.json();
+    const freeUsdt = portfolio.free_usdt || 0;
+    const base = selectedManualPair.replace('USDT','');
+    const display = selectedManualPair.replace('USDT','/USDT');
+    const pair = prices.pairs && prices.pairs.find(p=>p.symbol===display);
+    const holding = pair ? (pair.value_usdt||0) : 0;
+    balEl.innerHTML = '<span style="color:var(--text-2)">Free USDT: $'+freeUsdt.toFixed(2)+' · '+base+' held: $'+holding.toFixed(2)+'</span>';
+  }catch(e){
+    balEl.textContent = '-';
+  }
+}
+
 function selectTradePair(pair){
   selectedManualPair = pair;
   const display = pair.replace('USDT','/USDT');
@@ -821,6 +852,7 @@ function selectTradePair(pair){
   const sell = document.getElementById('tradeSellBtn');
   if(buy){buy.disabled = false; buy.style.opacity = '1';}
   if(sell){sell.disabled = false; sell.style.opacity = '1';}
+  _refreshManualBalance();
 }
 
 async function openTradeModal(preselect){
@@ -831,15 +863,30 @@ async function openTradeModal(preselect){
   const sell = document.getElementById('tradeSellBtn');
   if(buy){buy.disabled = true; buy.style.opacity = '0.5';}
   if(sell){sell.disabled = true; sell.style.opacity = '0.5';}
+  const amountInput = document.getElementById('manualAmountInput');
+  if(amountInput) amountInput.value = '';
+  const balEl = document.getElementById('manualAmountBalance');
+  if(balEl) balEl.textContent = '-';
 
+  // Authoritative source for pairs: the new /api/pairs endpoint. Falls back
+  // to /api/prices if for any reason that fails, then to /api/settings.
   let pairs = [];
   try{
-    const r = await fetch(API_BASE+'/api/prices');
+    const r = await fetch(API_BASE+'/api/pairs');
     const d = await r.json();
     if(d.pairs && d.pairs.length){
-      pairs = d.pairs.map(p => p.symbol.replace('/',''));
+      pairs = d.pairs.map(p => p.symbol);
     }
   }catch(e){}
+  if(!pairs.length){
+    try{
+      const r = await fetch(API_BASE+'/api/prices');
+      const d = await r.json();
+      if(d.pairs && d.pairs.length){
+        pairs = d.pairs.map(p => p.symbol.replace('/',''));
+      }
+    }catch(e){}
+  }
   if(!pairs.length){
     try{
       const r = await fetch(API_BASE+'/api/settings');
@@ -855,7 +902,7 @@ async function openTradeModal(preselect){
       return '<button class="pair-btn" data-pair="'+p+'" onclick="selectTradePair(\''+p+'\')">'+display+'</button>';
     }).join('');
   }else{
-    container.innerHTML = '<div style="color:var(--text-2);font-size:0.85rem;padding:8px;width:100%;text-align:center">No pairs available</div>';
+    container.innerHTML = '<div style="color:var(--text-2);font-size:0.85rem;padding:8px;width:100%;text-align:center">No pairs available - add some in Settings</div>';
   }
 
   document.getElementById('tradeModal').classList.add('show');
@@ -873,20 +920,41 @@ async function submitManualTrade(side){
   }
   const pair = selectedManualPair;
   const pairName = pair.replace('USDT','/USDT');
+  // Parse optional amount. Blank = use default trade size from settings.
+  const amountStr = (document.getElementById('manualAmountInput')||{}).value;
+  let amount_usdt = null;
+  if(amountStr && amountStr.toString().trim() !== ''){
+    const parsed = parseFloat(amountStr);
+    if(isNaN(parsed) || parsed <= 0){
+      showToast('Amount must be a positive number');
+      return;
+    }
+    if(parsed < 5){
+      showToast('Minimum trade amount is $5');
+      return;
+    }
+    amount_usdt = parsed;
+  }
+
   document.getElementById('tradeModal').classList.remove('show');
-  showToast('Sending manual '+side.toUpperCase()+' for '+pairName+'...');
+  const amtLabel = amount_usdt ? ' for $'+amount_usdt.toFixed(2) : '';
+  showToast('Sending manual '+side.toUpperCase()+' for '+pairName+amtLabel+'...');
+
+  const body = {pair: pairName, action: side, confidence: 99, manual: true};
+  if(amount_usdt !== null) body.amount_usdt = amount_usdt;
+
   try{
     const r = await fetch(API_BASE+'/api/trade',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({pair:pairName, action:side, confidence:99, manual:true})
+      body:JSON.stringify(body)
     });
     const d = await r.json();
     if(d.success){
-      showToast(pairName+' '+side.toUpperCase()+' executed!');
+      showToast(pairName+' '+side.toUpperCase()+amtLabel+' executed!');
       setTimeout(loadDashboard, 2000);
     } else {
-      showToast('Error: '+(d.error||'Unknown error'));
+      showToast('Error: '+(d.error||'Unknown error'), 5000);
     }
   }catch(e){
     showToast('Could not reach trading server');
