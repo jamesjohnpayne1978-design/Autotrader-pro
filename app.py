@@ -187,6 +187,11 @@ def refresh_signals_now():
         log.info("Manual signal refresh requested")
         signal_engine.detect_market_regime()
         signal_engine.refresh_signals()
+        # Re-apply regime strategy after regime potentially changed
+        try:
+            _apply_regime_strategy(reason='manual signal refresh')
+        except Exception:
+            pass
         return jsonify({
             'success': True,
             'signals': signal_engine.get_latest_signals(),
@@ -323,6 +328,13 @@ def execute_trade():
         approved, reason = risk_manager.check_trade(pair, action, confidence)
         if not approved:
             return jsonify({'error': f'Risk manager blocked: {reason}'}), 400
+
+    # Apply regime-based strategy (if enabled) so OCO uses the right TP/SL
+    try:
+        _apply_regime_strategy(reason=f'pre-trade {pair}')
+    except Exception as e:
+        log.debug(f"Could not apply regime strategy: {e}")
+
     try:
         result = trader.execute_trade(pair, action, config.max_trade_pct)
     except Exception as e:
@@ -707,6 +719,54 @@ def pyramid_status():
         out['summary'] = '✅ Pyramid backend wired up correctly - no positions meet conditions right now (waiting for price to drop %s%% from last entry)' % out['pyramid_drop_trigger_pct']
     else:
         out['summary'] = 'No real positions held - pyramid cannot fire without existing positions (it adds to positions, does not open them)'
+
+    return jsonify(out)
+
+
+@app.route('/api/strategy/status')
+def strategy_status():
+    """Shows whether regime-adaptive strategy is on, what the current regime
+    is, and the TP/SL/trailing values that will be used on the next trade.
+    Also shows the full profile table so you can see what each regime does."""
+    enabled = bool(getattr(config, 'regime_strategy_enabled', False))
+    regime = 'neutral'
+    try:
+        if signal_engine is not None:
+            regime = getattr(signal_engine, 'market_regime', 'neutral') or 'neutral'
+    except Exception:
+        pass
+
+    out = {
+        'regime_strategy_enabled': enabled,
+        'current_regime': regime,
+        'profiles': REGIME_STRATEGIES,
+    }
+
+    if enabled:
+        active = REGIME_STRATEGIES.get(regime, REGIME_STRATEGIES['neutral'])
+        out['active'] = {
+            'regime': regime,
+            'tp_pct': active['tp_pct'],
+            'sl_pct': active['sl_pct'],
+            'trailing_stop_enabled': active['trailing_stop_enabled'],
+            'trailing_stop_pct': active['trailing_stop_pct'],
+            'trailing_breakeven_trigger': active['trailing_breakeven_trigger'],
+            'description': active['description'],
+        }
+        out['summary'] = (f"Regime strategy ON. Current regime: {regime.upper()}. "
+                          f"Next trade: TP={active['tp_pct']}%, SL={active['sl_pct']}%, "
+                          f"trailing={'ON' if active['trailing_stop_enabled'] else 'OFF'}")
+    else:
+        out['active'] = {
+            'tp_pct': getattr(config, 'default_tp_pct', None),
+            'sl_pct': getattr(config, 'default_sl_pct', None),
+            'trailing_stop_enabled': getattr(config, 'trailing_stop_enabled', False),
+            'trailing_stop_pct': getattr(config, 'trailing_stop_pct', None),
+            'trailing_breakeven_trigger': getattr(config, 'trailing_breakeven_trigger', None),
+            'description': 'Using your manual settings (regime adaptation off)',
+        }
+        out['summary'] = ('Regime strategy is OFF - using your manual TP/SL/trailing settings. '
+                          'POST to /api/settings with {"regime_strategy_enabled": true} to enable.')
 
     return jsonify(out)
 
@@ -1323,7 +1383,84 @@ _EXTRA_KEYS = [
     'trailing_breakeven_trigger',
     'concentration_alert_pct',
     'approval_mode',
+    'regime_strategy_enabled',  # When true, OCO + trailing values change with market regime
 ]
+
+
+# =============================================================================
+# Regime-adaptive strategy profiles
+# =============================================================================
+# Each market regime gets a different OCO take-profit, stop-loss and trailing
+# configuration. Bullish regimes set a wide TP and turn trailing on (let winners
+# run). Neutral and bearish regimes set tighter TPs and turn trailing off
+# (lock in modest wins, exit fast on bad ones).
+#
+# Active values are written onto the live `config` object so that:
+#   - trader._place_oco_order picks up config.dynamic_tp / config.dynamic_sl
+#   - signals.py picks up config.trailing_stop_* on its next cycle
+# Original manually-set values in config.default_tp_pct etc. are NEVER
+# overwritten - they're the fallback when regime_strategy_enabled is off.
+REGIME_STRATEGIES = {
+    'bullish': {
+        'tp_pct': 15.0,
+        'sl_pct': 5.0,
+        'trailing_stop_enabled': True,
+        'trailing_stop_pct': 2.0,
+        'trailing_breakeven_trigger': 3.0,
+        'description': 'Wide TP + active trailing - let winners run',
+    },
+    'neutral': {
+        'tp_pct': 6.0,
+        'sl_pct': 4.0,
+        'trailing_stop_enabled': False,
+        'trailing_stop_pct': 2.0,
+        'trailing_breakeven_trigger': 3.0,
+        'description': 'Standard TP, trailing off - bank consistent small wins',
+    },
+    'bearish': {
+        'tp_pct': 4.0,
+        'sl_pct': 3.0,
+        'trailing_stop_enabled': False,
+        'trailing_stop_pct': 2.0,
+        'trailing_breakeven_trigger': 3.0,
+        'description': 'Tight TP + tighter SL, trailing off - exit fast',
+    },
+}
+
+
+def _apply_regime_strategy(reason='trade'):
+    """Apply the regime-appropriate strategy profile to the live config object.
+
+    Does nothing unless the regime_strategy_enabled toggle is on. Safe to call
+    even before signal_engine has detected its first regime - falls back to
+    neutral. Returns the profile that was applied (or None if disabled).
+    """
+    enabled = bool(getattr(config, 'regime_strategy_enabled', False))
+    if not enabled:
+        return None
+
+    regime = 'neutral'
+    try:
+        if signal_engine is not None:
+            regime = getattr(signal_engine, 'market_regime', 'neutral') or 'neutral'
+    except Exception:
+        pass
+
+    profile = REGIME_STRATEGIES.get(regime, REGIME_STRATEGIES['neutral'])
+
+    # Write onto config - trader and signals will pick these up on next use
+    try:
+        config.dynamic_tp = profile['tp_pct']
+        config.dynamic_sl = profile['sl_pct']
+        config.trailing_stop_enabled = profile['trailing_stop_enabled']
+        config.trailing_stop_pct = profile['trailing_stop_pct']
+        config.trailing_breakeven_trigger = profile['trailing_breakeven_trigger']
+        log.info(f"Applied {regime} strategy ({reason}): TP={profile['tp_pct']}% "
+                 f"SL={profile['sl_pct']}% trailing={profile['trailing_stop_enabled']}")
+    except Exception as e:
+        log.warning(f"Could not apply regime strategy: {e}")
+
+    return {'regime': regime, **profile}
 
 
 def _load_extra_settings():
