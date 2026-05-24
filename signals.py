@@ -42,6 +42,57 @@ MIN_HOLD_MINUTES_BEFORE_AI_SELL = 240  # 4 hours
 # File where we persist per-pair last buy timestamps so restarts don't reset
 # the hold period and let the AI sell immediately on next cycle.
 _BUY_TIMES_PATH = '/data/buy_times.json'
+
+# ============================================================
+# EXTRA SETTINGS READER
+# ============================================================
+# The Config class has a silent whitelist that silently rejects setattr for
+# unknown keys (trailing_stop_enabled, approval_mode, etc). When app.py does
+# setattr(config, 'approval_mode', True), nothing happens. Then signals.py
+# reads _extra_bool('approval_mode', False) and gets False - so the
+# setting appears to persist (via the side-channel JSON file) but doesn't
+# affect bot behavior at runtime.
+#
+# Fix: read directly from the side-channel file. Bypasses Config entirely.
+# Cached by file mtime so we only read from disk when the file changes.
+_EXTRA_SETTINGS_PATH = '/data/extra_settings.json'
+_extra_cache = {'data': {}, 'mtime': 0}
+
+
+def _read_extras():
+    """Read the extras settings file. Cached based on file mtime."""
+    try:
+        if not os.path.exists(_EXTRA_SETTINGS_PATH):
+            return {}
+        mtime = os.path.getmtime(_EXTRA_SETTINGS_PATH)
+        if mtime != _extra_cache['mtime']:
+            with open(_EXTRA_SETTINGS_PATH) as f:
+                _extra_cache['data'] = json.load(f) or {}
+            _extra_cache['mtime'] = mtime
+            log.info(f"Extras reloaded from disk: {list(_extra_cache['data'].keys())}")
+        return _extra_cache['data']
+    except Exception as e:
+        log.debug(f"Could not read extras: {e}")
+        return _extra_cache.get('data', {})
+
+
+def _extra_bool(key, default=False):
+    """Get a bool extra setting, bypassing Config's whitelist."""
+    v = _read_extras().get(key, default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.lower() == 'true'
+    return bool(v)
+
+
+def _extra_float(key, default):
+    """Get a float extra setting, bypassing Config's whitelist."""
+    v = _read_extras().get(key, default)
+    try:
+        return float(v)
+    except Exception:
+        return default
 # ============================================================
 
 
@@ -312,7 +363,7 @@ class SignalEngine:
         would reset peak to current price = trailing stop right behind it = sell
         immediately on the next dip.
         """
-        if not getattr(self.config, 'trailing_stop_enabled', False):
+        if not _extra_bool('trailing_stop_enabled', False):
             return
         if not self.trader:
             return
@@ -325,9 +376,9 @@ class SignalEngine:
         if not hasattr(self, 'high_water_marks'):
             self.high_water_marks = {}
 
-        trail_pct = float(getattr(self.config, 'trailing_stop_pct', 5.0))
-        activate_pct = float(getattr(self.config, 'trailing_stop_activate_pct', 2.0))
-        breakeven_trigger = float(getattr(self.config, 'trailing_breakeven_trigger', 3.0))
+        trail_pct = _extra_float('trailing_stop_pct', 5.0)
+        activate_pct = _extra_float('trailing_stop_activate_pct', 2.0)
+        breakeven_trigger = _extra_float('trailing_breakeven_trigger', 3.0)
 
         try:
             account = self.trader.client.get_account()
@@ -528,7 +579,7 @@ class SignalEngine:
         if not self.trader:
             return
 
-        threshold_pct = float(getattr(self.config, 'concentration_alert_pct', 25.0))
+        threshold_pct = _extra_float('concentration_alert_pct', 25.0)
         cooldown_hours = 4
 
         if not hasattr(self, '_last_concentration_alert'):
@@ -866,7 +917,7 @@ class SignalEngine:
         # Telegram, but DOES NOT auto-execute anything. User must manually
         # buy/sell from the dashboard. Applies to all auto-trade paths
         # (regular signals, pyramid). Sniper has its own bypass and is unaffected.
-        if getattr(self.config, 'approval_mode', False):
+        if _extra_bool('approval_mode', False):
             self._notify_pending_signals(signals)
             log.info("Auto-execute SKIPPED entirely - approval mode is ON. "
                      "Disable approval_mode in Settings to enable auto-trading.")
@@ -912,7 +963,7 @@ class SignalEngine:
                 # exit mechanism. The AI saying "sell" on a winner usually just
                 # means "RSI overbought" - which on a strong trend is a buy
                 # signal, not a sell signal. Let the trailing stop ride.
-                if action == 'sell' and getattr(self.config, 'trailing_stop_enabled', False):
+                if action == 'sell' and _extra_bool('trailing_stop_enabled', False):
                     try:
                         base = pair.replace('/USDT', '').replace('/', '')
                         sym = base + 'USDT'
