@@ -470,7 +470,14 @@ class Trader:
             'low': float(k[3]), 'close': float(k[4]), 'volume': float(k[5])
         } for k in raw]
 
-    def execute_trade(self, pair, action, pct_of_portfolio):
+    def execute_trade(self, pair, action, pct_of_portfolio, amount_usdt=None):
+        """Execute a market buy/sell.
+
+        amount_usdt: Optional explicit USDT amount to spend (buy) or worth to
+                     sell. When provided, overrides pct_of_portfolio. Used by
+                     manual trades from the dashboard where the user specifies
+                     a dollar amount directly.
+        """
         if self.is_on_cooldown(pair):
             raise ValueError(f"Trade cooldown active for {pair}")
 
@@ -479,10 +486,17 @@ class Trader:
 
         if action == 'buy':
             usdt_balance = self._get_balance('USDT')
-            amount_usdt = usdt_balance * (pct_of_portfolio / 100)
-            amount_usdt = max(15, min(amount_usdt, usdt_balance * 0.95))
+            if amount_usdt is not None and float(amount_usdt) > 0:
+                # Explicit dollar amount - use as-is, capped at 95% of free USDT
+                amount_usdt_target = min(float(amount_usdt), usdt_balance * 0.95)
+                amount_usdt_target = max(15, amount_usdt_target)
+                if amount_usdt_target > usdt_balance:
+                    raise ValueError(f"Insufficient USDT: have ${usdt_balance:.2f}, need ${amount_usdt_target:.2f}")
+            else:
+                amount_usdt_target = usdt_balance * (pct_of_portfolio / 100)
+                amount_usdt_target = max(15, min(amount_usdt_target, usdt_balance * 0.95))
             price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
-            quantity = self._adjust_quantity(symbol, amount_usdt / price)
+            quantity = self._adjust_quantity(symbol, amount_usdt_target / price)
             if quantity <= 0:
                 raise ValueError(f"Calculated quantity is zero for {symbol}")
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
@@ -493,7 +507,7 @@ class Trader:
             else:
                 buy_price = price
             log.info(f"Fill price for {symbol}: ${buy_price:.6f} ({len(fills)} fills)")
-            log.info(f"BUY {symbol}: qty={quantity} at ${buy_price:.6f}")
+            log.info(f"BUY {symbol}: qty={quantity} at ${buy_price:.6f} (${amount_usdt_target:.2f})")
             self._last_trade_time[pair] = datetime.now()
             usdt_spent = buy_price * quantity
             try:
@@ -508,12 +522,24 @@ class Trader:
         elif action == 'sell':
             self._cancel_all_open_orders(symbol)
             import time; time.sleep(1)
-            quantity = self._get_total_balance(base)
-            if quantity <= 0:
+            total_balance = self._get_total_balance(base)
+            if total_balance <= 0:
                 raise ValueError(f"No {base} balance to sell")
-            quantity = self._adjust_quantity(symbol, quantity * 0.999)
+
+            if amount_usdt is not None and float(amount_usdt) > 0:
+                # Partial sell: convert dollar amount to quantity at current price
+                price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
+                target_qty = float(amount_usdt) / price
+                # Cap at 99.9% of holdings (avoid lot-size rounding leaving dust)
+                quantity = min(target_qty, total_balance * 0.999)
+                log.info(f"Partial sell {symbol}: target ${amount_usdt} = {target_qty:.6f} of {total_balance:.6f}")
+            else:
+                # Sell all
+                quantity = total_balance * 0.999
+
+            quantity = self._adjust_quantity(symbol, quantity)
             if quantity <= 0:
-                raise ValueError(f"Adjusted sell quantity is zero for {symbol}")
+                raise ValueError(f"Adjusted sell quantity is zero for {symbol} - amount may be below min lot size")
             price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
             order = self.client.order_market_sell(symbol=symbol, quantity=quantity)
             fills = order.get('fills', [])
