@@ -1456,6 +1456,175 @@ def get_insights():
 
 
 # =============================================================================
+# Trading pairs override - lets you add/remove pairs from the dashboard
+# without editing Railway env vars. Persisted to /data/trading_pairs.json
+# and loaded at startup so changes survive restarts.
+# =============================================================================
+_PAIRS_OVERRIDE_PATH = '/data/trading_pairs.json'
+
+
+def _load_pairs_override():
+    try:
+        if os.path.exists(_PAIRS_OVERRIDE_PATH):
+            with open(_PAIRS_OVERRIDE_PATH) as f:
+                data = json.load(f)
+                if isinstance(data, list) and all(isinstance(p, str) for p in data):
+                    return data
+    except Exception as e:
+        log.debug(f"Could not load pairs override: {e}")
+    return None
+
+
+def _save_pairs_override(pairs):
+    try:
+        os.makedirs(os.path.dirname(_PAIRS_OVERRIDE_PATH), exist_ok=True)
+        with open(_PAIRS_OVERRIDE_PATH, 'w') as f:
+            json.dump(pairs, f)
+        return True
+    except Exception as e:
+        log.warning(f"Could not save pairs override: {e}")
+        return False
+
+
+def _normalize_symbol(raw):
+    """Accept 'BTC', 'BTC/USDT', 'btcusdt' and return 'BTCUSDT'."""
+    if not raw:
+        return ''
+    s = str(raw).strip().upper().replace('/', '').replace('-', '').replace(' ', '')
+    if not s.endswith('USDT'):
+        s = s + 'USDT'
+    return s
+
+
+# Apply override on startup (after config initialises)
+try:
+    _override = _load_pairs_override()
+    if _override:
+        config.trading_pairs = _override
+        log.info(f"Trading pairs loaded from disk override ({len(_override)}): {_override}")
+except Exception as _e:
+    log.debug(f"No pairs override: {_e}")
+
+
+@app.route('/api/pairs')
+def get_pairs():
+    """Return the current trading pairs list with optional position info."""
+    pairs = list(getattr(config, 'trading_pairs', []))
+    result = []
+    for p in pairs:
+        entry = {'symbol': p, 'display': p.replace('USDT', '/USDT')}
+        # Add holdings if we can fetch them quickly
+        if trader:
+            try:
+                base = p.replace('USDT', '')
+                account = trader.client.get_account()
+                bal = next((float(b['free']) + float(b['locked'])
+                            for b in account['balances'] if b['asset'] == base), 0.0)
+                if bal > 0:
+                    try:
+                        price = float(trader.client.get_symbol_ticker(symbol=p)['price'])
+                        entry['holdings_usdt'] = round(bal * price, 2)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        result.append(entry)
+    return jsonify({'pairs': result, 'count': len(result)})
+
+
+@app.route('/api/pairs/add', methods=['POST'])
+def add_pair():
+    if not trader:
+        return jsonify({'error': 'Not connected to Binance'}), 400
+
+    raw = (request.json or {}).get('symbol', '')
+    symbol = _normalize_symbol(raw)
+    if not symbol or len(symbol) < 5:
+        return jsonify({'error': 'Invalid symbol'}), 400
+
+    # Validate against Binance
+    try:
+        info = trader.client.get_symbol_info(symbol)
+    except Exception as e:
+        return jsonify({'error': f'Binance lookup failed: {e}'}), 400
+    if not info:
+        return jsonify({'error': f'{symbol} not found on Binance'}), 400
+    if info.get('status') != 'TRADING':
+        return jsonify({'error': f'{symbol} exists but status is "{info.get("status")}" - not currently tradeable'}), 400
+
+    pairs = list(getattr(config, 'trading_pairs', []))
+    if symbol in pairs:
+        return jsonify({'error': f'{symbol} is already in the list'}), 400
+
+    pairs.append(symbol)
+    config.trading_pairs = pairs
+    _save_pairs_override(pairs)
+    log.info(f"Added trading pair: {symbol}. Total: {len(pairs)}")
+
+    # Try to clear cached symbol info just in case
+    try:
+        if hasattr(trader, '_symbol_info_cache'):
+            trader._symbol_info_cache[symbol] = info
+    except Exception:
+        pass
+
+    return jsonify({
+        'success': True,
+        'added': symbol,
+        'count': len(pairs),
+        'message': f'{symbol.replace("USDT", "/USDT")} added. Will appear on next signal cycle (up to 5 min).'
+    })
+
+
+@app.route('/api/pairs/remove', methods=['POST'])
+def remove_pair():
+    if not trader:
+        return jsonify({'error': 'Not connected to Binance'}), 400
+
+    raw = (request.json or {}).get('symbol', '')
+    symbol = _normalize_symbol(raw)
+    if not symbol:
+        return jsonify({'error': 'Invalid symbol'}), 400
+
+    pairs = list(getattr(config, 'trading_pairs', []))
+    if symbol not in pairs:
+        return jsonify({'error': f'{symbol} is not in the current list'}), 400
+
+    # Warn if there's an open position
+    warning = None
+    try:
+        base = symbol.replace('USDT', '')
+        account = trader.client.get_account()
+        bal = next((float(b['free']) + float(b['locked'])
+                    for b in account['balances'] if b['asset'] == base), 0.0)
+        if bal > 0:
+            try:
+                price = float(trader.client.get_symbol_ticker(symbol=symbol)['price'])
+                value = bal * price
+                if value >= 2.0:
+                    warning = (f'You still hold {bal:.6f} {base} (≈${value:.2f}). '
+                               f'The bot will stop monitoring this pair but the position '
+                               f'stays in your wallet. Consider selling it first or '
+                               f'manage it manually in Binance.')
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    pairs.remove(symbol)
+    config.trading_pairs = pairs
+    _save_pairs_override(pairs)
+    log.info(f"Removed trading pair: {symbol}. Total: {len(pairs)}")
+
+    return jsonify({
+        'success': True,
+        'removed': symbol,
+        'count': len(pairs),
+        'warning': warning
+    })
+
+
+# =============================================================================
 # Extra settings persistence
 # =============================================================================
 import os as _os_extra
