@@ -723,6 +723,90 @@ def pyramid_status():
     return jsonify(out)
 
 
+@app.route('/api/strategy/toggle')
+def strategy_toggle():
+    """One-tap toggle for regime-adaptive strategy. Open this URL in your
+    phone's browser to flip the setting - no JSON or HTML edits required.
+    Returns a small HTML page confirming the new state."""
+    current = bool(getattr(config, 'regime_strategy_enabled', False))
+    new_state = not current
+
+    # Persist to extra_settings.json (same place the /api/settings POST writes to)
+    existing = _load_extra_settings()
+    existing['regime_strategy_enabled'] = new_state
+    _save_extra_settings(existing)
+
+    # Apply immediately to the live config object
+    try:
+        setattr(config, 'regime_strategy_enabled', new_state)
+    except Exception:
+        pass
+
+    # If turning on, apply the strategy right away so the next trade uses it
+    applied = None
+    if new_state:
+        try:
+            applied = _apply_regime_strategy(reason='toggled on via /api/strategy/toggle')
+        except Exception as e:
+            log.warning(f"Could not apply strategy after toggle: {e}")
+
+    log.info(f"Regime strategy toggled: {current} -> {new_state}")
+
+    # Mobile-friendly HTML response with current state + tappable controls
+    status_color = '#00d4a0' if new_state else '#94a3b8'
+    status_text = 'ON' if new_state else 'OFF'
+    active_html = ''
+    if applied:
+        active_html = f"""
+        <div style="margin-top:24px;padding:16px;background:#1a2233;border-radius:12px;text-align:left;">
+            <div style="color:#94a3b8;font-size:0.78rem;text-transform:uppercase;margin-bottom:8px;">Active strategy</div>
+            <div style="color:#e2e8f0;font-size:1rem;font-weight:600;">Regime: {applied['regime'].upper()}</div>
+            <div style="color:#94a3b8;font-size:0.85rem;margin-top:4px;">{applied['description']}</div>
+            <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.85rem;">
+                <div><span style="color:#94a3b8;">TP:</span> <b style="color:#e2e8f0;">{applied['tp_pct']}%</b></div>
+                <div><span style="color:#94a3b8;">SL:</span> <b style="color:#e2e8f0;">{applied['sl_pct']}%</b></div>
+                <div><span style="color:#94a3b8;">Trailing:</span> <b style="color:#e2e8f0;">{'ON' if applied['trailing_stop_enabled'] else 'OFF'}</b></div>
+                <div><span style="color:#94a3b8;">Trail %:</span> <b style="color:#e2e8f0;">{applied['trailing_stop_pct']}%</b></div>
+            </div>
+        </div>
+        """
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Regime Strategy</title>
+</head>
+<body style="margin:0;padding:32px 20px;background:#0d1421;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;min-height:100vh;">
+<div style="max-width:420px;margin:0 auto;text-align:center;">
+    <div style="font-size:0.85rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;">Regime Strategy</div>
+    <div style="font-size:3rem;font-weight:800;color:{status_color};margin:12px 0;">{status_text}</div>
+    <div style="font-size:0.95rem;color:#94a3b8;line-height:1.5;">
+        Auto-adjusts TP, SL and trailing<br>based on market regime
+    </div>
+    {active_html}
+    <div style="margin-top:32px;display:flex;flex-direction:column;gap:12px;">
+        <a href="/api/strategy/toggle"
+           style="display:block;padding:16px;background:#1d4ed8;color:white;
+                  text-decoration:none;border-radius:12px;font-weight:600;">
+            Tap to turn {('OFF' if new_state else 'ON')}
+        </a>
+        <a href="/api/strategy/status"
+           style="display:block;padding:14px;background:#1a2233;color:#94a3b8;
+                  text-decoration:none;border-radius:12px;font-size:0.9rem;">
+            View detailed status (JSON)
+        </a>
+        <a href="/"
+           style="display:block;padding:14px;color:#94a3b8;
+                  text-decoration:none;font-size:0.9rem;">
+            Back to dashboard
+        </a>
+    </div>
+</div>
+</body>
+</html>"""
+
+
 @app.route('/api/strategy/status')
 def strategy_status():
     """Shows whether regime-adaptive strategy is on, what the current regime
