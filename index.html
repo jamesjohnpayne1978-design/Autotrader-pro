@@ -292,6 +292,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Full Auto Mode</div><div class="setting-desc">Execute signals without approval</div></div><div class="toggle" id="autoModeToggle" onclick="toggleAutoMode()"><div class="toggle-thumb"></div></div></div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Telegram Alerts</div><div class="setting-desc">Notify on every trade</div></div><div class="toggle on" id="telegramToggle" onclick="toggleTelegram()"><div class="toggle-thumb"></div></div></div>
   </div>
+
+  <div class="section-title">Auto-Adaptive Strategy</div>
+  <div class="card">
+    <div style="background:var(--blue-dim);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--blue-bright);line-height:1.5">When ON, the bot auto-switches TP/SL/trailing per market regime. Your manual values above are used as fallback when this is OFF.</div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Regime-Adaptive</div><div class="setting-desc">Auto-switch strategy on regime change</div></div><div class="toggle" id="regimeStrategyToggle" onclick="toggleRegimeStrategy()"><div class="toggle-thumb"></div></div></div>
+    <div id="regimeStrategyStatus" style="display:none;margin-top:14px">
+      <div style="font-size:0.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:10px">Current Active Profile</div>
+      <div id="regimeStrategyActive" style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;font-size:0.85rem;font-family:var(--mono);color:var(--text-2);line-height:1.7">Loading...</div>
+      <div style="font-size:0.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin:14px 0 8px">Strategy Profiles</div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;font-size:0.78rem;font-family:var(--mono);color:var(--text-2);line-height:1.7"><div><span style="color:var(--green)">Bullish:</span> TP 15% · SL 5% · trail ON</div><div><span style="color:var(--blue-bright)">Neutral:</span> TP 6% · SL 4% · trail OFF</div><div><span style="color:var(--red)">Bearish:</span> TP 4% · SL 3% · trail OFF</div></div>
+    </div>
+  </div>
+
   <div class="section-title">Strategy - RSI Tiers</div>
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">BTC / ETH</div><div class="setting-desc">Large cap</div></div><div style="font-family:var(--mono);font-size:0.9rem;font-weight:700;color:var(--green)">25 / 80</div></div>
@@ -338,7 +351,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 const API_BASE=window.location.origin;
 let portfolioChart=null,chartRange='24h',allSnapshots=[];
-let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false};
+let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false,regimeStrategy:false};
 let selectedManualPair='';
 
 function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
@@ -375,7 +388,7 @@ document.getElementById('tradesToday').textContent=d.trades_today||0;document.ge
 function resetBaseline(){
   const v=parseFloat(document.getElementById('portfolioValue').textContent.replace('$','').replace(',',''));
   if(!v||v<=0){showToast('Portfolio value not loaded yet');return;}
-  if(!confirm('Reset overall % gain baseline to current value $'+v.toFixed(2)+'?\\n\\nThis sets your "starting" balance to right now, so going forward "Overall %" measures growth from this moment.')) return;
+  if(!confirm('Reset overall % gain baseline to current value $'+v.toFixed(2)+'?\n\nThis sets your "starting" balance to right now, so going forward "Overall %" measures growth from this moment.')) return;
   localStorage.setItem('portfolio_baseline',v.toString());
   localStorage.setItem('portfolio_baseline_date',new Date().toISOString());
   showToast('✅ Baseline reset to $'+v.toFixed(2));
@@ -600,6 +613,37 @@ function togglePyramid(){state.pyramid=toggle('pyramidToggle');showToast(state.p
 
 function toggleTrailingStop(){state.trailingStop=toggle('trailingStopToggle');showToast(state.trailingStop?'Trailing stop ON':'Trailing stop OFF')}
 
+function toggleRegimeStrategy(){
+  state.regimeStrategy=toggle('regimeStrategyToggle');
+  document.getElementById('regimeStrategyStatus').style.display=state.regimeStrategy?'block':'none';
+  // Push the change immediately so it takes effect before Save Settings is tapped
+  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({regime_strategy_enabled:state.regimeStrategy})}).catch(()=>{});
+  if(state.regimeStrategy) loadRegimeStrategyStatus();
+  showToast(state.regimeStrategy?'Auto-adaptive ON · TP/SL/trailing will follow regime':'Auto-adaptive OFF · using manual settings');
+}
+
+async function loadRegimeStrategyStatus(){
+  try{
+    const r=await fetch(API_BASE+'/api/strategy/status');
+    const d=await r.json();
+    const el=document.getElementById('regimeStrategyActive');
+    if(!el) return;
+    if(d.regime_strategy_enabled && d.active){
+      const a=d.active;
+      const regimeColor=d.current_regime==='bullish'?'var(--green)':d.current_regime==='bearish'?'var(--red)':'var(--blue-bright)';
+      el.innerHTML='<div style="color:'+regimeColor+';font-weight:700;margin-bottom:6px">Regime: '+d.current_regime.toUpperCase()+'</div>'
+        +'<div>TP: '+a.tp_pct+'% · SL: '+a.sl_pct+'%</div>'
+        +'<div>Trailing: '+(a.trailing_stop_enabled?'ON ('+a.trailing_stop_pct+'% trail, breakeven at +'+a.trailing_breakeven_trigger+'%)':'OFF')+'</div>'
+        +'<div style="margin-top:6px;color:var(--text-3);font-size:0.78rem">'+a.description+'</div>';
+    } else {
+      el.innerHTML='<div style="color:var(--text-3)">Disabled - using manual settings</div>';
+    }
+  }catch(e){
+    const el=document.getElementById('regimeStrategyActive');
+    if(el) el.innerHTML='<div style="color:var(--text-3)">Could not reach server</div>';
+  }
+}
+
 async function convertDust(){
   if(!confirm('Convert all small balances (under $10 each) to BNB? This is a one-way conversion.')) return;
   showToast('🧹 Converting dust...');
@@ -619,11 +663,11 @@ async function convertDust(){
 function toggleMacd(){state.macd=toggle('macdToggle')}
 
 function saveSettings(){
-  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode,manual_tp_pct:document.getElementById('manualTP')?document.getElementById('manualTP').value:10,manual_sl_pct:document.getElementById('manualSL')?document.getElementById('manualSL').value:5,pyramid_enabled:state.pyramid,pyramid_max_adds:document.getElementById('pyramidMaxAdds').value,pyramid_drop_trigger:document.getElementById('pyramidTrigger').value,pyramid_max_drop:document.getElementById('pyramidMaxDrop').value,trailing_stop_enabled:state.trailingStop,trailing_stop_activate_pct:document.getElementById('trailActivate').value,trailing_stop_pct:document.getElementById('trailDistance').value,trailing_breakeven_trigger:document.getElementById('trailBreakeven')?document.getElementById('trailBreakeven').value:3,concentration_alert_pct:document.getElementById('concentrationPct').value};
+  const s={max_trade_size:document.getElementById('maxTradeSize').value,daily_loss_limit:document.getElementById('dailyLossLimit').value,default_sl:document.getElementById('defaultSL').value,default_tp:document.getElementById('defaultTP').value,sniper_budget:document.getElementById('sniperBudget').value,sniper_tp:document.getElementById('sniperTP').value,sniper_sl:document.getElementById('sniperSL').value,auto_mode:state.autoMode,ma_cross:state.maCross,macd:state.macd,ai_filter:state.aiFilter,approval_mode:state.approvalMode,manual_tp_pct:document.getElementById('manualTP')?document.getElementById('manualTP').value:10,manual_sl_pct:document.getElementById('manualSL')?document.getElementById('manualSL').value:5,pyramid_enabled:state.pyramid,pyramid_max_adds:document.getElementById('pyramidMaxAdds').value,pyramid_drop_trigger:document.getElementById('pyramidTrigger').value,pyramid_max_drop:document.getElementById('pyramidMaxDrop').value,trailing_stop_enabled:state.trailingStop,trailing_stop_activate_pct:document.getElementById('trailActivate').value,trailing_stop_pct:document.getElementById('trailDistance').value,trailing_breakeven_trigger:document.getElementById('trailBreakeven')?document.getElementById('trailBreakeven').value:3,concentration_alert_pct:document.getElementById('concentrationPct').value,regime_strategy_enabled:state.regimeStrategy};
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)}).then(r=>r.json()).then(d=>{showToast(d.success?'Settings saved!':'Save failed')}).catch(()=>showToast('Save failed'));
 }
 
-async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
+async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.regime_strategy_enabled!==undefined){state.regimeStrategy=d.regime_strategy_enabled;const el=document.getElementById('regimeStrategyToggle');if(el){state.regimeStrategy?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('regimeStrategyStatus');if(statusEl)statusEl.style.display=state.regimeStrategy?'block':'none';if(state.regimeStrategy)loadRegimeStrategyStatus()}if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
 
 let pairChart2=null;
 let currentPairSymbol='';
@@ -698,12 +742,10 @@ function selectTradePair(pair){
   const display = pair.replace('USDT','/USDT');
   const lbl = document.getElementById('selectedPairLabel');
   if(lbl) lbl.textContent = display;
-  // Highlight chosen button
   document.querySelectorAll('#pairButtonsContainer button').forEach(b=>{
     if(b.dataset.pair === pair) b.classList.add('selected');
     else b.classList.remove('selected');
   });
-  // Enable BUY/SELL
   const buy = document.getElementById('tradeBuyBtn');
   const sell = document.getElementById('tradeSellBtn');
   if(buy){buy.disabled = false; buy.style.opacity = '1';}
@@ -711,7 +753,6 @@ function selectTradePair(pair){
 }
 
 async function openTradeModal(preselect){
-  // Reset state every time the modal opens
   selectedManualPair = '';
   const lbl = document.getElementById('selectedPairLabel');
   if(lbl){lbl.textContent = 'Tap a pair below'; lbl.style.color = 'var(--gold)';}
@@ -720,7 +761,6 @@ async function openTradeModal(preselect){
   if(buy){buy.disabled = true; buy.style.opacity = '0.5';}
   if(sell){sell.disabled = true; sell.style.opacity = '0.5';}
 
-  // Fetch pairs — try /api/prices first, fall back to /api/settings
   let pairs = [];
   try{
     const r = await fetch(API_BASE+'/api/prices');
@@ -737,7 +777,6 @@ async function openTradeModal(preselect){
     }catch(e){}
   }
 
-  // Render pair buttons
   const container = document.getElementById('pairButtonsContainer');
   if(pairs.length){
     container.innerHTML = pairs.map(p=>{
@@ -750,7 +789,6 @@ async function openTradeModal(preselect){
 
   document.getElementById('tradeModal').classList.add('show');
 
-  // Auto-select if a pair was passed in (e.g. from pair detail modal)
   if(preselect){
     const normalized = preselect.replace('/','');
     if(pairs.includes(normalized)) selectTradePair(normalized);
@@ -787,7 +825,6 @@ async function submitManualTrade(side){
 async function manualFromPair(side){
   document.getElementById('pairModal').classList.remove('show');
   await openTradeModal(currentPairSymbol);
-  // Brief delay so the modal renders before submitting
   setTimeout(()=>submitManualTrade(side), 100);
 }
 
