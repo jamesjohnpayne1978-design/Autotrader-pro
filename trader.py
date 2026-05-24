@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 class Trader:
     # File where pyramid state is persisted. /data is the Railway volume mount.
     _PYRAMID_STATE_PATH = '/data/pyramid_state.json'
+    # File where deposit/withdrawal totals are cached (slow Binance API)
+    _DEPOSIT_CACHE_PATH = '/data/deposit_cache.json'
 
     def __init__(self, config):
         self.config = config
@@ -30,9 +32,6 @@ class Trader:
 
         # Load persisted pyramid state from disk (survives restarts)
         self.__class__._load_pyramid_state()
-        # Rehydrate pyramid state from Binance trade history for any held
-        # positions that don't have state yet (recovers from previous restarts
-        # before persistence was added, or positions opened manually outside the bot)
         try:
             self._rehydrate_pyramid_from_binance()
         except Exception as e:
@@ -86,35 +85,57 @@ class Trader:
 
         self._save_portfolio_snapshot(round(total_usdt, 2))
 
-        # Daily PnL from actual closed Binance trades today
-        pnl_today = 0.0
-        pnl_pct = 0.0
-        pnl_total = 0.0
-        pnl_total_pct = 0.0
+        # Fetch real trade history ONCE for all downstream calculations
         try:
             real_trades = self.get_real_trade_history()
-            today_str = datetime.now().strftime('%Y-%m-%d')
-            # Sum PnL from all closed (sell) trades today
-            today_sells = [t for t in real_trades if t.get('side') == 'sell' and t.get('date', '') == today_str and t.get('pnl', 0) != 0]
-            pnl_today = round(sum(t.get('pnl', 0) for t in today_sells), 2)
-            if total_usdt > 0 and pnl_today != 0:
-                pnl_pct = round((pnl_today / (total_usdt - pnl_today)) * 100, 2)
-            # Total PnL from all closed trades ever
-            all_sells = [t for t in real_trades if t.get('side') == 'sell' and t.get('pnl', 0) != 0]
-            pnl_total = round(sum(t.get('pnl', 0) for t in all_sells), 2)
-            # Total % vs first snapshot
-            snapshots = self.config.load_portfolio_history()
-            if snapshots and snapshots[0]['value'] > 0:
-                first_val = snapshots[0]['value']
-                pnl_total_pct = round(((total_usdt - first_val) / first_val) * 100, 2)
         except Exception as e:
-            log.debug(f"PnL calc error: {e}")
+            log.debug(f"Trade history fetch failed: {e}")
+            real_trades = []
 
-        # Trade counts
-        history = self.get_real_trade_history()
-        today = datetime.now().strftime('%Y-%m-%d')
-        trades_today = len([t for t in history if t.get('date', '') == today])
-        closed = [t for t in history if t.get('side') == 'sell' and t.get('pnl', 0) != 0]
+        # ─── DAILY PnL ───────────────────────────────────────────────
+        # Sum realised PnL from sells closed today
+        pnl_today = 0.0
+        pnl_pct = 0.0
+        try:
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            today_sells = [t for t in real_trades
+                           if t.get('side') == 'sell' and t.get('date', '') == today_str]
+            pnl_today = round(sum(t.get('pnl', 0) for t in today_sells), 2)
+            # Daily % is gain vs portfolio at start of day
+            if pnl_today != 0 and (total_usdt - pnl_today) > 0:
+                pnl_pct = round((pnl_today / (total_usdt - pnl_today)) * 100, 2)
+        except Exception as e:
+            log.debug(f"Daily PnL calc error: {e}")
+
+        # ─── TOTAL PnL (deposit-aware) ───────────────────────────────
+        # The right way to measure "overall portfolio increase" is:
+        #   profit = current_value - net_deposits
+        #   where net_deposits = total_in - total_out
+        # This works regardless of how many times you've topped up.
+        pnl_total = 0.0
+        pnl_total_pct = 0.0
+        cost_basis = 0.0
+        try:
+            deposits, withdrawals = self.get_net_deposits_usdt()
+            cost_basis = deposits - withdrawals
+            if cost_basis > 0:
+                pnl_total = round(total_usdt - cost_basis, 2)
+                pnl_total_pct = round((pnl_total / cost_basis) * 100, 2)
+            else:
+                # No deposit history available - fall back to realised trading PnL
+                # (less accurate but never wildly wrong)
+                pnl_total = round(sum(t.get('pnl', 0) for t in real_trades
+                                      if t.get('side') == 'sell'), 2)
+                if total_usdt > 0 and pnl_total != 0:
+                    base = total_usdt - pnl_total
+                    pnl_total_pct = round((pnl_total / base) * 100, 2) if base > 0 else 0.0
+        except Exception as e:
+            log.debug(f"Total PnL calc error: {e}")
+
+        # ─── TRADE COUNTS & WIN RATE ─────────────────────────────────
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        trades_today = len([t for t in real_trades if t.get('date', '') == today_str])
+        closed = [t for t in real_trades if t.get('side') == 'sell' and t.get('pnl', 0) != 0]
         wins = [t for t in closed if t.get('pnl', 0) > 0]
         win_rate = round(len(wins) / len(closed) * 100) if closed else None
 
@@ -128,8 +149,117 @@ class Trader:
             'pnl_pct': pnl_pct,
             'pnl_total': pnl_total,
             'pnl_total_pct': pnl_total_pct,
+            'cost_basis': round(cost_basis, 2),
             'free_usdt': round(free_usdt, 2)
         }
+
+    # ─── DEPOSITS / WITHDRAWALS ─────────────────────────────────────
+    def get_net_deposits_usdt(self):
+        """Returns (total_deposited_usdt, total_withdrawn_usdt) over all time.
+
+        Uses Binance deposit/withdrawal history APIs. Cached on disk for 6 hours
+        because the API is slow (paginated 90-day chunks) and the values change
+        rarely (only when you actually deposit/withdraw).
+
+        Non-USDT deposits are valued at today's price - approximate but close
+        enough for percentage calculations.
+        """
+        # Try cache first
+        cache = self._load_deposit_cache()
+        if cache:
+            cache_age = (datetime.now() - datetime.fromisoformat(cache['cached_at'])).total_seconds()
+            if cache_age < 6 * 3600:  # 6 hours
+                return cache['deposits'], cache['withdrawals']
+
+        import time as _time
+        total_deposits = 0.0
+        total_withdraws = 0.0
+
+        # Walk back in 90-day chunks (Binance API limit). Cap at 2 years total.
+        end_ms = int(_time.time() * 1000)
+        ninety_days_ms = 90 * 24 * 60 * 60 * 1000
+
+        for chunk in range(9):  # 9 * 90 days ≈ 2.2 years
+            start_ms = end_ms - ninety_days_ms
+            try:
+                deposits = self.client.get_deposit_history(startTime=start_ms, endTime=end_ms) or []
+            except Exception as e:
+                log.debug(f"Deposit history chunk {chunk} error: {e}")
+                deposits = []
+            try:
+                withdraws = self.client.get_withdraw_history(startTime=start_ms, endTime=end_ms) or []
+            except Exception as e:
+                log.debug(f"Withdraw history chunk {chunk} error: {e}")
+                withdraws = []
+
+            for d in deposits:
+                # Status 1 = success
+                if d.get('status') != 1:
+                    continue
+                coin = d.get('coin', '')
+                amount = float(d.get('amount', 0))
+                total_deposits += self._coin_to_usdt(coin, amount)
+
+            for w in withdraws:
+                # Status 6 = completed
+                if w.get('status') != 6:
+                    continue
+                coin = w.get('coin', '')
+                amount = float(w.get('amount', 0))
+                total_withdraws += self._coin_to_usdt(coin, amount)
+
+            # If this chunk had no activity at all, assume nothing further back
+            if not deposits and not withdraws and chunk >= 2:
+                break
+
+            end_ms = start_ms
+
+        result = (round(total_deposits, 2), round(total_withdraws, 2))
+        self._save_deposit_cache(*result)
+        log.info(f"Deposit history refreshed: deposited=${result[0]}, withdrawn=${result[1]}")
+        return result
+
+    def _coin_to_usdt(self, coin, amount):
+        """Convert a coin amount to USDT using current price. USDT is 1:1."""
+        if not amount:
+            return 0.0
+        if coin in ('USDT', 'BUSD', 'USDC', 'FDUSD', 'DAI'):
+            return amount
+        try:
+            ticker = self.client.get_symbol_ticker(symbol=f"{coin}USDT")
+            return amount * float(ticker['price'])
+        except Exception:
+            return 0.0
+
+    def _load_deposit_cache(self):
+        try:
+            if os.path.exists(self.__class__._DEPOSIT_CACHE_PATH):
+                with open(self.__class__._DEPOSIT_CACHE_PATH) as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
+
+    def _save_deposit_cache(self, deposits, withdrawals):
+        try:
+            os.makedirs(os.path.dirname(self.__class__._DEPOSIT_CACHE_PATH), exist_ok=True)
+            with open(self.__class__._DEPOSIT_CACHE_PATH, 'w') as f:
+                json.dump({
+                    'deposits': deposits,
+                    'withdrawals': withdrawals,
+                    'cached_at': datetime.now().isoformat()
+                }, f)
+        except Exception as e:
+            log.debug(f"Could not cache deposit data: {e}")
+
+    def refresh_deposit_cache(self):
+        """Force-refresh the deposit cache (used by /api/portfolio/refresh-deposits)."""
+        try:
+            if os.path.exists(self.__class__._DEPOSIT_CACHE_PATH):
+                os.remove(self.__class__._DEPOSIT_CACHE_PATH)
+        except Exception:
+            pass
+        return self.get_net_deposits_usdt()
 
     def _save_portfolio_snapshot(self, value):
         try:
@@ -239,13 +369,22 @@ class Trader:
     def get_real_trade_history(self):
         """
         Pull real trade history from Binance for all configured pairs.
-        Matches buys to sells and calculates real PnL per trade.
+        Matches buys to sells using FIFO and calculates real PnL per sell.
+
+        Fixed: was using last-buy-only which produced wrong PnL whenever you
+        pyramided into a position (multiple buys before a sell). Now uses a
+        FIFO queue so each sell is matched against the oldest unmatched buys.
+
+        Fixed: bumped per-pair fetch limit from 50 -> 500 so the calendar and
+        total PnL include the full trade history rather than only the most
+        recent 50 trades on each pair.
         """
         try:
+            from collections import deque
             all_trades = []
             for symbol in self.config.trading_pairs:
                 try:
-                    trades = self.client.get_my_trades(symbol=symbol, limit=50)
+                    trades = self.client.get_my_trades(symbol=symbol, limit=500)
                     for t in trades:
                         all_trades.append({
                             'symbol': symbol,
@@ -255,6 +394,7 @@ class Trader:
                             'quantity': float(t['qty']),
                             'usdt_value': float(t['quoteQty']),
                             'commission': float(t['commission']),
+                            'commission_asset': t.get('commissionAsset', ''),
                             'time_ms': int(t['time']),
                             'time': datetime.fromtimestamp(int(t['time']) / 1000).strftime('%Y-%m-%d %H:%M'),
                             'date': datetime.fromtimestamp(int(t['time']) / 1000).strftime('%Y-%m-%d'),
@@ -270,38 +410,54 @@ class Trader:
                 if key not in consolidated:
                     consolidated[key] = t.copy()
                 else:
-                    # Merge fills: add quantity and value, average price
                     existing = consolidated[key]
                     total_qty = existing['quantity'] + t['quantity']
                     total_val = existing['usdt_value'] + t['usdt_value']
                     existing['price'] = round(total_val / total_qty, 6) if total_qty > 0 else existing['price']
                     existing['quantity'] = round(total_qty, 6)
                     existing['usdt_value'] = round(total_val, 2)
+                    existing['commission'] = existing.get('commission', 0) + t.get('commission', 0)
 
             all_trades = list(consolidated.values())
-            all_trades.sort(key=lambda x: x['time_ms'], reverse=True)
 
-            # Calculate PnL by matching sells to most recent buys per pair
-            buy_prices = {}
-            result = []
+            # FIFO PnL matching - process chronologically, match each sell against
+            # the oldest still-unmatched buy qty on that symbol
+            buy_queues = {}  # symbol -> deque of [price, remaining_qty]
             for trade in sorted(all_trades, key=lambda x: x['time_ms']):
                 symbol = trade['symbol']
+                trade['trigger'] = 'AI Signal'
+
                 if trade['side'] == 'buy':
-                    buy_prices[symbol] = trade['price']
+                    buy_queues.setdefault(symbol, deque()).append(
+                        [trade['price'], trade['quantity']]
+                    )
                     trade['pnl'] = 0.0
-                    trade['trigger'] = 'AI Signal'
                 elif trade['side'] == 'sell':
-                    if symbol in buy_prices and buy_prices[symbol] > 0:
-                        pnl = (trade['price'] - buy_prices[symbol]) * trade['quantity']
-                        trade['pnl'] = round(pnl, 2)
+                    qty_remaining = trade['quantity']
+                    cost_basis = 0.0
+                    queue = buy_queues.get(symbol)
+                    while queue and qty_remaining > 0:
+                        head = queue[0]
+                        head_price, head_qty = head[0], head[1]
+                        take = min(head_qty, qty_remaining)
+                        cost_basis += head_price * take
+                        head[1] = head_qty - take
+                        qty_remaining -= take
+                        if head[1] <= 1e-9:
+                            queue.popleft()
+                    matched_qty = trade['quantity'] - qty_remaining
+                    if matched_qty > 0 and cost_basis > 0:
+                        sell_value = trade['price'] * matched_qty
+                        trade['pnl'] = round(sell_value - cost_basis, 2)
                     else:
+                        # No buy in our fetched window matches this sell - PnL unknown.
+                        # Setting to 0 is honest (we won't double-count when older
+                        # trades fall outside the limit).
                         trade['pnl'] = 0.0
-                    trade['trigger'] = 'AI Signal'
 
-            for trade in sorted(all_trades, key=lambda x: x['time_ms'], reverse=True):
-                result.append(trade)
-
-            return result[:100]
+            # Return newest-first (dashboard expects this order)
+            all_trades.sort(key=lambda x: x['time_ms'], reverse=True)
+            return all_trades[:200]
 
         except Exception as e:
             log.error(f"Real trade history error: {e}")
@@ -330,7 +486,6 @@ class Trader:
             if quantity <= 0:
                 raise ValueError(f"Calculated quantity is zero for {symbol}")
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
-            # Calculate weighted average fill price across all fills
             fills = order.get('fills', [])
             if fills:
                 total_qty = sum(float(f['qty']) for f in fills)
@@ -345,21 +500,14 @@ class Trader:
                 self._log_trade(pair, 'buy', order, buy_price, quantity, usdt_value=usdt_spent)
             except Exception as le:
                 log.warning(f"Could not log buy trade: {le}")
-            # Place OCO order - wrap in try so a failed OCO doesn't lose the trade
             try:
                 self._place_oco_order(symbol, pair, quantity, buy_price)
             except Exception as oco_err:
                 log.warning(f"OCO order failed for {symbol} (trade still executed): {oco_err}")
-            # Trailing stop tracking is now handled by signals.py
-            # _check_portfolio_trailing_stops (uses real entry from Binance + breakeven
-            # + persistence). The old init_trailing_stop here is intentionally NOT
-            # called to avoid two competing systems firing sells on the same position.
 
         elif action == 'sell':
-            # Cancel any open OCO orders first (releases locked balance)
             self._cancel_all_open_orders(symbol)
-            import time; time.sleep(1)  # Wait for cancellation to process
-            # Use free + locked balance since OCO is now cancelled
+            import time; time.sleep(1)
             quantity = self._get_total_balance(base)
             if quantity <= 0:
                 raise ValueError(f"No {base} balance to sell")
@@ -376,7 +524,6 @@ class Trader:
                 sell_price = price
             log.info(f"SELL {symbol}: qty={quantity} at ${sell_price:.6f}")
             self._last_trade_time[pair] = datetime.now()
-            # Wrap post-trade logging safely - never crash after Binance order succeeds
             try:
                 pnl = self._calculate_pnl(pair, sell_price, quantity)
             except Exception:
@@ -421,7 +568,6 @@ class Trader:
     _trailing_stops = {}  # {symbol: {'buy_price': x, 'highest': x, 'trail_pct': x}}
 
     def init_trailing_stop(self, symbol, buy_price):
-        """Start tracking a trailing stop for a position"""
         trail_pct = getattr(self.config, 'trailing_stop_pct', 2.0)
         breakeven_trigger = getattr(self.config, 'trailing_breakeven_trigger', 3.0)
         self.__class__._trailing_stops[symbol] = {
@@ -434,7 +580,6 @@ class Trader:
         log.info(f"Trailing stop init for {symbol} @ ${buy_price:.4f}")
 
     def update_trailing_stop(self, symbol, current_price):
-        """Update trailing stop - returns (should_sell, reason) if stop hit"""
         state = self.__class__._trailing_stops.get(symbol)
         if not state:
             return False, None
@@ -445,22 +590,17 @@ class Trader:
         breakeven_trigger = state['breakeven_trigger']
         gain_pct = ((current_price - buy_price) / buy_price) * 100
 
-        # Update highest price seen
         if current_price > highest:
             state['highest'] = current_price
-            # Trail the stop up behind it
             new_stop = current_price * (1 - trail_pct / 100)
-            # Never move stop down
             if new_stop > state['stop_price']:
                 state['stop_price'] = new_stop
                 log.info(f"Trailing stop {symbol}: moved to ${new_stop:.4f} ({trail_pct}% below ${current_price:.4f})")
 
-        # Move to breakeven once up enough
         if gain_pct >= breakeven_trigger and state['stop_price'] < buy_price:
-            state['stop_price'] = buy_price * 1.001  # Tiny above buy = breakeven
+            state['stop_price'] = buy_price * 1.001
             log.info(f"Trailing stop {symbol}: moved to breakeven @ ${state['stop_price']:.4f}")
 
-        # Check if stop hit
         if current_price <= state['stop_price']:
             gain = ((current_price - buy_price) / buy_price) * 100
             return True, f"Trailing stop hit @ ${current_price:.4f} ({gain:+.1f}% from entry)"
@@ -471,7 +611,6 @@ class Trader:
         self.__class__._trailing_stops.pop(symbol, None)
 
     def check_all_trailing_stops(self):
-        """Called every cycle - check if any trailing stops need executing"""
         if not self.__class__._trailing_stops:
             return
         for symbol in list(self.__class__._trailing_stops.keys()):
@@ -487,12 +626,10 @@ class Trader:
                 log.debug(f"Trailing stop check error {symbol}: {e}")
 
     # ─── PYRAMIDING ────────────────────────────────────────────────
-    _pyramid_state = {}  # class-level: {symbol: {count, first_price, last_price}}
+    _pyramid_state = {}
 
     @classmethod
     def _load_pyramid_state(cls):
-        """Load pyramid state from disk on startup. If the file doesn't exist
-        (first deploy ever), start with empty state."""
         try:
             if os.path.exists(cls._PYRAMID_STATE_PATH):
                 with open(cls._PYRAMID_STATE_PATH, 'r') as f:
@@ -507,8 +644,6 @@ class Trader:
 
     @classmethod
     def _save_pyramid_state(cls):
-        """Persist pyramid state to disk. Called after every change so we never
-        lose state on restart."""
         try:
             os.makedirs(os.path.dirname(cls._PYRAMID_STATE_PATH), exist_ok=True)
             with open(cls._PYRAMID_STATE_PATH, 'w') as f:
@@ -517,25 +652,11 @@ class Trader:
             log.warning(f"Could not save pyramid state to disk: {e}")
 
     def _rehydrate_pyramid_from_binance(self):
-        """Reconstruct pyramid state from Binance trade history for any held
-        pairs that don't currently have state. This recovers positions opened
-        in previous deployments (before persistence existed) and also picks
-        up positions opened manually via the Binance app.
-
-        Logic:
-          - For each held pair, look at Binance trade history
-          - Find the most recent SELL (if any) - that's the boundary
-          - All BUYS after the last sell are "unmatched buys" still open
-          - Initialise pyramid state: count = number of unmatched buys,
-            first_price = oldest unmatched buy, last_price = newest unmatched buy
-        """
         rehydrated = 0
         for symbol in self.config.trading_pairs:
-            # Skip if already have state for this symbol
             if symbol in self.__class__._pyramid_state:
                 continue
 
-            # Check actual holdings
             base = symbol.replace('USDT', '')
             try:
                 balance = self._get_total_balance(base)
@@ -543,13 +664,12 @@ class Trader:
                     continue
                 price = float(self.client.get_symbol_ticker(symbol=symbol)['price'])
                 value = balance * price
-                if value < 5.0:  # Skip dust positions
+                if value < 5.0:
                     continue
             except Exception as e:
                 log.debug(f"Skip rehydrate for {symbol}: {e}")
                 continue
 
-            # Pull recent trades from Binance
             try:
                 trades = self.client.get_my_trades(symbol=symbol, limit=50)
             except Exception as e:
@@ -559,20 +679,16 @@ class Trader:
             if not trades:
                 continue
 
-            # Sort oldest first
             trades = sorted(trades, key=lambda t: int(t['time']))
-
-            # Find time of the most recent SELL (any buys before this are matched)
             last_sell_time = None
             for t in reversed(trades):
-                if not t['isBuyer']:  # sell
+                if not t['isBuyer']:
                     last_sell_time = int(t['time'])
                     break
 
-            # Collect unmatched buys (buys after the last sell, or all buys if no sell)
             unmatched_buys = []
             for t in trades:
-                if t['isBuyer']:  # buy
+                if t['isBuyer']:
                     if last_sell_time is None or int(t['time']) > last_sell_time:
                         unmatched_buys.append({
                             'price': float(t['price']),
@@ -583,7 +699,6 @@ class Trader:
             if not unmatched_buys:
                 continue
 
-            # Initialise pyramid state from the unmatched buys
             first_price = unmatched_buys[0]['price']
             last_price = unmatched_buys[-1]['price']
             count = len(unmatched_buys)
@@ -613,16 +728,15 @@ class Trader:
         state['last_price'] = price
         state['count'] = state['count'] + 1
         self.__class__._pyramid_state[symbol] = state
-        self.__class__._save_pyramid_state()  # Persist every change
+        self.__class__._save_pyramid_state()
         log.info(f"Pyramid {symbol}: buy #{state['count']} @ ${price:.4f} (first: ${state['first_price']:.4f})")
 
     def reset_pyramid_state(self, symbol):
         self.__class__._pyramid_state.pop(symbol, None)
-        self.__class__._save_pyramid_state()  # Persist every change
+        self.__class__._save_pyramid_state()
         log.info(f"Pyramid state reset for {symbol}")
 
     def should_pyramid(self, symbol, current_price):
-        """Returns (bool, reason) - whether to add to existing position"""
         if not getattr(self.config, 'pyramid_enabled', False):
             return False, "Pyramiding disabled"
         state = self.get_pyramid_state(symbol)
@@ -646,13 +760,11 @@ class Trader:
         return True, f"Down {drop_from_last:.1f}% from last buy - adding position #{state['count']+1}"
 
     def _cancel_all_open_orders(self, symbol):
-        """Cancel ALL open orders for a symbol - releases locked balance"""
         try:
             open_orders = self.client.get_open_orders(symbol=symbol)
             if not open_orders:
                 log.info(f"No open orders to cancel for {symbol}")
                 return
-            # Cancel each order individually (python-binance compatible)
             for order in open_orders:
                 try:
                     self.client.cancel_order(symbol=symbol, orderId=order['orderId'])
@@ -664,7 +776,6 @@ class Trader:
             log.warning(f"Could not cancel orders for {symbol}: {e}")
 
     def _get_total_balance(self, asset):
-        """Get free + locked balance (use after cancelling orders)"""
         account = self.client.get_account()
         for b in account['balances']:
             if b['asset'] == asset:
@@ -752,7 +863,6 @@ class Trader:
             'usdt_value': round(usdt_value if usdt_value else price * quantity, 2),
             'pnl': pnl, 'trigger': 'AI Signal'
         }
-        # Track pyramid state (symbol = pair without slash and USDT)
         try:
             sym = pair.replace('/', '').replace('USDT', '') + 'USDT'
             if action == 'buy':
@@ -770,15 +880,10 @@ class Trader:
             log.warning(f"Could not save trade history: {e}")
 
     def place_snipe_oco(self, symbol, quantity, buy_price, tp_pct, sl_pct):
-        """Place an OCO sell order specifically for a sniped position.
-        Uses the sniper's TP/SL config (typically wider than regular AI trades
-        because new listings are more volatile). Returns dict with success/error.
-        """
         try:
             tp_price = self._round_price(symbol, buy_price * (1 + tp_pct / 100))
             sl_price = self._round_price(symbol, buy_price * (1 - sl_pct / 100))
-            sl_limit_price = self._round_price(symbol, sl_price * 0.99)  # Wider buffer for volatile listings
-            # Adjust quantity to lot size (some of the position may be locked in fees)
+            sl_limit_price = self._round_price(symbol, sl_price * 0.99)
             adjusted_qty = self._adjust_quantity(symbol, quantity * 0.999)
             if adjusted_qty <= 0:
                 return {'success': False, 'error': 'Adjusted quantity is zero'}
@@ -808,7 +913,6 @@ class Trader:
             if quantity <= 0:
                 return {'success': False, 'error': 'Invalid quantity'}
             order = self.client.order_market_buy(symbol=symbol, quantity=quantity)
-            # Compute weighted average fill price from order fills
             fills = order.get('fills', [])
             if fills:
                 total_qty = sum(float(f['qty']) for f in fills)
