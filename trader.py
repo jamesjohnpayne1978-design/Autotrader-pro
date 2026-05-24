@@ -286,7 +286,7 @@ class Trader:
         # Use saved history (fast) not real-time Binance history (slow/times out)
         history = self.config.load_trade_history()
         tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
-        sl_pct = self.config.default_sl_pct
+        sl_pct = getattr(self.config, 'dynamic_sl', None) or self.config.default_sl_pct
 
         for symbol in self.config.trading_pairs:
             try:
@@ -544,7 +544,7 @@ class Trader:
     def _place_oco_order(self, symbol, pair, quantity, buy_price):
         try:
             tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
-            sl_pct = self.config.default_sl_pct
+            sl_pct = getattr(self.config, 'dynamic_sl', None) or self.config.default_sl_pct
             tp_price = self._round_price(symbol, buy_price * (1 + tp_pct / 100))
             sl_price = self._round_price(symbol, buy_price * (1 - sl_pct / 100))
             sl_limit_price = self._round_price(symbol, sl_price * 0.995)
