@@ -711,6 +711,183 @@ def pyramid_status():
     return jsonify(out)
 
 
+@app.route('/api/trailing/status')
+def trailing_status():
+    """For every open position, show whether the trailing stop is armed right
+    now and exactly why or why not. Mirrors /api/pyramid/status so you can see
+    at a glance why the trailing stop hasn't fired.
+
+    Reads live state from signals.py if available, otherwise infers from
+    Binance balances + recent trades.
+    """
+    if not trader:
+        return jsonify({'error': 'Not initialised'}), 400
+
+    enabled = bool(getattr(config, 'trailing_stop_enabled', False))
+    trail_pct = float(getattr(config, 'trailing_stop_pct', 2.0))
+    breakeven_trigger = float(getattr(config, 'trailing_breakeven_trigger', 3.0))
+    activate_pct = float(getattr(config, 'trailing_stop_activate_pct', breakeven_trigger))
+
+    out = {
+        'trailing_stop_enabled': enabled,
+        'trailing_stop_pct': trail_pct,
+        'breakeven_trigger_pct': breakeven_trigger,
+        'activate_pct': activate_pct,
+        'positions': []
+    }
+
+    if not enabled:
+        out['summary'] = 'Trailing Stop is OFF - turn it on in Settings'
+        return jsonify(out)
+
+    # Try to find live trailing-stop state from whichever module owns it
+    live_states = {}
+    for source_obj, attr_name in [
+        (signal_engine, '_portfolio_trailing_stops'),
+        (signal_engine, 'trailing_stops'),
+        (signal_engine, '_trailing_stops'),
+        (Trader, '_trailing_stops'),
+    ]:
+        if source_obj is None:
+            continue
+        try:
+            state = getattr(source_obj, attr_name, None)
+            if isinstance(state, dict) and state:
+                live_states = state
+                break
+        except Exception:
+            continue
+
+    try:
+        account = trader.client.get_account()
+    except Exception as e:
+        return jsonify({'error': f'Could not fetch balances: {e}'}), 400
+
+    trading_pairs = set(getattr(config, 'trading_pairs', []))
+
+    for b in account['balances']:
+        asset = b['asset']
+        if asset in ('USDT', 'BNB', 'USDC', 'BUSD', 'FDUSD'):
+            continue
+        bal = float(b['free']) + float(b['locked'])
+        if bal == 0:
+            continue
+
+        symbol = asset + 'USDT'
+        pair_slash = asset + '/USDT'
+        if symbol not in trading_pairs:
+            continue  # not bot-managed
+
+        info = {'pair': pair_slash, 'balance': round(bal, 6)}
+
+        # Current price
+        try:
+            current_price = float(trader.client.get_symbol_ticker(symbol=symbol)['price'])
+            info['current_price'] = round(current_price, 6)
+            info['value_usdt'] = round(bal * current_price, 2)
+        except Exception as e:
+            info['status'] = 'ERROR'
+            info['reason'] = f'Price fetch failed: {e}'
+            out['positions'].append(info)
+            continue
+
+        if info['value_usdt'] < 2.0:
+            info['status'] = 'SKIP_DUST'
+            info['reason'] = f'Position value ${info["value_usdt"]} below $2'
+            out['positions'].append(info)
+            continue
+
+        # Entry price - from live state, else from Binance trade history
+        entry_price = None
+        highest = None
+        stop_price = None
+        if symbol in live_states:
+            s = live_states[symbol]
+            entry_price = s.get('buy_price') or s.get('entry_price') or s.get('entry')
+            highest = s.get('highest') or s.get('high_water_mark')
+            stop_price = s.get('stop_price') or s.get('stop')
+            info['source'] = 'live'
+        else:
+            try:
+                trades = trader.client.get_my_trades(symbol=symbol, limit=20)
+                buys = [t for t in trades if t.get('isBuyer')]
+                if buys:
+                    most_recent = max(buys, key=lambda t: int(t['time']))
+                    entry_price = float(most_recent['price'])
+                    info['source'] = 'inferred (no live state - bot may have restarted since position opened)'
+            except Exception:
+                pass
+
+        if not entry_price:
+            info['status'] = 'NO_ENTRY_PRICE'
+            info['reason'] = 'Could not determine entry price - no recent buy found in Binance trade history'
+            out['positions'].append(info)
+            continue
+
+        info['entry_price'] = round(entry_price, 6)
+        gain_pct = ((current_price - entry_price) / entry_price) * 100
+        info['gain_pct'] = round(gain_pct, 2)
+
+        if highest:
+            info['highest_seen'] = round(highest, 6)
+            info['gain_from_high_pct'] = round(((current_price - highest) / highest) * 100, 2)
+        if stop_price:
+            info['current_stop'] = round(stop_price, 6)
+            info['distance_to_stop_pct'] = round(((current_price - stop_price) / current_price) * 100, 2)
+
+        # Check for OCO order - this is what usually fires first
+        try:
+            open_orders = trader.client.get_open_orders(symbol=symbol)
+            oco_tp = next((o for o in open_orders if o.get('type') == 'LIMIT_MAKER' or 'TAKE_PROFIT' in str(o.get('type', ''))), None)
+            oco_sl = next((o for o in open_orders if 'STOP' in str(o.get('type', ''))), None)
+            if oco_tp:
+                info['oco_tp_price'] = float(oco_tp.get('price', 0))
+                info['oco_tp_distance_pct'] = round(((info['oco_tp_price'] - current_price) / current_price) * 100, 2)
+            if oco_sl:
+                info['oco_sl_price'] = float(oco_sl.get('stopPrice', 0) or oco_sl.get('price', 0))
+            info['has_oco'] = bool(oco_tp or oco_sl)
+        except Exception:
+            info['has_oco'] = None
+
+        # Diagnose state
+        if gain_pct < activate_pct:
+            info['status'] = 'NOT_ARMED'
+            needed = activate_pct - gain_pct
+            info['reason'] = (f'Position only +{gain_pct:.2f}% - needs +{activate_pct}% to activate trailing '
+                              f'(another {needed:.2f}% to go)')
+        elif gain_pct < breakeven_trigger:
+            info['status'] = 'TRAILING_ACTIVE'
+            info['reason'] = f'Trailing armed at +{gain_pct:.2f}% - stop trails {trail_pct}% below high, no breakeven yet'
+        else:
+            info['status'] = 'TRAILING_ARMED_BREAKEVEN'
+            info['reason'] = (f'Trailing armed at +{gain_pct:.2f}% - stop at breakeven or higher, '
+                              f'will trail {trail_pct}% below new highs')
+
+        if info.get('has_oco'):
+            info['note'] = ('OCO take-profit is also active - whichever fires first wins. '
+                            'In most up-moves the OCO TP fires before trailing has a chance.')
+
+        out['positions'].append(info)
+
+    # Summary
+    if not out['positions']:
+        out['summary'] = 'No bot-managed positions held - trailing stop has nothing to track'
+    else:
+        armed = [p for p in out['positions'] if p.get('status', '').startswith('TRAILING')]
+        not_armed = [p for p in out['positions'] if p.get('status') == 'NOT_ARMED']
+        if armed:
+            out['summary'] = (f'{len(armed)} position(s) have trailing stop armed: '
+                              + ', '.join(p['pair'] for p in armed))
+        elif not_armed:
+            closest = min(not_armed, key=lambda p: activate_pct - p.get('gain_pct', 0))
+            out['summary'] = (f'No positions armed yet. Closest: {closest["pair"]} at '
+                              f'+{closest.get("gain_pct", 0):.2f}% (needs +{activate_pct}%)')
+        else:
+            out['summary'] = 'Positions held but trailing state unclear - check positions[] for details'
+
+    return jsonify(out)
+
+
 @app.route('/api/risk/clear-locks', methods=['POST'])
 def clear_risk_locks():
     if not risk_manager:
