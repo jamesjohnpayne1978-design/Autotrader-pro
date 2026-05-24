@@ -274,6 +274,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div class="page" id="page-settings">
   <div class="section-title">Connection</div>
   <div class="card"><div class="api-status" id="apiStatus"><span>●</span> Not connected</div><button class="btn" style="width:100%;background:var(--gold);color:#000;padding:16px;border-radius:var(--radius-sm);font-size:1rem;font-weight:700;" onclick="showApiModal()">Configure Binance API</button></div>
+
+  <div class="section-title">Trading Pairs</div>
+  <div class="card">
+    <div style="background:var(--blue-dim);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--blue-bright);line-height:1.5">Add or remove pairs without editing Railway env vars. Changes survive restarts and take effect on the next signal cycle (within 5 minutes).</div>
+    <div id="pairsList" style="margin-bottom:14px"><div style="color:var(--text-2);font-size:0.85rem;padding:8px 0">Loading pairs...</div></div>
+    <div style="display:flex;gap:8px;align-items:stretch"><input id="newPairInput" placeholder="e.g. AVAX or AVAXUSDT" style="flex:1;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--mono);font-size:0.95rem;padding:11px 14px;text-transform:uppercase" onkeydown="if(event.key==='Enter'){addPair();event.preventDefault();}"><button onclick="addPair()" style="background:var(--gold);color:#000;border:none;border-radius:var(--radius-sm);font-family:var(--sans);font-size:0.9rem;font-weight:700;padding:0 22px;cursor:pointer">Add</button></div>
+  </div>
+
   <div class="section-title">Risk Management</div>
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Trade Size</div><div class="setting-desc">% of portfolio per trade</div></div><input class="setting-input" id="maxTradeSize" value="5" type="number"></div>
@@ -354,7 +362,7 @@ let portfolioChart=null,chartRange='24h',allSnapshots=[];
 let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false,regimeStrategy:false};
 let selectedManualPair='';
 
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='settings')loadPairs();if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
 function showApiModal(){document.getElementById('apiModal').classList.add('show')}
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
@@ -641,6 +649,69 @@ async function loadRegimeStrategyStatus(){
   }catch(e){
     const el=document.getElementById('regimeStrategyActive');
     if(el) el.innerHTML='<div style="color:var(--text-3)">Could not reach server</div>';
+  }
+}
+
+async function loadPairs(){
+  try{
+    const r=await fetch(API_BASE+'/api/pairs');
+    const d=await r.json();
+    const el=document.getElementById('pairsList');
+    if(!el) return;
+    if(!d.pairs||!d.pairs.length){
+      el.innerHTML='<div style="color:var(--text-2);font-size:0.85rem;padding:8px 0">No pairs configured. Add one below.</div>';
+      return;
+    }
+    el.innerHTML=d.pairs.map(p=>{
+      const display=p.display||p.symbol.replace('USDT','/USDT');
+      const holds=p.holdings_usdt?'<span style="font-size:0.72rem;color:var(--text-3);margin-left:8px">·  $'+p.holdings_usdt.toFixed(2)+' held</span>':'';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px">'
+        +'<div><span style="font-family:var(--mono);font-weight:600;font-size:0.95rem">'+display+'</span>'+holds+'</div>'
+        +'<button onclick="removePair(\''+p.symbol+'\')" style="background:var(--red-dim);color:var(--red);border:1px solid rgba(255,77,109,0.3);border-radius:8px;padding:6px 14px;font-size:0.75rem;font-weight:700;cursor:pointer;font-family:var(--sans)">Remove</button>'
+      +'</div>';
+    }).join('');
+  }catch(e){
+    const el=document.getElementById('pairsList');
+    if(el)el.innerHTML='<div style="color:var(--text-3);font-size:0.85rem;padding:8px 0">Could not load pairs.</div>';
+  }
+}
+
+async function addPair(){
+  const input=document.getElementById('newPairInput');
+  if(!input)return;
+  const symbol=input.value.trim();
+  if(!symbol){showToast('Enter a symbol first');return;}
+  showToast('Adding '+symbol.toUpperCase()+'...');
+  try{
+    const r=await fetch(API_BASE+'/api/pairs/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol})});
+    const d=await r.json();
+    if(d.success){
+      showToast('✅ Added '+d.added.replace('USDT','/USDT'));
+      input.value='';
+      loadPairs();
+    } else {
+      showToast('Failed: '+(d.error||'unknown error'),4000);
+    }
+  }catch(e){
+    showToast('Could not reach server');
+  }
+}
+
+async function removePair(symbol){
+  const display=symbol.replace('USDT','/USDT');
+  if(!confirm('Remove '+display+' from bot?\n\nThe bot will stop trading this pair on the next cycle. Any open position stays in your Binance wallet untouched.')) return;
+  try{
+    const r=await fetch(API_BASE+'/api/pairs/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol})});
+    const d=await r.json();
+    if(d.success){
+      showToast('✅ Removed '+display);
+      if(d.warning){setTimeout(()=>alert('⚠️ '+d.warning), 600);}
+      loadPairs();
+    } else {
+      showToast('Failed: '+(d.error||'unknown error'),4000);
+    }
+  }catch(e){
+    showToast('Could not reach server');
   }
 }
 
