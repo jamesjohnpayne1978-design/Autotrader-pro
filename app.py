@@ -1424,7 +1424,7 @@ def get_insights():
             )
 
             r = req_lib.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={gemini_key}",
                 headers={"Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": [{"text": ai_prompt}]}],
