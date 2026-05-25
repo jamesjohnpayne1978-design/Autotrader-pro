@@ -844,6 +844,7 @@ def strategy_status():
             'sl_pct': active['sl_pct'],
             'trailing_stop_enabled': active['trailing_stop_enabled'],
             'trailing_stop_pct': active['trailing_stop_pct'],
+            'trailing_stop_activate_pct': active['trailing_stop_activate_pct'],
             'trailing_breakeven_trigger': active['trailing_breakeven_trigger'],
             'description': active['description'],
         }
@@ -1669,26 +1670,36 @@ REGIME_STRATEGIES = {
         'sl_pct': 5.0,
         'trailing_stop_enabled': True,
         'trailing_stop_pct': 2.0,
+        'trailing_stop_activate_pct': 3.0,
         'trailing_breakeven_trigger': 3.0,
         'description': 'Wide TP + active trailing - let winners run',
     },
     'neutral': {
         'tp_pct': 6.0,
         'sl_pct': 4.0,
-        'trailing_stop_enabled': False,
-        'trailing_stop_pct': 2.0,
-        'trailing_breakeven_trigger': 3.0,
-        'description': 'Standard TP, trailing off - bank consistent small wins',
+        'trailing_stop_enabled': True,
+        'trailing_stop_pct': 1.5,
+        'trailing_stop_activate_pct': 2.0,
+        'trailing_breakeven_trigger': 2.5,
+        'description': 'Standard TP + tight trailing - lock choppy wins before reversal',
     },
     'bearish': {
         'tp_pct': 4.0,
         'sl_pct': 3.0,
         'trailing_stop_enabled': False,
         'trailing_stop_pct': 2.0,
+        'trailing_stop_activate_pct': 2.0,
         'trailing_breakeven_trigger': 3.0,
-        'description': 'Tight TP + tighter SL, trailing off - exit fast',
+        'description': 'Tight TP + tighter SL, trailing off - exit fast on weak winners',
     },
 }
+
+
+# Regime strategy writes trailing values to this file when active. signals.py
+# reads from here FIRST (when present), falling back to the user's manual
+# extras file when regime strategy is off. This way enabling regime strategy
+# overrides trailing config without destroying the user's manual settings.
+_REGIME_RUNTIME_PATH = '/data/regime_runtime.json'
 
 
 def _apply_regime_strategy(reason='trade'):
@@ -1697,9 +1708,20 @@ def _apply_regime_strategy(reason='trade'):
     Does nothing unless the regime_strategy_enabled toggle is on. Safe to call
     even before signal_engine has detected its first regime - falls back to
     neutral. Returns the profile that was applied (or None if disabled).
+
+    Writes trailing-stop values to /data/regime_runtime.json so signals.py
+    picks them up. When the toggle is off, removes that file so signals.py
+    falls back to the user's manual settings.
     """
     enabled = bool(getattr(config, 'regime_strategy_enabled', False))
     if not enabled:
+        # Remove runtime override so signals.py reads user settings again
+        try:
+            if os.path.exists(_REGIME_RUNTIME_PATH):
+                os.remove(_REGIME_RUNTIME_PATH)
+                log.info("Regime runtime override cleared - using user manual settings")
+        except Exception:
+            pass
         return None
 
     regime = 'neutral'
@@ -1711,7 +1733,22 @@ def _apply_regime_strategy(reason='trade'):
 
     profile = REGIME_STRATEGIES.get(regime, REGIME_STRATEGIES['neutral'])
 
-    # Write onto config - trader and signals will pick these up on next use
+    # Write runtime override - signals.py reads this when present
+    try:
+        os.makedirs(os.path.dirname(_REGIME_RUNTIME_PATH), exist_ok=True)
+        with open(_REGIME_RUNTIME_PATH, 'w') as f:
+            json.dump({
+                'regime': regime,
+                'trailing_stop_enabled': profile['trailing_stop_enabled'],
+                'trailing_stop_pct': profile['trailing_stop_pct'],
+                'trailing_stop_activate_pct': profile['trailing_stop_activate_pct'],
+                'trailing_breakeven_trigger': profile['trailing_breakeven_trigger'],
+                'applied_at': datetime.now().isoformat(),
+            }, f)
+    except Exception as e:
+        log.warning(f"Could not write regime runtime: {e}")
+
+    # OCO TP/SL is read from config attrs by trader.py - set those too
     try:
         config.dynamic_tp = profile['tp_pct']
         config.dynamic_sl = profile['sl_pct']
@@ -1719,7 +1756,8 @@ def _apply_regime_strategy(reason='trade'):
         config.trailing_stop_pct = profile['trailing_stop_pct']
         config.trailing_breakeven_trigger = profile['trailing_breakeven_trigger']
         log.info(f"Applied {regime} strategy ({reason}): TP={profile['tp_pct']}% "
-                 f"SL={profile['sl_pct']}% trailing={profile['trailing_stop_enabled']}")
+                 f"SL={profile['sl_pct']}% trailing={profile['trailing_stop_enabled']} "
+                 f"({profile['trailing_stop_pct']}% trail, activate +{profile['trailing_stop_activate_pct']}%)")
     except Exception as e:
         log.warning(f"Could not apply regime strategy: {e}")
 
