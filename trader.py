@@ -139,11 +139,26 @@ class Trader:
         wins = [t for t in closed if t.get('pnl', 0) > 0]
         win_rate = round(len(wins) / len(closed) * 100) if closed else None
 
+        # Open positions: only count holdings on pairs the bot is currently
+        # managing, and ignore dust under $2. A pair you removed from
+        # trading_pairs but still hold the asset for shouldn't count as
+        # "open" - the bot isn't trading it any more.
+        trading_bases = set()
+        for p in getattr(self.config, 'trading_pairs', []) or []:
+            if isinstance(p, str) and p.endswith('USDT'):
+                trading_bases.add(p[:-4])
+        open_positions_count = len([
+            p for p in positions
+            if p.get('asset') != 'USDT'
+            and p.get('asset') in trading_bases
+            and p.get('value_usdt', 0) >= 2.0
+        ])
+
         return {
             'total_usdt': round(total_usdt, 2),
             'positions': positions,
             'trades_today': trades_today,
-            'open_positions': len([p for p in positions if p['asset'] != 'USDT' and p.get('value_usdt', 0) >= 1.0]),
+            'open_positions': open_positions_count,
             'win_rate': win_rate,
             'pnl_today': pnl_today,
             'pnl_pct': pnl_pct,
