@@ -389,9 +389,45 @@ async function loadChart(){try{const r=await fetch(API_BASE+'/api/portfolio/hist
 async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime();loadFearGreed()}
 
 async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const pnl=d.pnl_today||0;const pct=d.pnl_pct||0;const el=document.getElementById('portfolioPnl');el.textContent='Today: '+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+pct.toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');
-let baseline=parseFloat(localStorage.getItem('portfolio_baseline')||'0');
-if(baseline<=0&&d.total_usdt>0){baseline=d.total_usdt;localStorage.setItem('portfolio_baseline',baseline.toString());localStorage.setItem('portfolio_baseline_date',new Date().toISOString());}
-if(baseline>0){const overallDollar=d.total_usdt-baseline;const overallPct=(overallDollar/baseline)*100;const overallEl=document.getElementById('portfolioOverall');if(overallEl){const dSign=overallDollar>=0?'+':'-';const pSign=overallPct>=0?'+':'';overallEl.textContent='Overall: '+dSign+'$'+Math.abs(overallDollar).toFixed(2)+' ('+pSign+overallPct.toFixed(2)+'%) · tap to reset';overallEl.className='portfolio-pnl '+(overallPct>=0?'up':'down');overallEl.style.cursor='pointer';overallEl.style.fontSize='0.85rem';overallEl.style.opacity='0.85';}}
+// Overall: prefer backend's real deposit-aware PnL. Falls back to
+// localStorage baseline only if no deposit history is available (e.g.
+// Binance key lacks deposit read permission).
+const overallEl = document.getElementById('portfolioOverall');
+if(overallEl){
+  if(d.cost_basis && d.cost_basis > 0 && d.pnl_total !== undefined){
+    const dollar = d.pnl_total;
+    const pct = d.pnl_total_pct || 0;
+    const dSign = dollar >= 0 ? '+' : '-';
+    const pSign = pct >= 0 ? '+' : '';
+    overallEl.textContent = 'Overall: '+dSign+'$'+Math.abs(dollar).toFixed(2)+' ('+pSign+pct.toFixed(2)+'%) on $'+d.cost_basis.toFixed(0)+' invested';
+    overallEl.className = 'portfolio-pnl '+(dollar>=0?'up':'down');
+    overallEl.style.cursor = 'pointer';
+    overallEl.style.fontSize = '0.85rem';
+    overallEl.style.opacity = '0.85';
+    overallEl.onclick = refreshDeposits;
+    overallEl.title = 'Tap to refresh deposit history from Binance';
+  } else {
+    let baseline = parseFloat(localStorage.getItem('portfolio_baseline')||'0');
+    if(baseline<=0 && d.total_usdt>0){
+      baseline = d.total_usdt;
+      localStorage.setItem('portfolio_baseline', baseline.toString());
+      localStorage.setItem('portfolio_baseline_date', new Date().toISOString());
+    }
+    if(baseline > 0){
+      const overallDollar = d.total_usdt - baseline;
+      const overallPct = (overallDollar/baseline)*100;
+      const dSign = overallDollar>=0?'+':'-';
+      const pSign = overallPct>=0?'+':'';
+      overallEl.textContent = 'Overall: '+dSign+'$'+Math.abs(overallDollar).toFixed(2)+' ('+pSign+overallPct.toFixed(2)+'%) · tap to reset · no deposit data';
+      overallEl.className = 'portfolio-pnl '+(overallPct>=0?'up':'down');
+      overallEl.style.cursor = 'pointer';
+      overallEl.style.fontSize = '0.85rem';
+      overallEl.style.opacity = '0.85';
+      overallEl.onclick = resetBaseline;
+      overallEl.title = 'Backend has no deposit history - using local baseline';
+    }
+  }
+}
 document.getElementById('tradesToday').textContent=d.trades_today||0;document.getElementById('winRate').textContent=d.win_rate?d.win_rate+'%':'-';document.getElementById('openPositions').textContent=d.open_positions||0;document.getElementById('freeUsdt').textContent='$'+(d.free_usdt||0).toFixed(0);state.apiConnected=true;updateApiStatus(true)}catch(e){}}
 
 function resetBaseline(){
@@ -402,6 +438,24 @@ function resetBaseline(){
   localStorage.setItem('portfolio_baseline_date',new Date().toISOString());
   showToast('✅ Baseline reset to $'+v.toFixed(2));
   loadPortfolio();
+}
+
+async function refreshDeposits(){
+  if(!confirm('Refresh deposit/withdrawal history from Binance?\n\nThis recalculates your "Overall" % using the real total you have deposited minus withdrawn.')) return;
+  showToast('Refreshing deposit history...');
+  try{
+    const r = await fetch(API_BASE+'/api/portfolio/refresh-deposits', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+    const d = await r.json();
+    if(d.success){
+      const net = d.net_invested_usdt || 0;
+      showToast('✅ $'+net.toFixed(2)+' net invested · '+d.total_deposited_usdt.toFixed(0)+' in / '+d.total_withdrawn_usdt.toFixed(0)+' out', 4000);
+      loadPortfolio();
+    } else {
+      showToast('Failed: '+(d.error||'unknown'), 4000);
+    }
+  } catch(e) {
+    showToast('Could not reach server');
+  }
 }
 
 async function loadPrices(){try{const r=await fetch(API_BASE+'/api/prices');const d=await r.json();renderPairs(d.pairs)}catch(e){}}
