@@ -67,6 +67,67 @@ def _extra_float(key, default):
         return default
 
 
+# ============================================================
+# REGIME RUNTIME OVERRIDE
+# ============================================================
+# When the regime-adaptive strategy is ON, app.py writes the active profile's
+# trailing-stop values to /data/regime_runtime.json. We read it here so the
+# trailing stop honours the regime (e.g. trailing OFF in bearish, tighter
+# values in neutral) instead of falling back to the user's manual settings.
+# When the regime feature is disabled, the file is removed and we fall back
+# to extras (user's manual settings) automatically.
+_REGIME_RUNTIME_PATH = '/data/regime_runtime.json'
+_regime_runtime_cache = {'data': None, 'mtime': 0}
+
+
+def _read_regime_runtime():
+    """Return the regime runtime dict, or None if not present."""
+    try:
+        if not os.path.exists(_REGIME_RUNTIME_PATH):
+            _regime_runtime_cache['data'] = None
+            _regime_runtime_cache['mtime'] = 0
+            return None
+        mtime = os.path.getmtime(_REGIME_RUNTIME_PATH)
+        if mtime != _regime_runtime_cache['mtime']:
+            with open(_REGIME_RUNTIME_PATH) as f:
+                _regime_runtime_cache['data'] = json.load(f) or None
+            _regime_runtime_cache['mtime'] = mtime
+            if _regime_runtime_cache['data']:
+                log.info(f"Regime runtime override loaded: "
+                         f"regime={_regime_runtime_cache['data'].get('regime')}, "
+                         f"trailing={_regime_runtime_cache['data'].get('trailing_stop_enabled')}")
+        return _regime_runtime_cache['data']
+    except Exception as e:
+        log.debug(f"Could not read regime runtime: {e}")
+        return None
+
+
+def _trailing_bool(key, default=False):
+    """Read a trailing-stop bool. Regime runtime (when active) wins over the
+    user's manual extras settings."""
+    runtime = _read_regime_runtime()
+    if runtime and key in runtime:
+        v = runtime[key]
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() == 'true'
+        return bool(v)
+    return _extra_bool(key, default)
+
+
+def _trailing_float(key, default):
+    """Read a trailing-stop float. Regime runtime (when active) wins over the
+    user's manual extras settings."""
+    runtime = _read_regime_runtime()
+    if runtime and key in runtime:
+        try:
+            return float(runtime[key])
+        except Exception:
+            pass
+    return _extra_float(key, default)
+
+
 def _openai_key():
     return os.environ.get("OPENAI_API_KEY", "").strip()
 
@@ -263,7 +324,7 @@ class SignalEngine:
             time.sleep(300)
 
     def _check_portfolio_trailing_stops(self):
-        if not _extra_bool('trailing_stop_enabled', False):
+        if not _trailing_bool('trailing_stop_enabled', False):
             return
         if not self.trader:
             return
@@ -275,9 +336,9 @@ class SignalEngine:
         if not hasattr(self, 'high_water_marks'):
             self.high_water_marks = {}
 
-        trail_pct = _extra_float('trailing_stop_pct', 5.0)
-        activate_pct = _extra_float('trailing_stop_activate_pct', 2.0)
-        breakeven_trigger = _extra_float('trailing_breakeven_trigger', 3.0)
+        trail_pct = _trailing_float('trailing_stop_pct', 5.0)
+        activate_pct = _trailing_float('trailing_stop_activate_pct', 2.0)
+        breakeven_trigger = _trailing_float('trailing_breakeven_trigger', 3.0)
 
         try:
             account = self.trader.client.get_account()
@@ -701,7 +762,7 @@ class SignalEngine:
                         self.risk_manager.release_lock(pair)
                         continue
 
-                if action == 'sell' and _extra_bool('trailing_stop_enabled', False):
+                if action == 'sell' and _trailing_bool('trailing_stop_enabled', False):
                     try:
                         base = pair.replace('/USDT', '').replace('/', '')
                         sym = base + 'USDT'
