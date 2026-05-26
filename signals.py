@@ -421,6 +421,22 @@ class SignalEngine:
                             pass
                         result = self.trader.execute_trade(pair_slash, 'sell', 100.0)
                         log.info(f"Trailing stop SELL executed for {pair_slash}: {result}")
+                        # Notify - was missing before, so trailing-stop fires
+                        # disappeared into the trade history without alert.
+                        try:
+                            sign = '+' if locked_in >= 0 else ''
+                            msg = (f"🎯 *TRAILING STOP {pair_slash}*\n"
+                                   f"Locked in {sign}{locked_in:.2f}% from entry\n"
+                                   f"Entry ${entry_price:.4f} → Stop ${hwm['stop_price']:.4f}")
+                            self._tg_send(msg, context=f"trail-sell-{pair_slash}")
+                        except Exception as te:
+                            log.warning(f"Trailing-stop Telegram failed: {te}")
+                        # Tell fill watcher we announced this one
+                        try:
+                            if isinstance(result, dict):
+                                self.mark_fill_announced(result.get('orderId'))
+                        except Exception:
+                            pass
                         del self.high_water_marks[symbol]
                         state_changed = True
                         if self.risk_manager:
@@ -648,6 +664,121 @@ class SignalEngine:
         log.info(f"Signals refreshed: {len(signals)} signals - regime: {self.market_regime}")
         if self.config.auto_mode and self.risk_manager:
             self._auto_execute(signals)
+        # Catch sells we didn't initiate (OCO TP/SL fills happen on Binance
+        # side without notifying our code, so they slip through silently).
+        try:
+            self._announce_recent_fills()
+        except Exception as e:
+            log.debug(f"Fill announcement scan failed: {e}")
+
+    _ANNOUNCED_FILLS_PATH = '/data/announced_fills.json'
+
+    def _load_announced_fills(self):
+        try:
+            if os.path.exists(self._ANNOUNCED_FILLS_PATH):
+                with open(self._ANNOUNCED_FILLS_PATH) as f:
+                    data = json.load(f) or {}
+                    return {
+                        'last_time_ms': int(data.get('last_time_ms', 0)),
+                        'seen_ids': set(data.get('seen_ids', []) or [])
+                    }
+        except Exception:
+            pass
+        return {'last_time_ms': 0, 'seen_ids': set()}
+
+    def _save_announced_fills(self, state):
+        try:
+            os.makedirs(os.path.dirname(self._ANNOUNCED_FILLS_PATH), exist_ok=True)
+            seen = list(state.get('seen_ids', set()))[-500:]  # cap to last 500
+            with open(self._ANNOUNCED_FILLS_PATH, 'w') as f:
+                json.dump({'last_time_ms': state.get('last_time_ms', 0),
+                           'seen_ids': seen}, f)
+        except Exception as e:
+            log.debug(f"Could not persist announced fills: {e}")
+
+    def mark_fill_announced(self, order_id):
+        """Public hook so app.py /api/trade or trailing-stop code can mark a
+        trade as already announced, preventing the fill watcher from
+        double-notifying."""
+        if not order_id:
+            return
+        try:
+            state = self._load_announced_fills()
+            state['seen_ids'].add(str(order_id))
+            self._save_announced_fills(state)
+        except Exception:
+            pass
+
+    def _announce_recent_fills(self):
+        """Scan recent trades on Binance for sells we haven't already announced
+        (e.g. OCO TP/SL fills that happen entirely on Binance). Sends a brief
+        Telegram alert for each. Uses persistent state to avoid duplicates."""
+        if not self.trader:
+            return
+        try:
+            recent = self.trader.get_real_trade_history()
+        except Exception:
+            return
+        if not recent:
+            return
+
+        state = self._load_announced_fills()
+        last_ms = state['last_time_ms']
+        seen = state['seen_ids']
+
+        # First run: seed with the most recent and don't blast on startup.
+        if last_ms == 0:
+            try:
+                latest = max((t.get('time_ms', 0) for t in recent), default=0)
+                state['last_time_ms'] = latest
+                self._save_announced_fills(state)
+            except Exception:
+                pass
+            return
+
+        new_max = last_ms
+        new_sells = []
+        for t in recent:
+            tms = int(t.get('time_ms', 0) or 0)
+            oid = str(t.get('order_id', '') or '')
+            if tms <= last_ms:
+                continue
+            if oid and oid in seen:
+                continue
+            if t.get('side') != 'sell':
+                if tms > new_max:
+                    new_max = tms
+                continue
+            new_sells.append(t)
+            if oid:
+                seen.add(oid)
+            if tms > new_max:
+                new_max = tms
+
+        for t in new_sells:
+            try:
+                pair = t.get('pair', '')
+                pnl = float(t.get('pnl', 0) or 0)
+                price = float(t.get('price', 0) or 0)
+                qty = float(t.get('quantity', 0) or 0)
+                value = price * qty if price and qty else 0
+                if pnl > 0:
+                    icon, sign = '✅', '+'
+                elif pnl < 0:
+                    icon, sign = '🛑', ''
+                else:
+                    icon, sign = '🔴', ''
+                msg = (f"{icon} *SELL FILLED {pair}*\n"
+                       f"PnL: {sign}${abs(pnl):.2f}\n"
+                       f"@ ${price:.4f} · qty {qty:g}"
+                       + (f" · ${value:.2f}" if value else ""))
+                self._tg_send(msg, context=f"fill-{pair}")
+            except Exception as e:
+                log.debug(f"Fill announce failed: {e}")
+
+        state['last_time_ms'] = new_max
+        state['seen_ids'] = seen
+        self._save_announced_fills(state)
 
     def _check_pyramid_opportunity(self, signal):
         pair = signal.get('pair')
@@ -823,6 +954,12 @@ class SignalEngine:
                     self._tg_send(msg, context=f"auto-{action}-{pair}")
                 except Exception as te:
                     log.warning(f"Telegram block crashed: {te}")
+                # Tell the fill watcher we already announced this one
+                try:
+                    if isinstance(result, dict):
+                        self.mark_fill_announced(result.get('orderId'))
+                except Exception:
+                    pass
             except Exception as e:
                 log.error(f"Auto-execute failed for {pair}: {e}")
             finally:
