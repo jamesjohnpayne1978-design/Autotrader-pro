@@ -356,6 +356,14 @@ def execute_trade():
     risk_manager.release_lock(pair)
     risk_manager.record_trade(pair)
 
+    # Tell signal engine's fill watcher we've already handled this one so it
+    # doesn't re-announce on the next refresh cycle.
+    try:
+        if signal_engine and isinstance(result, dict):
+            signal_engine.mark_fill_announced(result.get('orderId'))
+    except Exception:
+        pass
+
     if action == 'buy' and is_manual and manual_manager:
         try:
             fills = result.get('fills', []) if isinstance(result, dict) else []
