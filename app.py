@@ -73,6 +73,8 @@ def init_trader():
         log.info("init_trader: creating ManualPositionManager...")
         manual_manager = ManualPositionManager(config, trader)
         signal_engine.manual_manager = manual_manager
+        # Trader reads per-pair TP/SL multipliers from signal_engine
+        trader.signal_engine = signal_engine
 
         if config.sniper_active:
             log.info("init_trader: starting sniper thread...")
@@ -874,6 +876,51 @@ def strategy_status():
     return jsonify(out)
 
 
+@app.route('/api/pairs/multipliers')
+def get_pair_multipliers():
+    """Show the current per-pair TP/SL multipliers. When per_pair_adjust is
+    on, these multiply the regime's TP/SL on each new buy. >1.0 = wider
+    TP/SL (pair outperforming), <1.0 = tighter (pair lagging).
+
+    Includes a worked example showing what the next OCO would look like for
+    each pair, so you can see the actual effect."""
+    enabled = bool(getattr(config, 'per_pair_adjust_enabled', False))
+    max_boost = float(getattr(config, 'per_pair_max_boost', 1.5))
+    max_cut = float(getattr(config, 'per_pair_max_cut', 0.7))
+
+    base_tp = getattr(config, 'dynamic_tp', None) or getattr(config, 'default_tp_pct', 6.0)
+    base_sl = getattr(config, 'dynamic_sl', None) or getattr(config, 'default_sl_pct', 5.0)
+
+    multipliers = {}
+    if signal_engine and hasattr(signal_engine, 'pair_trend_multipliers'):
+        multipliers = dict(signal_engine.pair_trend_multipliers)
+
+    rows = []
+    for sym in sorted(multipliers.keys()):
+        m = float(multipliers[sym])
+        rows.append({
+            'symbol': sym,
+            'display': sym.replace('USDT', '/USDT'),
+            'multiplier': round(m, 3),
+            'effective_tp_pct': round(base_tp * m, 2) if enabled else round(base_tp, 2),
+            'effective_sl_pct': round(base_sl * m, 2) if enabled else round(base_sl, 2),
+            'verdict': ('outperforming' if m > 1.1 else
+                        'lagging' if m < 0.9 else
+                        'neutral'),
+        })
+
+    return jsonify({
+        'enabled': enabled,
+        'max_boost': max_boost,
+        'max_cut': max_cut,
+        'base_tp_pct': round(base_tp, 2),
+        'base_sl_pct': round(base_sl, 2),
+        'pairs': rows,
+        'note': ('When enabled, new buys get TP/SL scaled by the multiplier. '
+                 'Existing OCO orders are not retroactively adjusted.'),
+    })
+
+
 @app.route('/api/trailing/status')
 def trailing_status():
     """For every open position, show whether the trailing stop is armed right
@@ -1656,6 +1703,9 @@ _EXTRA_KEYS = [
     'concentration_alert_pct',
     'approval_mode',
     'regime_strategy_enabled',  # When true, OCO + trailing values change with market regime
+    'per_pair_adjust_enabled',  # When true, OCO TP/SL adjusted per-pair on top of regime
+    'per_pair_max_boost',       # Multiplier ceiling for strong pairs (default 1.5)
+    'per_pair_max_cut',         # Multiplier floor for weak pairs (default 0.7)
 ]
 
 
@@ -1810,7 +1860,7 @@ def settings():
         for k in _EXTRA_KEYS:
             if k in payload:
                 v = payload[k]
-                if k in ('trailing_stop_enabled', 'approval_mode'):
+                if k in ('trailing_stop_enabled', 'approval_mode', 'regime_strategy_enabled', 'per_pair_adjust_enabled'):
                     v = bool(v) if not isinstance(v, str) else (v.lower() == 'true')
                 else:
                     try:
