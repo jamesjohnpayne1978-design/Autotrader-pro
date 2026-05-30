@@ -586,6 +586,23 @@ class Trader:
         try:
             tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
             sl_pct = getattr(self.config, 'dynamic_sl', None) or self.config.default_sl_pct
+
+            # Per-pair adjustment: if the signal engine has decided this pair
+            # is outperforming or lagging the market, widen or tighten TP/SL
+            # accordingly. Multiplier defaults to 1.0 (no change) if the
+            # feature is disabled or the engine hasn't scored this pair yet.
+            mult = 1.0
+            try:
+                se = getattr(self, 'signal_engine', None)
+                if se and getattr(self.config, 'per_pair_adjust_enabled', False):
+                    mult = float(se.pair_trend_multipliers.get(symbol, 1.0))
+            except Exception:
+                pass
+            if abs(mult - 1.0) > 0.01:
+                tp_pct = round(tp_pct * mult, 3)
+                sl_pct = round(sl_pct * mult, 3)
+                log.info(f"Per-pair adjust {symbol}: x{mult:.2f} -> TP {tp_pct}% / SL {sl_pct}%")
+
             tp_price = self._round_price(symbol, buy_price * (1 + tp_pct / 100))
             sl_price = self._round_price(symbol, buy_price * (1 - sl_pct / 100))
             sl_limit_price = self._round_price(symbol, sl_price * 0.995)
