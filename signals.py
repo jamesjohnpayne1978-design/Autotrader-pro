@@ -214,6 +214,9 @@ class SignalEngine:
         self.running = False
         self._ai_err_state = {"count": 0}
         self._last_buy_times = self._load_buy_times()
+        # Per-pair TP/SL multipliers, populated by analyse_pair, read by
+        # trader._place_oco_order via signal_engine reference.
+        self.pair_trend_multipliers = {}
 
         openai = bool(_openai_key())
         gemini = bool(_gemini_key())
@@ -1032,7 +1035,91 @@ class SignalEngine:
             'rsi_sell_threshold': rsi_sell_threshold,
             'fear_greed': getattr(self, 'fear_greed_index', 50)
         }
+        # Compute per-pair trend multiplier and cache it - the trader will
+        # pick this up when placing OCO orders to widen/tighten TP and SL
+        # based on whether THIS pair is outperforming or lagging the market.
+        try:
+            self.pair_trend_multipliers[symbol] = self._calculate_pair_trend_multiplier(symbol, indicators)
+        except Exception as e:
+            log.debug(f"Pair trend multiplier failed for {symbol}: {e}")
+            self.pair_trend_multipliers[symbol] = 1.0
         return self._ai_analyse(symbol, indicators)
+
+    def _calculate_pair_trend_multiplier(self, symbol, indicators):
+        """Returns a TP/SL multiplier for this pair (e.g. 1.0 = no change,
+        1.5 = widen TP/SL by 50%, 0.7 = tighten by 30%) based on whether this
+        pair is currently a relative outperformer or underperformer.
+
+        Composition:
+        - RSI position (3 bands)
+        - MACD direction
+        - Price vs 50-period MA
+        - Recent 24h momentum
+
+        Score ranges roughly -8 to +8. Mapped linearly onto the
+        [max_cut, max_boost] range with 1.0 at score=0.
+        """
+        if not getattr(self.config, 'per_pair_adjust_enabled', False):
+            return 1.0
+
+        max_boost = float(getattr(self.config, 'per_pair_max_boost', 1.5))
+        max_cut = float(getattr(self.config, 'per_pair_max_cut', 0.7))
+        # Guard against pathological config values
+        max_boost = max(1.0, min(max_boost, 3.0))
+        max_cut = max(0.3, min(max_cut, 1.0))
+
+        score = 0.0
+        rsi = indicators.get('rsi', 50)
+        macd_sig = indicators.get('macd', {}).get('signal', 'neutral')
+        price = indicators.get('price', 0)
+        ma50 = indicators.get('ma50', 0)
+        price_change_24h = indicators.get('price_change_24h', 0)
+
+        # RSI band (-2 to +2)
+        if rsi >= 60:
+            score += 2
+        elif rsi >= 50:
+            score += 1
+        elif rsi <= 40:
+            score -= 2
+        elif rsi < 50:
+            score -= 1
+
+        # MACD direction (-2 to +2)
+        if macd_sig == 'bullish':
+            score += 2
+        elif macd_sig == 'bearish':
+            score -= 2
+
+        # Price vs 50MA (-2 to +2)
+        if ma50 and ma50 > 0:
+            pct_off = (price - ma50) / ma50 * 100
+            if pct_off >= 5:
+                score += 2
+            elif pct_off >= 1:
+                score += 1
+            elif pct_off <= -5:
+                score -= 2
+            elif pct_off <= -1:
+                score -= 1
+
+        # 24h momentum (-2 to +2)
+        if price_change_24h >= 5:
+            score += 2
+        elif price_change_24h >= 2:
+            score += 1
+        elif price_change_24h <= -5:
+            score -= 2
+        elif price_change_24h <= -2:
+            score -= 1
+
+        # Linear map [-8, +8] -> [max_cut, max_boost] with 1.0 at 0
+        score = max(-8.0, min(8.0, score))
+        if score >= 0:
+            multiplier = 1.0 + (score / 8.0) * (max_boost - 1.0)
+        else:
+            multiplier = 1.0 + (score / 8.0) * (1.0 - max_cut)
+        return round(multiplier, 3)
 
     def _ai_analyse(self, symbol, indicators):
         """Hybrid signal generation:
