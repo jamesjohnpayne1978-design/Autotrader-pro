@@ -314,6 +314,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     </div>
   </div>
 
+  <div class="section-title">Per-Pair TP/SL Adjustment</div>
+  <div class="card">
+    <div style="background:var(--blue-dim);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--blue-bright);line-height:1.5">When ON, individual pairs that are outperforming the market get wider TP/SL (let them run), and lagging pairs get tighter (exit faster). Sits on top of the regime profile - they multiply together.</div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Per-Pair Adjust</div><div class="setting-desc">Scale TP/SL by individual pair strength</div></div><div class="toggle" id="perPairToggle" onclick="togglePerPair()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Boost</div><div class="setting-desc">Strongest pairs get this × wider</div></div><input class="setting-input" id="perPairMaxBoost" value="1.5" type="number" step="0.1" min="1.0" max="3.0"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max Cut</div><div class="setting-desc">Weakest pairs get this × tighter</div></div><input class="setting-input" id="perPairMaxCut" value="0.7" type="number" step="0.05" min="0.3" max="1.0"></div>
+    <button class="btn" style="width:100%;margin-top:8px;background:var(--surface2);color:var(--gold);padding:12px;border:1px solid var(--gold);border-radius:var(--radius-sm);font-weight:700;font-family:var(--sans)" onclick="savePerPairSettings()">Save Multipliers</button>
+    <div id="perPairMultipliers" style="display:none;margin-top:14px">
+      <div style="font-size:0.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:10px">Live Multipliers Per Pair</div>
+      <div id="perPairList" style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;font-size:0.78rem;font-family:var(--mono);color:var(--text-2)">Loading...</div>
+    </div>
+  </div>
+
   <div class="section-title">Strategy - RSI Tiers</div>
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">BTC / ETH</div><div class="setting-desc">Large cap</div></div><div style="font-family:var(--mono);font-size:0.9rem;font-weight:700;color:var(--green)">25 / 80</div></div>
@@ -711,6 +724,65 @@ function toggleRegimeStrategy(){
   showToast(state.regimeStrategy?'Auto-adaptive ON · TP/SL/trailing will follow regime':'Auto-adaptive OFF · using manual settings');
 }
 
+function togglePerPair(){
+  state.perPair=toggle('perPairToggle');
+  document.getElementById('perPairMultipliers').style.display=state.perPair?'block':'none';
+  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({per_pair_adjust_enabled:state.perPair})}).catch(()=>{});
+  if(state.perPair) loadPerPairMultipliers();
+  showToast(state.perPair?'Per-pair adjustment ON · TP/SL scales with each pair\'s strength':'Per-pair adjustment OFF · all pairs use same TP/SL');
+}
+
+async function savePerPairSettings(){
+  const boost = parseFloat(document.getElementById('perPairMaxBoost').value);
+  const cut = parseFloat(document.getElementById('perPairMaxCut').value);
+  if(isNaN(boost) || boost < 1.0 || boost > 3.0){showToast('Max boost must be 1.0–3.0');return;}
+  if(isNaN(cut) || cut < 0.3 || cut > 1.0){showToast('Max cut must be 0.3–1.0');return;}
+  try{
+    const r = await fetch(API_BASE+'/api/settings', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({per_pair_max_boost:boost, per_pair_max_cut:cut})
+    });
+    if(r.ok){
+      showToast('✅ Saved: boost ×'+boost+' / cut ×'+cut);
+      if(state.perPair) loadPerPairMultipliers();
+    } else {
+      showToast('Failed to save');
+    }
+  }catch(e){
+    showToast('Could not reach server');
+  }
+}
+
+async function loadPerPairMultipliers(){
+  try{
+    const r = await fetch(API_BASE+'/api/pairs/multipliers');
+    const d = await r.json();
+    const el = document.getElementById('perPairList');
+    if(!el) return;
+    if(!d.pairs || !d.pairs.length){
+      el.innerHTML = '<div style="padding:10px;color:var(--text-3)">No pair data yet - wait for the next signal cycle</div>';
+      return;
+    }
+    const header = '<div style="display:flex;justify-content:space-between;padding:6px 10px;color:var(--text-3);font-size:0.7rem;border-bottom:1px solid var(--border);margin-bottom:4px"><span>PAIR</span><span>×MULT</span><span>EFFECTIVE TP/SL</span></div>';
+    const rows = d.pairs.map(p => {
+      const color = p.verdict === 'outperforming' ? 'var(--green)'
+                  : p.verdict === 'lagging' ? 'var(--red)'
+                  : 'var(--text-2)';
+      const pad = (p.multiplier.toFixed(2)+'×').padEnd(6, ' ');
+      return '<div style="display:flex;justify-content:space-between;padding:5px 10px;align-items:center">'
+        +'<span style="color:'+color+';font-weight:600">'+p.display+'</span>'
+        +'<span style="color:'+color+'">'+p.multiplier.toFixed(2)+'×</span>'
+        +'<span style="color:var(--text-2)">'+p.effective_tp_pct+'% / '+p.effective_sl_pct+'%</span>'
+        +'</div>';
+    }).join('');
+    const footer = '<div style="padding:8px 10px;color:var(--text-3);font-size:0.7rem;border-top:1px solid var(--border);margin-top:4px">Base TP '+d.base_tp_pct+'% · SL '+d.base_sl_pct+'% · multipliers'+(d.enabled?' active':' would apply if enabled')+'</div>';
+    el.innerHTML = header + rows + footer;
+  }catch(e){
+    const el = document.getElementById('perPairList');
+    if(el) el.innerHTML = '<div style="padding:10px;color:var(--text-3)">Could not load multipliers</div>';
+  }
+}
+
 async function loadRegimeStrategyStatus(){
   try{
     const r=await fetch(API_BASE+'/api/strategy/status');
@@ -819,7 +891,7 @@ function saveSettings(){
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)}).then(r=>r.json()).then(d=>{showToast(d.success?'Settings saved!':'Save failed')}).catch(()=>showToast('Save failed'));
 }
 
-async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.regime_strategy_enabled!==undefined){state.regimeStrategy=d.regime_strategy_enabled;const el=document.getElementById('regimeStrategyToggle');if(el){state.regimeStrategy?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('regimeStrategyStatus');if(statusEl)statusEl.style.display=state.regimeStrategy?'block':'none';if(state.regimeStrategy)loadRegimeStrategyStatus()}if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
+async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.regime_strategy_enabled!==undefined){state.regimeStrategy=d.regime_strategy_enabled;const el=document.getElementById('regimeStrategyToggle');if(el){state.regimeStrategy?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('regimeStrategyStatus');if(statusEl)statusEl.style.display=state.regimeStrategy?'block':'none';if(state.regimeStrategy)loadRegimeStrategyStatus()}if(d.per_pair_adjust_enabled!==undefined){state.perPair=d.per_pair_adjust_enabled;const el=document.getElementById('perPairToggle');if(el){state.perPair?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('perPairMultipliers');if(statusEl)statusEl.style.display=state.perPair?'block':'none';if(state.perPair)loadPerPairMultipliers()}if(d.per_pair_max_boost&&document.getElementById('perPairMaxBoost'))document.getElementById('perPairMaxBoost').value=d.per_pair_max_boost;if(d.per_pair_max_cut&&document.getElementById('perPairMaxCut'))document.getElementById('perPairMaxCut').value=d.per_pair_max_cut;if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
 
 let pairChart2=null;
 let currentPairSymbol='';
