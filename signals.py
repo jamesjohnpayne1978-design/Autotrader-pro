@@ -794,7 +794,7 @@ class SignalEngine:
                 if pnl > 0:
                     icon, sign = '✅', '+'
                 elif pnl < 0:
-                    icon, sign = '🛑', ''
+                    icon, sign = '🛑', '-'  # explicit minus so losses are unmistakable
                 else:
                     icon, sign = '🔴', ''
                 msg = (f"{icon} *SELL FILLED {pair}*\n"
@@ -907,8 +907,19 @@ class SignalEngine:
             pair = signal.get('pair')
             if action not in ('buy', 'sell'):
                 continue
-            if confidence < AUTO_EXECUTE_MIN_CONFIDENCE:
-                log.info(f"Auto-execute skipped {pair} - confidence {confidence}% below {AUTO_EXECUTE_MIN_CONFIDENCE}%")
+            # Allow the threshold to be tuned from the dashboard at runtime.
+            # Falls back to the module constant when not set in settings.
+            min_conf = AUTO_EXECUTE_MIN_CONFIDENCE
+            try:
+                v = getattr(self.config, 'auto_execute_min_confidence', None)
+                if v is not None:
+                    min_conf = int(float(v))
+            except Exception:
+                pass
+            # Hard guardrails - prevent absurd values that would break things
+            min_conf = max(50, min(min_conf, 95))
+            if confidence < min_conf:
+                log.info(f"Auto-execute skipped {pair} - confidence {confidence}% below {min_conf}%")
                 continue
             approved, reason = self.risk_manager.check_trade(pair, action, confidence)
             if not approved:
