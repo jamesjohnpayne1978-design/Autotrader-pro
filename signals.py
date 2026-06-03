@@ -665,14 +665,15 @@ class SignalEngine:
                 log.warning(f"Signal failed for {symbol}: {e}")
         self.latest_signals = signals
         log.info(f"Signals refreshed: {len(signals)} signals - regime: {self.market_regime}")
-        if self.config.auto_mode and self.risk_manager:
-            self._auto_execute(signals)
-        # Catch sells we didn't initiate (OCO TP/SL fills happen on Binance
-        # side without notifying our code, so they slip through silently).
+        # Run fill watcher FIRST so that OCO TP/SL fills detected this cycle
+        # update each pair's cooldown timer BEFORE auto-execute looks at it.
+        # Otherwise we'd auto-buy a pair we just sold seconds ago.
         try:
             self._announce_recent_fills()
         except Exception as e:
             log.debug(f"Fill announcement scan failed: {e}")
+        if self.config.auto_mode and self.risk_manager:
+            self._auto_execute(signals)
 
     _ANNOUNCED_FILLS_PATH = '/data/announced_fills.json'
 
@@ -765,6 +766,31 @@ class SignalEngine:
                 price = float(t.get('price', 0) or 0)
                 qty = float(t.get('quantity', 0) or 0)
                 value = price * qty if price and qty else 0
+                tms = int(t.get('time_ms', 0) or 0)
+
+                # Update trader cooldown timer for this pair. Without this,
+                # OCO TP/SL fills (which happen entirely on Binance with no
+                # call to our execute_trade) leave _last_trade_time untouched,
+                # so the next auto-buy cycle wouldn't see any cooldown.
+                try:
+                    if self.trader and hasattr(self.trader, '_last_trade_time'):
+                        from datetime import datetime as _dt
+                        ts = _dt.fromtimestamp(tms / 1000) if tms > 0 else _dt.now()
+                        self.trader._last_trade_time[pair] = ts
+                        log.info(f"Cooldown timer updated for {pair} (OCO fill detected)")
+                except Exception as e:
+                    log.debug(f"Cooldown update failed for {pair}: {e}")
+
+                # Clear any leftover trailing-stop state for the now-closed
+                # position so we don't carry stale peak prices forward.
+                try:
+                    sym = pair.replace('/', '')
+                    if hasattr(self, 'high_water_marks') and sym in self.high_water_marks:
+                        del self.high_water_marks[sym]
+                        log.info(f"Cleared trailing state for {sym} after OCO fill")
+                except Exception:
+                    pass
+
                 if pnl > 0:
                     icon, sign = '✅', '+'
                 elif pnl < 0:
