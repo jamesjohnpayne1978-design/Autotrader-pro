@@ -1706,6 +1706,7 @@ _EXTRA_KEYS = [
     'per_pair_adjust_enabled',  # When true, OCO TP/SL adjusted per-pair on top of regime
     'per_pair_max_boost',       # Multiplier ceiling for strong pairs (default 1.5)
     'per_pair_max_cut',         # Multiplier floor for weak pairs (default 0.7)
+    'auto_execute_min_confidence',  # Minimum % to auto-fire a signal (50-95, default 60)
 ]
 
 
