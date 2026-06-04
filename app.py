@@ -876,6 +876,150 @@ def strategy_status():
     return jsonify(out)
 
 
+@app.route('/api/pairs/stats')
+def get_pair_stats():
+    """Per-pair trade statistics over the recent trade history. Used by the
+    Stats page to show win rate, total PnL, average PnL and average hold time
+    for each pair so the user can identify which pairs work well vs. poorly
+    for the bot."""
+    if not trader:
+        return jsonify({'pairs': [], 'error': 'Not connected'}), 400
+    try:
+        history = trader.get_real_trade_history() or []
+    except Exception as e:
+        return jsonify({'pairs': [], 'error': str(e)}), 500
+
+    # Group by pair, walk chronologically, match each sell back to a buy
+    # for hold-time estimation. Same FIFO approach as PnL matching upstream.
+    from collections import deque
+    pair_data = {}
+    buy_queues = {}  # pair -> deque of (time_ms, qty)
+
+    for t in sorted(history, key=lambda x: x.get('time_ms', 0)):
+        pair = t.get('pair')
+        if not pair:
+            continue
+        pair_data.setdefault(pair, {
+            'trades': 0, 'sells': 0, 'wins': 0, 'losses': 0,
+            'total_pnl': 0.0, 'hold_minutes_total': 0.0, 'hold_count': 0,
+            'biggest_win': 0.0, 'biggest_loss': 0.0,
+        })
+        d = pair_data[pair]
+        d['trades'] += 1
+
+        if t.get('side') == 'buy':
+            buy_queues.setdefault(pair, deque()).append((t.get('time_ms', 0), float(t.get('quantity', 0))))
+        elif t.get('side') == 'sell':
+            d['sells'] += 1
+            pnl = float(t.get('pnl', 0))
+            d['total_pnl'] += pnl
+            if pnl > 0:
+                d['wins'] += 1
+                if pnl > d['biggest_win']:
+                    d['biggest_win'] = pnl
+            elif pnl < 0:
+                d['losses'] += 1
+                if pnl < d['biggest_loss']:
+                    d['biggest_loss'] = pnl
+            # Estimate hold time from first matching buy in queue
+            sell_qty = float(t.get('quantity', 0))
+            sell_time = t.get('time_ms', 0)
+            queue = buy_queues.get(pair)
+            if queue and sell_qty > 0 and sell_time:
+                # Take oldest buy time as approximation for hold start
+                buy_time_ms, _ = queue[0]
+                hold_min = (sell_time - buy_time_ms) / 60000.0
+                if 0 < hold_min < 60 * 24 * 90:  # sanity: under 90 days
+                    d['hold_minutes_total'] += hold_min
+                    d['hold_count'] += 1
+                # Drain matched qty from queue
+                remaining = sell_qty
+                while queue and remaining > 0:
+                    bt, bq = queue[0]
+                    take = min(bq, remaining)
+                    remaining -= take
+                    if bq - take <= 1e-9:
+                        queue.popleft()
+                    else:
+                        queue[0] = (bt, bq - take)
+
+    rows = []
+    for pair, d in pair_data.items():
+        closed = d['wins'] + d['losses']
+        win_rate = round(d['wins'] / closed * 100, 1) if closed > 0 else None
+        avg_pnl = round(d['total_pnl'] / d['sells'], 2) if d['sells'] > 0 else 0
+        avg_hold_min = (d['hold_minutes_total'] / d['hold_count']) if d['hold_count'] > 0 else None
+        rows.append({
+            'pair': pair,
+            'trades': d['trades'],
+            'sells': d['sells'],
+            'wins': d['wins'],
+            'losses': d['losses'],
+            'win_rate': win_rate,
+            'total_pnl': round(d['total_pnl'], 2),
+            'avg_pnl': avg_pnl,
+            'biggest_win': round(d['biggest_win'], 2),
+            'biggest_loss': round(d['biggest_loss'], 2),
+            'avg_hold_minutes': round(avg_hold_min, 1) if avg_hold_min else None,
+        })
+
+    # Sort by total PnL descending so winners surface at the top
+    rows.sort(key=lambda r: r['total_pnl'], reverse=True)
+    return jsonify({'pairs': rows, 'count': len(rows)})
+
+
+@app.route('/api/safety/status')
+def get_safety_status():
+    """Current state of the buy safety filters and any active loss cooldowns."""
+    out = {
+        'confirmation_candle_enabled': bool(getattr(config, 'confirmation_candle_enabled', True)),
+        'falling_knife_filter_enabled': bool(getattr(config, 'falling_knife_filter_enabled', True)),
+        'falling_knife_max_drop_pct': float(getattr(config, 'falling_knife_max_drop_pct', 3.0)),
+        'loss_cooldown_enabled': bool(getattr(config, 'loss_cooldown_enabled', True)),
+        'loss_cooldown_hours': float(getattr(config, 'loss_cooldown_hours', 4.0)),
+        'daily_summary_enabled': bool(getattr(config, 'daily_summary_enabled', True)),
+        'active_cooldowns': [],
+    }
+    # Show currently-active loss cooldowns so user knows which pairs are blocked
+    try:
+        from datetime import datetime as _dt
+        path = '/data/loss_cooldowns.json'
+        if os.path.exists(path):
+            with open(path) as f:
+                data = json.load(f) or {}
+            hours = out['loss_cooldown_hours']
+            for pair, rec in data.items():
+                try:
+                    ts = _dt.fromisoformat(rec['ts'])
+                    elapsed_h = (_dt.now() - ts).total_seconds() / 3600.0
+                    if elapsed_h < hours:
+                        out['active_cooldowns'].append({
+                            'pair': pair,
+                            'remaining_hours': round(hours - elapsed_h, 2),
+                            'loss': round(float(rec.get('pnl', 0)), 2),
+                        })
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return jsonify(out)
+
+
+@app.route('/api/summary/send', methods=['POST'])
+def trigger_daily_summary():
+    """Manually send the daily summary now (for testing the format)."""
+    if not signal_engine:
+        return jsonify({'error': 'Signal engine not ready'}), 400
+    try:
+        # Use yesterday's date so it summarises a completed day
+        from datetime import datetime as _dt, timedelta as _td
+        date_str = (_dt.utcnow() - _td(days=1)).strftime('%Y-%m-%d')
+        signal_engine._send_daily_summary(date_str)
+        return jsonify({'success': True, 'date': date_str})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/pairs/multipliers')
 def get_pair_multipliers():
     """Show the current per-pair TP/SL multipliers. When per_pair_adjust is
@@ -1707,6 +1851,12 @@ _EXTRA_KEYS = [
     'per_pair_max_boost',       # Multiplier ceiling for strong pairs (default 1.5)
     'per_pair_max_cut',         # Multiplier floor for weak pairs (default 0.7)
     'auto_execute_min_confidence',  # Minimum % to auto-fire a signal (50-95, default 60)
+    'confirmation_candle_enabled',  # Require last 1h candle green before buying
+    'falling_knife_filter_enabled', # Skip buys when price dropping fast
+    'falling_knife_max_drop_pct',   # Threshold for falling-knife (default 3%)
+    'loss_cooldown_enabled',        # Block re-buy after a stop-loss hit
+    'loss_cooldown_hours',          # How long to block (default 4)
+    'daily_summary_enabled',        # Send daily Telegram PnL recap
 ]
 
 
@@ -1861,7 +2011,9 @@ def settings():
         for k in _EXTRA_KEYS:
             if k in payload:
                 v = payload[k]
-                if k in ('trailing_stop_enabled', 'approval_mode', 'regime_strategy_enabled', 'per_pair_adjust_enabled'):
+                if k in ('trailing_stop_enabled', 'approval_mode', 'regime_strategy_enabled', 'per_pair_adjust_enabled',
+                        'confirmation_candle_enabled', 'falling_knife_filter_enabled',
+                        'loss_cooldown_enabled', 'daily_summary_enabled'):
                     v = bool(v) if not isinstance(v, str) else (v.lower() == 'true')
                 else:
                     try:
