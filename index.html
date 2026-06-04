@@ -328,6 +328,25 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     </div>
   </div>
 
+  <div class="section-title">Entry Safety Filters</div>
+  <div class="card">
+    <div style="background:var(--blue-dim);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--blue-bright);line-height:1.5">Block weak buys before they execute. Reduces "buy now, get stopped out 30 min later" pattern.</div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Confirmation Candle</div><div class="setting-desc">Require last 1h candle green before buying</div></div><div class="toggle" id="confirmationCandleToggle" onclick="toggleConfirmationCandle()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Falling Knife Filter</div><div class="setting-desc">Skip if price dropped fast in last hour</div></div><div class="toggle" id="fallingKnifeToggle" onclick="toggleFallingKnife()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Max 1h Drop</div><div class="setting-desc">% — skip buys below this hourly change</div></div><input class="setting-input" id="fallingKnifeDrop" value="3" type="number" step="0.5" min="1" max="10"></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Loss Cooldown</div><div class="setting-desc">Block re-buy after stop-loss hit</div></div><div class="toggle" id="lossCooldownToggle" onclick="toggleLossCooldown()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Cooldown Hours</div><div class="setting-desc">Hours to block pair after a loss</div></div><input class="setting-input" id="lossCooldownHours" value="4" type="number" step="0.5" min="1" max="24"></div>
+    <button class="btn" style="width:100%;margin-top:8px;background:var(--surface2);color:var(--gold);padding:12px;border:1px solid var(--gold);border-radius:var(--radius-sm);font-weight:700;font-family:var(--sans)" onclick="saveSafetyFilters()">Save Safety Filters</button>
+    <div id="activeCooldowns" style="display:none;margin-top:14px"><div style="font-size:0.7rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:10px">Active Cooldowns</div><div id="activeCooldownsList" style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;font-size:0.78rem;font-family:var(--mono);color:var(--text-2)">None</div></div>
+  </div>
+
+  <div class="section-title">Daily Summary</div>
+  <div class="card">
+    <div style="background:var(--blue-dim);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--blue-bright);line-height:1.5">Telegram message at midnight UTC with PnL, win rate, biggest win/loss, and open positions for the previous day.</div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Daily Summary</div><div class="setting-desc">Send daily PnL recap</div></div><div class="toggle" id="dailySummaryToggle" onclick="toggleDailySummary()"><div class="toggle-thumb"></div></div></div>
+    <button class="btn" style="width:100%;margin-top:8px;background:var(--surface2);color:var(--gold);padding:12px;border:1px solid var(--gold);border-radius:var(--radius-sm);font-weight:700;font-family:var(--sans)" onclick="sendSummaryNow()">📧 Send Summary Now (Test)</button>
+  </div>
+
   <div class="section-title">Strategy - RSI Tiers</div>
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">BTC / ETH</div><div class="setting-desc">Large cap</div></div><div style="font-family:var(--mono);font-size:0.9rem;font-weight:700;color:var(--green)">25 / 80</div></div>
@@ -377,7 +396,7 @@ let portfolioChart=null,chartRange='24h',allSnapshots=[];
 let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false,regimeStrategy:false};
 let selectedManualPair='';
 
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='settings')loadPairs();if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='settings'){loadPairs();loadActiveCooldowns();}if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
 function showApiModal(){document.getElementById('apiModal').classList.add('show')}
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
@@ -784,6 +803,88 @@ async function loadPerPairMultipliers(){
   }
 }
 
+// ============================================================
+// SAFETY FILTERS - confirmation candle, falling knife, loss cooldown
+// ============================================================
+function toggleConfirmationCandle(){
+  state.confirmationCandle = toggle('confirmationCandleToggle');
+  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation_candle_enabled:state.confirmationCandle})}).catch(()=>{});
+  showToast(state.confirmationCandle?'Confirmation candle ON · waits for green hour before buying':'Confirmation candle OFF · buys fire immediately');
+}
+function toggleFallingKnife(){
+  state.fallingKnife = toggle('fallingKnifeToggle');
+  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({falling_knife_filter_enabled:state.fallingKnife})}).catch(()=>{});
+  showToast(state.fallingKnife?'Falling knife filter ON · skips fast drops':'Falling knife filter OFF');
+}
+function toggleLossCooldown(){
+  state.lossCooldown = toggle('lossCooldownToggle');
+  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loss_cooldown_enabled:state.lossCooldown})}).catch(()=>{});
+  showToast(state.lossCooldown?'Loss cooldown ON · blocks re-buy after SL hits':'Loss cooldown OFF');
+}
+function toggleDailySummary(){
+  state.dailySummary = toggle('dailySummaryToggle');
+  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({daily_summary_enabled:state.dailySummary})}).catch(()=>{});
+  showToast(state.dailySummary?'Daily summary ON · daily Telegram recap':'Daily summary OFF');
+}
+
+async function saveSafetyFilters(){
+  const drop = parseFloat(document.getElementById('fallingKnifeDrop').value);
+  const hours = parseFloat(document.getElementById('lossCooldownHours').value);
+  if(isNaN(drop) || drop < 1 || drop > 10){showToast('Max drop must be 1–10');return;}
+  if(isNaN(hours) || hours < 1 || hours > 24){showToast('Cooldown hours must be 1–24');return;}
+  try{
+    const r = await fetch(API_BASE+'/api/settings',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({falling_knife_max_drop_pct:drop, loss_cooldown_hours:hours})
+    });
+    if(r.ok){
+      showToast('✅ Saved: max drop '+drop+'%, cooldown '+hours+'h');
+      loadActiveCooldowns();
+    } else {
+      showToast('Failed to save');
+    }
+  }catch(e){
+    showToast('Could not reach server');
+  }
+}
+
+async function sendSummaryNow(){
+  if(!confirm('Send a test daily summary to Telegram now?')) return;
+  showToast('Sending...');
+  try{
+    const r = await fetch(API_BASE+'/api/summary/send',{method:'POST'});
+    const d = await r.json();
+    if(d.success){
+      showToast('✅ Summary sent for '+d.date);
+    } else {
+      showToast('Failed: '+(d.error||'unknown'));
+    }
+  }catch(e){
+    showToast('Could not reach server');
+  }
+}
+
+async function loadActiveCooldowns(){
+  try{
+    const r = await fetch(API_BASE+'/api/safety/status');
+    const d = await r.json();
+    const wrapper = document.getElementById('activeCooldowns');
+    const list = document.getElementById('activeCooldownsList');
+    if(!wrapper || !list) return;
+    if(d.active_cooldowns && d.active_cooldowns.length){
+      wrapper.style.display = 'block';
+      list.innerHTML = d.active_cooldowns.map(c =>
+        '<div style="display:flex;justify-content:space-between;padding:5px 8px">'
+        +'<span>'+c.pair+'</span>'
+        +'<span style="color:var(--red)">-$'+Math.abs(c.loss).toFixed(2)+' · '+c.remaining_hours.toFixed(1)+'h left</span>'
+        +'</div>'
+      ).join('');
+    } else {
+      wrapper.style.display = 'none';
+    }
+  }catch(e){}
+}
+
 async function loadRegimeStrategyStatus(){
   try{
     const r=await fetch(API_BASE+'/api/strategy/status');
@@ -892,7 +993,11 @@ function saveSettings(){
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)}).then(r=>r.json()).then(d=>{showToast(d.success?'Settings saved!':'Save failed')}).catch(()=>showToast('Save failed'));
 }
 
-async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.regime_strategy_enabled!==undefined){state.regimeStrategy=d.regime_strategy_enabled;const el=document.getElementById('regimeStrategyToggle');if(el){state.regimeStrategy?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('regimeStrategyStatus');if(statusEl)statusEl.style.display=state.regimeStrategy?'block':'none';if(state.regimeStrategy)loadRegimeStrategyStatus()}if(d.per_pair_adjust_enabled!==undefined){state.perPair=d.per_pair_adjust_enabled;const el=document.getElementById('perPairToggle');if(el){state.perPair?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('perPairMultipliers');if(statusEl)statusEl.style.display=state.perPair?'block':'none';if(state.perPair)loadPerPairMultipliers()}if(d.per_pair_max_boost&&document.getElementById('perPairMaxBoost'))document.getElementById('perPairMaxBoost').value=d.per_pair_max_boost;if(d.per_pair_max_cut&&document.getElementById('perPairMaxCut'))document.getElementById('perPairMaxCut').value=d.per_pair_max_cut;if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.auto_execute_min_confidence&&document.getElementById('autoMinConf'))document.getElementById('autoMinConf').value=d.auto_execute_min_confidence;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
+async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.regime_strategy_enabled!==undefined){state.regimeStrategy=d.regime_strategy_enabled;const el=document.getElementById('regimeStrategyToggle');if(el){state.regimeStrategy?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('regimeStrategyStatus');if(statusEl)statusEl.style.display=state.regimeStrategy?'block':'none';if(state.regimeStrategy)loadRegimeStrategyStatus()}if(d.per_pair_adjust_enabled!==undefined){state.perPair=d.per_pair_adjust_enabled;const el=document.getElementById('perPairToggle');if(el){state.perPair?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('perPairMultipliers');if(statusEl)statusEl.style.display=state.perPair?'block':'none';if(state.perPair)loadPerPairMultipliers()}if(d.per_pair_max_boost&&document.getElementById('perPairMaxBoost'))document.getElementById('perPairMaxBoost').value=d.per_pair_max_boost;if(d.per_pair_max_cut&&document.getElementById('perPairMaxCut'))document.getElementById('perPairMaxCut').value=d.per_pair_max_cut;if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.auto_execute_min_confidence&&document.getElementById('autoMinConf'))document.getElementById('autoMinConf').value=d.auto_execute_min_confidence;
+// Safety filter toggles
+['confirmation_candle_enabled:confirmationCandle:confirmationCandleToggle','falling_knife_filter_enabled:fallingKnife:fallingKnifeToggle','loss_cooldown_enabled:lossCooldown:lossCooldownToggle','daily_summary_enabled:dailySummary:dailySummaryToggle'].forEach(s=>{const [key,sKey,domId]=s.split(':');if(d[key]!==undefined){state[sKey]=d[key];const el=document.getElementById(domId);if(el){d[key]?el.classList.add('on'):el.classList.remove('on')}}});
+if(d.falling_knife_max_drop_pct&&document.getElementById('fallingKnifeDrop'))document.getElementById('fallingKnifeDrop').value=d.falling_knife_max_drop_pct;
+if(d.loss_cooldown_hours&&document.getElementById('lossCooldownHours'))document.getElementById('lossCooldownHours').value=d.loss_cooldown_hours;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
 
 let pairChart2=null;
 let currentPairSymbol='';
@@ -1175,14 +1280,46 @@ async function loadStats(){
       calEl.innerHTML = calHtml;
     }
     const pairEl = document.getElementById('pairStatsCard');
-    if(d.pair_performance&&d.pair_performance.length){
-      pairEl.innerHTML = d.pair_performance.map(p=>{
-        const ratingColor = p.rating==='good'?'var(--green)':p.rating==='poor'?'var(--red)':'var(--gold)';
-        const winFill = p.win_rate > 60 ? 'var(--green)' : p.win_rate < 40 ? 'var(--red)' : 'var(--gold)';
-        return '<div class="pair-stat-row"><div style="flex:1"><div class="pair-stat-name">'+p.pair+'</div><div class="pair-stat-meta">'+p.trades+' trades · '+p.wins+'W/'+p.losses+'L</div><div class="win-bar"><div class="win-fill" style="width:'+p.win_rate+'%;background:'+winFill+'"></div></div></div><div style="text-align:right;margin-left:12px"><div style="font-family:var(--mono);font-weight:700;font-size:0.9rem;color:'+(p.total_pnl>=0?'var(--green)':'var(--red)')+'">'+(p.total_pnl>=0?'+':'')+'$'+p.total_pnl.toFixed(2)+'</div><div style="font-size:0.72rem;color:'+ratingColor+';font-weight:600;margin-top:2px">'+p.win_rate+'% win</div></div></div>';
-      }).join('');
-    } else {
-      pairEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">No trade history yet.</div>';
+    // Fetch the richer per-pair data from the new endpoint
+    try{
+      const sr = await fetch(API_BASE+'/api/pairs/stats');
+      const sd = await sr.json();
+      if(sd.pairs && sd.pairs.length){
+        pairEl.innerHTML = sd.pairs.map(p=>{
+          const winFill = p.win_rate==null ? 'var(--text-3)' : (p.win_rate>60?'var(--green)':p.win_rate<40?'var(--red)':'var(--gold)');
+          const winText = p.win_rate==null ? '—' : p.win_rate+'% win';
+          const winBarW = p.win_rate==null ? 0 : p.win_rate;
+          const pnlColor = p.total_pnl>=0?'var(--green)':'var(--red)';
+          const pnlSign = p.total_pnl>=0?'+':'-';
+          const hold = p.avg_hold_minutes!=null ? (p.avg_hold_minutes<60 ? p.avg_hold_minutes.toFixed(0)+'m' : (p.avg_hold_minutes/60).toFixed(1)+'h') : '—';
+          const extras = '<div style="font-size:0.7rem;color:var(--text-3);margin-top:3px">avg $'+p.avg_pnl.toFixed(2)+' · hold '+hold+(p.biggest_win>0?' · best +$'+p.biggest_win.toFixed(2):'')+(p.biggest_loss<0?' · worst -$'+Math.abs(p.biggest_loss).toFixed(2):'')+'</div>';
+          return '<div class="pair-stat-row">'
+            +'<div style="flex:1">'
+              +'<div class="pair-stat-name">'+p.pair+'</div>'
+              +'<div class="pair-stat-meta">'+p.trades+' trades · '+p.wins+'W/'+p.losses+'L</div>'
+              +'<div class="win-bar"><div class="win-fill" style="width:'+winBarW+'%;background:'+winFill+'"></div></div>'
+              +extras
+            +'</div>'
+            +'<div style="text-align:right;margin-left:12px">'
+              +'<div style="font-family:var(--mono);font-weight:700;font-size:0.9rem;color:'+pnlColor+'">'+pnlSign+'$'+Math.abs(p.total_pnl).toFixed(2)+'</div>'
+              +'<div style="font-size:0.72rem;color:'+winFill+';font-weight:600;margin-top:2px">'+winText+'</div>'
+            +'</div>'
+          +'</div>';
+        }).join('');
+      } else {
+        pairEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">No trade history yet.</div>';
+      }
+    }catch(e){
+      // Fall back to /api/stats pair_performance if /api/pairs/stats fails
+      if(d.pair_performance&&d.pair_performance.length){
+        pairEl.innerHTML = d.pair_performance.map(p=>{
+          const ratingColor = p.rating==='good'?'var(--green)':p.rating==='poor'?'var(--red)':'var(--gold)';
+          const winFill = p.win_rate > 60 ? 'var(--green)' : p.win_rate < 40 ? 'var(--red)' : 'var(--gold)';
+          return '<div class="pair-stat-row"><div style="flex:1"><div class="pair-stat-name">'+p.pair+'</div><div class="pair-stat-meta">'+p.trades+' trades · '+p.wins+'W/'+p.losses+'L</div><div class="win-bar"><div class="win-fill" style="width:'+p.win_rate+'%;background:'+winFill+'"></div></div></div><div style="text-align:right;margin-left:12px"><div style="font-family:var(--mono);font-weight:700;font-size:0.9rem;color:'+(p.total_pnl>=0?'var(--green)':'var(--red)')+'">'+(p.total_pnl>=0?'+':'')+'$'+p.total_pnl.toFixed(2)+'</div><div style="font-size:0.72rem;color:'+ratingColor+';font-weight:600;margin-top:2px">'+p.win_rate+'% win</div></div></div>';
+        }).join('');
+      } else {
+        pairEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">No trade history yet.</div>';
+      }
     }
   }catch(e){
     console.error('Stats error:', e);
