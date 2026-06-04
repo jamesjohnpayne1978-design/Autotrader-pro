@@ -10,7 +10,7 @@ import logging
 import json
 import numpy as np
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import Config
 
 log = logging.getLogger(__name__)
@@ -294,6 +294,114 @@ class SignalEngine:
                         f"{remaining:.0f} min remaining. TP/SL still active.")
         except Exception:
             pass
+        return None
+
+    # ============================================================
+    # BUY SAFETY FILTERS
+    # ============================================================
+    # Loss cooldowns are stored as: { pair: { 'ts': isoformat, 'pnl': float } }
+    # Recorded automatically when the fill watcher detects an OCO stop-loss.
+    _LOSS_COOLDOWN_PATH = '/data/loss_cooldowns.json'
+
+    def _load_loss_cooldowns(self):
+        try:
+            if os.path.exists(self._LOSS_COOLDOWN_PATH):
+                with open(self._LOSS_COOLDOWN_PATH) as f:
+                    return json.load(f) or {}
+        except Exception:
+            pass
+        return {}
+
+    def _save_loss_cooldowns(self, data):
+        try:
+            os.makedirs(os.path.dirname(self._LOSS_COOLDOWN_PATH), exist_ok=True)
+            with open(self._LOSS_COOLDOWN_PATH, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            log.debug(f"Could not save loss cooldowns: {e}")
+
+    def record_loss_cooldown(self, pair, pnl):
+        """Called by fill watcher when an OCO stop-loss fills."""
+        try:
+            cooldowns = self._load_loss_cooldowns()
+            cooldowns[pair] = {'ts': datetime.now().isoformat(), 'pnl': float(pnl)}
+            self._save_loss_cooldowns(cooldowns)
+            log.info(f"Loss cooldown recorded for {pair} (pnl ${pnl:.2f})")
+        except Exception as e:
+            log.debug(f"record_loss_cooldown failed: {e}")
+
+    def _check_loss_cooldown(self, pair):
+        """Returns a reason string if the pair is still in loss-cooldown, else None."""
+        if not _extra_bool('loss_cooldown_enabled', True):
+            return None
+        try:
+            hours = float(_extra_float('loss_cooldown_hours', 4.0))
+        except Exception:
+            hours = 4.0
+        if hours <= 0:
+            return None
+        cooldowns = self._load_loss_cooldowns()
+        rec = cooldowns.get(pair)
+        if not rec:
+            return None
+        try:
+            ts = datetime.fromisoformat(rec['ts'])
+            elapsed_h = (datetime.now() - ts).total_seconds() / 3600.0
+            if elapsed_h < hours:
+                remaining = hours - elapsed_h
+                return f"in loss cooldown ({remaining:.1f}h remaining after ${rec.get('pnl', 0):.2f} loss)"
+        except Exception:
+            pass
+        return None
+
+    def _check_buy_safety_filters(self, signal):
+        """All buy-side guard rails in one place. Returns a reason string if
+        the buy should be SKIPPED, or None to proceed.
+
+        Filters (each independently toggleable via settings):
+        - Loss cooldown: pair just stopped out → block re-entry for N hours
+        - Confirmation candle: previous full 1h candle must be green
+        - Falling-knife: current price down >X% in the last 1h → skip
+        """
+        pair = signal.get('pair')
+        if not pair:
+            return None
+
+        # 1) Loss cooldown - independent of indicators
+        loss_reason = self._check_loss_cooldown(pair)
+        if loss_reason:
+            return loss_reason
+
+        # 2 & 3 need indicator context that's already on the signal object's
+        # parent in self.latest_signals - re-derive from current state
+        symbol = pair.replace('/USDT', '').replace('/', '') + 'USDT'
+
+        # Confirmation candle filter
+        if _extra_bool('confirmation_candle_enabled', True):
+            try:
+                # Re-fetch a tiny kline to check the last fully-closed hour
+                klines = self.trader.get_klines(symbol, '1h', 3)
+                if len(klines) >= 2:
+                    last_closed = klines[-2]  # most recently closed candle
+                    if last_closed.get('close', 0) <= last_closed.get('open', 0):
+                        return "previous 1h candle closed red (waiting for green confirmation)"
+            except Exception:
+                pass
+
+        # Falling-knife filter
+        if _extra_bool('falling_knife_filter_enabled', True):
+            try:
+                max_drop = float(_extra_float('falling_knife_max_drop_pct', 3.0))
+                klines = self.trader.get_klines(symbol, '1h', 3)
+                if len(klines) >= 2 and klines[-2].get('close', 0):
+                    cur = klines[-1].get('close', 0)
+                    prior = klines[-2].get('close', 0)
+                    drop_pct = ((cur - prior) / prior) * 100 if prior else 0
+                    if drop_pct < -max_drop:
+                        return f"price down {drop_pct:.2f}% in last hour (falling-knife filter, max -{max_drop}%)"
+            except Exception:
+                pass
+
         return None
 
     def run(self):
@@ -674,6 +782,11 @@ class SignalEngine:
             log.debug(f"Fill announcement scan failed: {e}")
         if self.config.auto_mode and self.risk_manager:
             self._auto_execute(signals)
+        # Daily summary - sends once per UTC day on first refresh after midnight
+        try:
+            self._maybe_send_daily_summary()
+        except Exception as e:
+            log.debug(f"Daily summary check failed: {e}")
 
     _ANNOUNCED_FILLS_PATH = '/data/announced_fills.json'
 
@@ -699,6 +812,101 @@ class SignalEngine:
                            'seen_ids': seen}, f)
         except Exception as e:
             log.debug(f"Could not persist announced fills: {e}")
+
+    # ============================================================
+    # DAILY SUMMARY (sends once per UTC day)
+    # ============================================================
+    _SUMMARY_STATE_PATH = '/data/daily_summary_state.json'
+
+    def _maybe_send_daily_summary(self):
+        """Sends a daily PnL summary to Telegram once per UTC day on the
+        first refresh cycle of that day. Tracks last-sent date to avoid
+        duplicates and silently no-ops when disabled."""
+        if not _extra_bool('daily_summary_enabled', True):
+            return
+        if not self.trader:
+            return
+        today = datetime.utcnow().strftime('%Y-%m-%d')
+        last_sent = ''
+        try:
+            if os.path.exists(self._SUMMARY_STATE_PATH):
+                with open(self._SUMMARY_STATE_PATH) as f:
+                    last_sent = (json.load(f) or {}).get('last_sent_date', '')
+        except Exception:
+            pass
+        if last_sent == today:
+            return  # already sent today
+
+        # Compute yesterday's date as the period being summarized
+        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+        try:
+            self._send_daily_summary(yesterday)
+            with open(self._SUMMARY_STATE_PATH, 'w') as f:
+                json.dump({'last_sent_date': today, 'period': yesterday}, f)
+        except Exception as e:
+            log.warning(f"Daily summary failed: {e}")
+
+    def _send_daily_summary(self, date_str):
+        """Build and send the actual summary message for a given date."""
+        try:
+            history = self.trader.get_real_trade_history() or []
+        except Exception:
+            history = []
+
+        # Filter to sells on the given date (PnL is realized on sells)
+        day_sells = [t for t in history if t.get('side') == 'sell' and t.get('date') == date_str]
+        day_buys = [t for t in history if t.get('side') == 'buy' and t.get('date') == date_str]
+
+        total_pnl = round(sum(t.get('pnl', 0) for t in day_sells), 2)
+        wins = [t for t in day_sells if t.get('pnl', 0) > 0]
+        losses = [t for t in day_sells if t.get('pnl', 0) < 0]
+        closed = len(wins) + len(losses)
+        win_rate = round(len(wins) / closed * 100, 1) if closed > 0 else None
+        biggest_win = max((t.get('pnl', 0) for t in wins), default=0)
+        biggest_loss = min((t.get('pnl', 0) for t in losses), default=0)
+
+        # Portfolio snapshot
+        portfolio_value = 0.0
+        open_positions = 0
+        try:
+            p = self.trader.get_portfolio()
+            portfolio_value = float(p.get('total_usdt', 0))
+            open_positions = int(p.get('open_positions', 0))
+        except Exception:
+            pass
+
+        if total_pnl > 0:
+            verdict = "✅ Net win"
+        elif total_pnl < 0:
+            verdict = "🛑 Net loss"
+        elif closed == 0:
+            verdict = "💤 No trades closed"
+        else:
+            verdict = "➖ Flat"
+
+        if closed == 0 and not day_buys:
+            # Nothing happened - skip sending entirely to avoid daily spam
+            log.info(f"Daily summary skipped for {date_str} (no activity)")
+            return
+
+        pnl_sign = '+' if total_pnl >= 0 else '-'
+        msg_parts = [
+            f"📊 *DAILY SUMMARY · {date_str}*",
+            f"{verdict}: {pnl_sign}${abs(total_pnl):.2f}",
+            "",
+            f"Trades: {len(day_buys)} buy / {len(day_sells)} sell",
+        ]
+        if win_rate is not None:
+            msg_parts.append(f"Win rate: {win_rate}% ({len(wins)}W / {len(losses)}L)")
+        if biggest_win > 0:
+            msg_parts.append(f"Best: +${biggest_win:.2f}")
+        if biggest_loss < 0:
+            msg_parts.append(f"Worst: -${abs(biggest_loss):.2f}")
+        msg_parts.append("")
+        msg_parts.append(f"Portfolio: ${portfolio_value:.2f} · {open_positions} open · regime {self.market_regime}")
+
+        self._tg_send("\n".join(msg_parts), context=f"daily-summary-{date_str}")
+        log.info(f"Daily summary sent for {date_str}: pnl=${total_pnl:.2f}")
 
     def mark_fill_announced(self, order_id):
         """Public hook so app.py /api/trade or trailing-stop code can mark a
@@ -788,6 +996,15 @@ class SignalEngine:
                     if hasattr(self, 'high_water_marks') and sym in self.high_water_marks:
                         del self.high_water_marks[sym]
                         log.info(f"Cleared trailing state for {sym} after OCO fill")
+                except Exception:
+                    pass
+
+                # Loss cooldown: if this was a stop-loss fill, block re-entry
+                # on the same pair for the configured window. Only triggers
+                # on actual losses, not breakeven or winning exits.
+                try:
+                    if pnl < 0:
+                        self.record_loss_cooldown(pair, pnl)
                 except Exception:
                     pass
 
@@ -925,6 +1142,22 @@ class SignalEngine:
             if not approved:
                 log.info(f"Auto-execute blocked {pair}: {reason}")
                 continue
+
+            # ============================================================
+            # SAFETY FILTERS for BUYS - applied AFTER confidence + risk
+            # ============================================================
+            # These reduce the rate of "buy now, get stopped out 30min later"
+            # by demanding price action confirmation and blocking immediate
+            # re-entry after a stop-loss hit.
+            if action == 'buy':
+                skip_reason = self._check_buy_safety_filters(signal)
+                if skip_reason:
+                    log.info(f"Buy safety filter blocked {pair}: {skip_reason}")
+                    if self.risk_manager:
+                        try: self.risk_manager.release_lock(pair)
+                        except Exception: pass
+                    continue
+
             try:
                 if action == 'sell':
                     hold_reason = self._check_min_hold(pair)
@@ -1048,6 +1281,15 @@ class SignalEngine:
         price = closes[-1]
         price_change = ((closes[-1] - closes[-24]) / closes[-24] * 100) if len(closes) >= 24 else 0
 
+        # Most recently CLOSED hourly candle - klines are oldest→newest, last
+        # entry is the currently-forming candle, second-to-last is the last
+        # full closed one. Used by the confirmation-candle filter.
+        last_closed_open = klines[-2].get('open', 0) if len(klines) >= 2 else 0
+        last_closed_close = klines[-2].get('close', 0) if len(klines) >= 2 else 0
+        last_1h_green = (last_closed_close > last_closed_open) if last_closed_open and last_closed_close else False
+        # Price change vs 1 hour ago (close[-2] is "1h ago" close)
+        price_change_1h = ((closes[-1] - closes[-2]) / closes[-2] * 100) if len(closes) >= 2 and closes[-2] else 0
+
         if hasattr(self.config, 'get_pair_rsi'):
             base_buy, base_sell = self.config.get_pair_rsi(symbol)
         else:
@@ -1068,6 +1310,8 @@ class SignalEngine:
             'bb': bb, 'stoch_rsi': stoch_rsi, 'rsi_divergence': rsi_divergence,
             'bb_bounce': bb_bounce, 'volume_ratio': volume_ratio, 'price': price,
             'price_change_24h': price_change,
+            'price_change_1h': price_change_1h,
+            'last_1h_green': last_1h_green,
             'rsi_buy_threshold': rsi_buy_threshold,
             'rsi_sell_threshold': rsi_sell_threshold,
             'fear_greed': getattr(self, 'fear_greed_index', 50)
