@@ -414,6 +414,7 @@ class Trader:
                             'time': datetime.fromtimestamp(int(t['time']) / 1000).strftime('%Y-%m-%d %H:%M'),
                             'date': datetime.fromtimestamp(int(t['time']) / 1000).strftime('%Y-%m-%d'),
                             'orderId': str(t['orderId']),
+                            'orderListId': int(t.get('orderListId', -1)),
                         })
                 except Exception as e:
                     log.debug(f"Could not fetch trades for {symbol}: {e}")
@@ -432,6 +433,9 @@ class Trader:
                     existing['quantity'] = round(total_qty, 6)
                     existing['usdt_value'] = round(total_val, 2)
                     existing['commission'] = existing.get('commission', 0) + t.get('commission', 0)
+                    # Preserve orderListId across partial-fill consolidation
+                    if existing.get('orderListId', -1) == -1 and t.get('orderListId', -1) != -1:
+                        existing['orderListId'] = t['orderListId']
 
             all_trades = list(consolidated.values())
 
@@ -440,6 +444,7 @@ class Trader:
             buy_queues = {}  # symbol -> deque of [price, remaining_qty]
             for trade in sorted(all_trades, key=lambda x: x['time_ms']):
                 symbol = trade['symbol']
+                # Default - will refine for sells below
                 trade['trigger'] = 'AI Signal'
 
                 if trade['side'] == 'buy':
@@ -469,6 +474,19 @@ class Trader:
                         # Setting to 0 is honest (we won't double-count when older
                         # trades fall outside the limit).
                         trade['pnl'] = 0.0
+
+                    # Refine the trigger label so OCO fills are clearly
+                    # distinguishable from AI- or manually-initiated sells.
+                    # orderListId != -1 means the trade was the fill of an
+                    # OCO order leg (placed automatically after every buy).
+                    if trade.get('orderListId', -1) != -1:
+                        # PnL sign tells us which leg fired
+                        if trade.get('pnl', 0) > 0:
+                            trade['trigger'] = '🎯 OCO Take-Profit'
+                        elif trade.get('pnl', 0) < 0:
+                            trade['trigger'] = '🛑 OCO Stop-Loss'
+                        else:
+                            trade['trigger'] = '⚙️ OCO Fill'
 
             # Return newest-first (dashboard expects this order)
             all_trades.sort(key=lambda x: x['time_ms'], reverse=True)
