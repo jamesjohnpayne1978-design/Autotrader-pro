@@ -125,6 +125,15 @@ class ListingSniper:
                     base = symbol.replace('USDT', '')
                     if any(x in base for x in ['USD', 'EUR', 'GBP', 'BUSD', 'USDC', 'TUSD', 'TEST']):
                         continue
+                    # Skip symbols already on the permanent block list (tokenized
+                    # stocks, region-restricted products). Saves the API call and
+                    # the misleading "NEW LISTING DETECTED" alert.
+                    try:
+                        if hasattr(self.trader, 'is_symbol_blocked') and self.trader.is_symbol_blocked(symbol):
+                            log.info(f"Skipping {symbol} - on permanent block list")
+                            continue
+                    except Exception:
+                        pass
                     log.info(f"🎯 NEW SYMBOL DETECTED: {symbol}")
                     self._handle_new_listing(symbol, f"New pair listed on Binance: {symbol}", 'exchange_api')
                 self.seen_symbols = current
@@ -160,6 +169,13 @@ class ListingSniper:
                 if any(kw in title_lower for kw in ['will list', 'lists', 'listing', 'new listing', 'adds']):
                     symbol = self._extract_symbol(title)
                     if symbol and symbol not in self.seen_symbols:
+                        # Block-list early-out (see exchange check for rationale)
+                        try:
+                            if hasattr(self.trader, 'is_symbol_blocked') and self.trader.is_symbol_blocked(symbol):
+                                log.info(f"Skipping {symbol} from news - on permanent block list")
+                                continue
+                        except Exception:
+                            pass
                         log.info(f"📰 LISTING ANNOUNCEMENT: {title} → {symbol}")
                         self._handle_new_listing(symbol, title, 'news_api')
 
@@ -226,8 +242,9 @@ class ListingSniper:
 
     def _execute_snipe(self, symbol: str, detection: dict, budget: float):
         """Execute the snipe trade, then place an OCO order at Binance to handle
-        TP and SL at the exchange level. No more 30-min force-sell - position
-        runs until OCO triggers OR the user manually closes."""
+        TP and SL at the exchange level. The OCO is the ONLY exit mechanism -
+        there is no force-sell timer. Position runs until OCO triggers OR the
+        user manually closes."""
         try:
             # Wait up to 30s for trading to open
             for _ in range(30):
@@ -272,7 +289,7 @@ class ListingSniper:
                             f"🛡️ *Snipe protected by OCO*\n`{symbol}`\n"
                             f"TP: ${oco_result.get('tp_price')} (+{tp_pct}%)\n"
                             f"SL: ${oco_result.get('sl_price')} (-{sl_pct}%)\n"
-                            f"_Position runs until TP or SL hits - no 30-min force sell._"
+                            f"_OCO is the only exit - position runs until TP or SL hits._"
                         )
                     else:
                         detection['oco_placed'] = False
@@ -302,16 +319,54 @@ class ListingSniper:
             log.error(f"Snipe error for {symbol}: {e}")
             self._send_telegram_failed(symbol, str(e))
 
+    def _get_actual_sell_fill(self, symbol: str, since_ms: int):
+        """Query Binance for the actual sell trade(s) that closed our position.
+
+        Returns (fill_price, fill_qty, was_oco) or (None, None, False) if no
+        sell found. Used to report ACTUAL fill prices instead of stale ticker
+        prices when announcing snipe closes.
+
+        was_oco is True if the sell came from an OCO order (orderListId != -1),
+        which tells us whether TP or SL leg fired vs. a manual sell.
+        """
+        try:
+            trades = self.trader.client.get_my_trades(symbol=symbol, limit=20) or []
+            # Filter to sells AFTER our buy, take volume-weighted average price
+            sells = [t for t in trades
+                     if not t['isBuyer'] and int(t['time']) >= since_ms]
+            if not sells:
+                return None, None, False
+            total_qty = sum(float(t['qty']) for t in sells)
+            total_val = sum(float(t['price']) * float(t['qty']) for t in sells)
+            avg_price = total_val / total_qty if total_qty > 0 else 0
+            # If ANY sell has orderListId != -1, the close came from the OCO
+            was_oco = any(int(t.get('orderListId', -1)) != -1 for t in sells)
+            return avg_price, total_qty, was_oco
+        except Exception as e:
+            log.debug(f"Could not fetch sell fills for {symbol}: {e}")
+            return None, None, False
+
     def _monitor_position(self, symbol: str, detection: dict = None):
         """Watches a sniped position for dashboard purposes - updates current
         price and P&L in the detection dict every few seconds. The actual exit
         (TP/SL) is handled by the OCO order at Binance, not by this thread.
+
+        When the position closes, queries Binance for the ACTUAL sell fill
+        price (not the live ticker) so the result message is accurate.
 
         Stops when the position is sold (balance goes to ~0) or after 24 hours
         as a safety bound. No force-sell."""
         buy_price = detection.get('buy_price') if detection else None
         tp_pct = (detection.get('tp_pct') if detection else None) or float(self.config.sniper_tp_pct)
         sl_pct = (detection.get('sl_pct') if detection else None) or float(self.config.sniper_sl_pct)
+        # Buy timestamp in ms - used to find sell trades that came after the buy
+        bought_at_ms = int(time.time() * 1000)
+        try:
+            if detection and detection.get('bought_at'):
+                bought_at_ms = int(datetime.fromisoformat(detection['bought_at']).timestamp() * 1000)
+        except Exception:
+            pass
+
         start = time.time()
         max_watch_seconds = 24 * 60 * 60  # safety: stop watching after 24h
         base = symbol.replace('USDT', '')
@@ -342,22 +397,57 @@ class ListingSniper:
                     )
                     original_qty = detection.get('qty', 0) if detection else 0
                     if original_qty > 0 and current_qty < original_qty * 0.05:
-                        # Position closed - determine exit type by comparing to TP/SL prices
-                        if detection is not None:
-                            if change_pct >= tp_pct * 0.9:  # within 10% of TP target
-                                detection['status'] = 'tp_hit'
-                                detection['action'] = f"TP filled +{change_pct:.1f}%"
-                            elif change_pct <= -sl_pct * 0.9:
-                                detection['status'] = 'sl_hit'
-                                detection['action'] = f"SL filled {change_pct:.1f}%"
+                        # Position closed - find the ACTUAL fill price from
+                        # Binance trade history, not the live ticker. This
+                        # matters because volatile new listings can bounce
+                        # several % between the SL firing and the next monitor
+                        # cycle 15s later.
+                        actual_price, actual_qty, was_oco = self._get_actual_sell_fill(symbol, bought_at_ms)
+
+                        if actual_price and actual_price > 0:
+                            actual_change_pct = ((actual_price - buy_price) / buy_price) * 100
+                            pnl_usdt = round((actual_price - buy_price) * (actual_qty or original_qty), 2)
+                            # Classify exit by ACTUAL fill, not by current ticker
+                            if was_oco:
+                                if actual_change_pct > 0:
+                                    exit_type = '🎯 TP HIT'
+                                    status = 'tp_hit'
+                                else:
+                                    exit_type = '🛑 SL HIT'
+                                    status = 'sl_hit'
                             else:
+                                exit_type = '✅ Closed'
+                                status = 'closed'
+
+                            if detection is not None:
+                                detection['status'] = status
+                                detection['exit_price'] = actual_price
+                                detection['exit_pnl_usdt'] = pnl_usdt
+                                detection['action'] = f"{exit_type} {actual_change_pct:+.1f}%"
+                                detection['monitoring'] = False
+
+                            sign = '+' if pnl_usdt >= 0 else '-'
+                            self._telegram_post(
+                                f"{exit_type} *Snipe closed*\n"
+                                f"`{symbol}`\n"
+                                f"Entry: ${buy_price:.6f}\n"
+                                f"Exit:  ${actual_price:.6f}\n"
+                                f"Result: {actual_change_pct:+.1f}% ({sign}${abs(pnl_usdt):.2f})"
+                            )
+                            log.info(f"Snipe position closed: {symbol} actual fill {actual_change_pct:+.1f}% "
+                                     f"(ticker was {change_pct:+.1f}%) via {exit_type}")
+                        else:
+                            # Fallback - couldn't fetch actual fill, use ticker
+                            # but flag the uncertainty so user knows
+                            if detection is not None:
                                 detection['status'] = 'closed'
-                                detection['action'] = f"Closed {change_pct:+.1f}%"
-                            detection['monitoring'] = False
-                        log.info(f"Snipe position closed: {symbol} at {change_pct:+.1f}%")
-                        self._telegram_post(
-                            f"✅ *Snipe closed*\n`{symbol}`\nResult: {change_pct:+.1f}%"
-                        )
+                                detection['action'] = f"Closed {change_pct:+.1f}% (approx)"
+                                detection['monitoring'] = False
+                            self._telegram_post(
+                                f"✅ *Snipe closed*\n`{symbol}`\n"
+                                f"Result: ~{change_pct:+.1f}% (ticker estimate - check trade history for exact)"
+                            )
+                            log.info(f"Snipe position closed: {symbol} ~{change_pct:+.1f}% (ticker only)")
                         return
                 except Exception:
                     pass
@@ -383,14 +473,18 @@ class ListingSniper:
             log.debug(f"Telegram failed: {e}")
 
     def _send_telegram_buying(self, symbol: str, title: str, budget: float):
-        """Alert: sniper detected a listing and is attempting to buy."""
+        """Alert: sniper detected a listing and is attempting to buy.
+
+        Note: removed the misleading 'Max hold: 30 min' line - there's no
+        30-min force-sell. The OCO at Binance is the only exit mechanism.
+        """
         msg = (
             f"🎯 *NEW LISTING DETECTED*\n\n"
             f"Symbol: `{symbol}`\n"
             f"Source: {title[:80]}\n\n"
             f"Attempting buy: ${budget:.0f}\n"
             f"TP: +{self.config.sniper_tp_pct}% · SL: -{self.config.sniper_sl_pct}%\n"
-            f"Max hold: 30 min"
+            f"Exit: OCO at Binance (no time limit)"
         )
         self._telegram_post(msg)
 
