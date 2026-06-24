@@ -1,6 +1,7 @@
 """
 AutoTrader Pro - Main Flask Server
 Added: market regime endpoint
+Added: sniper history endpoints + missing toggle_sniper route decorator
 """
 
 from flask import Flask, jsonify, request, send_file
@@ -527,6 +528,60 @@ def sniper_positions():
     })
 
 
+# =============================================================================
+# SNIPER HISTORY - persistent record of all snipes (closed, failed, blocked)
+# =============================================================================
+@app.route('/api/sniper/history')
+def get_sniper_history():
+    """Returns the persistent snipe history (completed + failed + blocked).
+
+    Loaded from /data/sniper_history.json by the sniper on startup, updated
+    in real time as snipes finish. Survives Railway redeploys.
+    """
+    if not sniper:
+        return jsonify({'history': [], 'count': 0, 'stats': {}})
+    try:
+        limit = int(request.args.get('limit', 50))
+    except (TypeError, ValueError):
+        limit = 50
+    history = sniper.get_history(limit=limit)
+
+    # Compute aggregate stats while we have the data in hand
+    closed = [h for h in history if h.get('status') in ('tp_hit', 'sl_hit', 'closed')]
+    wins   = [h for h in closed  if (h.get('pnl_usdt') or 0) > 0]
+    losses = [h for h in closed  if (h.get('pnl_usdt') or 0) < 0]
+    tp_hits = [h for h in history if h.get('status') == 'tp_hit']
+    sl_hits = [h for h in history if h.get('status') == 'sl_hit']
+    failed  = [h for h in history if h.get('status') in ('failed', 'error', 'blocked')]
+    total_pnl = round(sum(h.get('pnl_usdt') or 0 for h in closed), 2)
+    win_rate = round(len(wins) / len(closed) * 100, 1) if closed else None
+
+    return jsonify({
+        'history': history,
+        'count': len(history),
+        'stats': {
+            'total_snipes': len(history),
+            'closed': len(closed),
+            'wins': len(wins),
+            'losses': len(losses),
+            'tp_hits': len(tp_hits),
+            'sl_hits': len(sl_hits),
+            'failed': len(failed),
+            'win_rate': win_rate,
+            'total_pnl': total_pnl,
+        },
+    })
+
+
+@app.route('/api/sniper/history/clear', methods=['POST'])
+def clear_sniper_history():
+    """Wipe the persistent snipe history (with confirmation in UI)."""
+    if not sniper:
+        return jsonify({'success': False, 'error': 'Sniper not initialised'}), 400
+    sniper.clear_history()
+    return jsonify({'success': True})
+
+
 @app.route('/api/telegram/test')
 def test_telegram():
     if not config.telegram_token or not config.telegram_chat_id:
@@ -623,7 +678,9 @@ def simulate_sniper_detection():
     return jsonify(result_summary)
 
 
-
+# Fixed: this previously had no route decorator and was unreachable.
+# UI 'Sniper ON/OFF' toggle now actually flips the bot state.
+@app.route('/api/sniper/toggle', methods=['POST'])
 def toggle_sniper():
     if not sniper:
         return jsonify({'error': 'Not initialised'}), 400
