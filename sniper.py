@@ -11,6 +11,7 @@ approval_mode normally. To pause sniping entirely, turn off the Sniper toggle.
 import time
 import logging
 import json
+import os
 import requests
 from datetime import datetime
 from threading import Thread
@@ -39,6 +40,11 @@ def _sniper_budget(config):
 
 
 class ListingSniper:
+    # Where the persistent snipe history lives. Survives Railway redeploys.
+    _HISTORY_PATH = '/data/sniper_history.json'
+    # Max history entries to keep on disk
+    _HISTORY_MAX = 100
+
     def __init__(self, config, trader, risk_manager):
         self.config = config
         self.trader = trader
@@ -47,8 +53,10 @@ class ListingSniper:
         self.seen_symbols = set()
         self.seen_news_ids = set()
         self.recent_detections = []
+        self.history = []
         self._load_seen()
-        log.info("Sniper initialised - watching for new listings")
+        self._load_history()
+        log.info(f"Sniper initialised - watching for new listings (history: {len(self.history)} entries)")
 
     def _load_seen(self):
         try:
@@ -69,6 +77,92 @@ class ListingSniper:
                 }, f)
         except Exception:
             pass
+
+    # ============================================================
+    # SNIPE HISTORY (persistent across restarts)
+    # ============================================================
+
+    def _load_history(self):
+        """Load persistent snipe history from disk. Newest entries first."""
+        try:
+            if os.path.exists(self._HISTORY_PATH):
+                with open(self._HISTORY_PATH, 'r') as f:
+                    data = json.load(f) or []
+                    self.history = data if isinstance(data, list) else []
+        except Exception as e:
+            log.warning(f"Could not load sniper history: {e}")
+            self.history = []
+
+    def _save_history(self):
+        """Persist history list to disk."""
+        try:
+            os.makedirs(os.path.dirname(self._HISTORY_PATH), exist_ok=True)
+            with open(self._HISTORY_PATH, 'w') as f:
+                json.dump(self.history[:self._HISTORY_MAX], f, indent=2, default=str)
+        except Exception as e:
+            log.warning(f"Could not save sniper history: {e}")
+
+    def _record_to_history(self, detection: dict, extra: dict = None):
+        """Add a snipe to persistent history. Called on close, failure, or block.
+
+        detection is the in-memory dict the sniper builds during execution.
+        extra optionally overrides/adds fields (e.g. final exit price, pnl).
+        """
+        if not detection:
+            return
+        try:
+            entry = {
+                'symbol': detection.get('symbol'),
+                'source': detection.get('source'),
+                'status': detection.get('status'),
+                'detected_date': detection.get('date'),
+                'detected_time': detection.get('time'),
+                'bought_at': detection.get('bought_at'),
+                'entry_price': detection.get('buy_price'),
+                'exit_price': detection.get('exit_price'),
+                'qty': detection.get('qty'),
+                'usdt_spent': detection.get('usdt_spent'),
+                'result_pct': detection.get('change_pct'),
+                'pnl_usdt': detection.get('exit_pnl_usdt'),
+                'action': detection.get('action'),
+                'tp_pct': detection.get('tp_pct'),
+                'sl_pct': detection.get('sl_pct'),
+                'oco_placed': detection.get('oco_placed'),
+                'oco_tp_price': detection.get('oco_tp_price'),
+                'oco_sl_price': detection.get('oco_sl_price'),
+                'closed_at': datetime.now().isoformat(timespec='seconds'),
+                'error': detection.get('oco_error'),
+            }
+            if extra:
+                entry.update(extra)
+
+            # Calculate hold duration in minutes if we have both timestamps
+            try:
+                if entry.get('bought_at') and entry.get('closed_at'):
+                    bought = datetime.fromisoformat(entry['bought_at'])
+                    closed = datetime.fromisoformat(entry['closed_at'])
+                    entry['duration_minutes'] = round((closed - bought).total_seconds() / 60, 1)
+            except Exception:
+                pass
+
+            # Insert newest-first, cap at MAX
+            self.history.insert(0, entry)
+            self.history = self.history[:self._HISTORY_MAX]
+            self._save_history()
+            log.info(f"Snipe recorded to history: {entry.get('symbol')} "
+                     f"status={entry.get('status')} result={entry.get('result_pct')}%")
+        except Exception as e:
+            log.warning(f"Could not record snipe to history: {e}")
+
+    def get_history(self, limit=50):
+        """Returns the most recent snipes (used by /api/sniper/history)."""
+        return self.history[:limit]
+
+    def clear_history(self):
+        """Wipe the persistent history (used by /api/sniper/history/clear)."""
+        self.history = []
+        self._save_history()
+        return True
 
     def run(self):
         log.info("Sniper thread started - seeding known symbols...")
@@ -227,6 +321,7 @@ class ListingSniper:
             detection['status'] = 'blocked'
             detection['action'] = f'Risk blocked: {reason}'
             log.info(f"Sniper blocked {symbol}: {reason}")
+            self._record_to_history(detection)
             return
 
         # NOTE: Sniper intentionally bypasses the global `approval_mode` setting.
@@ -313,11 +408,13 @@ class ListingSniper:
                 detection['action'] = f"Failed: {err}"
                 log.error(f"Snipe failed for {symbol}: {err}")
                 self._send_telegram_failed(symbol, err)
+                self._record_to_history(detection, extra={'error': str(err)[:200]})
         except Exception as e:
             detection['status'] = 'error'
             detection['action'] = str(e)
             log.error(f"Snipe error for {symbol}: {e}")
             self._send_telegram_failed(symbol, str(e))
+            self._record_to_history(detection, extra={'error': str(e)[:200]})
 
     def _get_actual_sell_fill(self, symbol: str, since_ms: int):
         """Query Binance for the actual sell trade(s) that closed our position.
@@ -436,6 +533,11 @@ class ListingSniper:
                             )
                             log.info(f"Snipe position closed: {symbol} actual fill {actual_change_pct:+.1f}% "
                                      f"(ticker was {change_pct:+.1f}%) via {exit_type}")
+                            # Persist this completed snipe to history
+                            self._record_to_history(detection, extra={
+                                'exit_type': exit_type,
+                                'result_pct': round(actual_change_pct, 2),
+                            })
                         else:
                             # Fallback - couldn't fetch actual fill, use ticker
                             # but flag the uncertainty so user knows
@@ -448,6 +550,10 @@ class ListingSniper:
                                 f"Result: ~{change_pct:+.1f}% (ticker estimate - check trade history for exact)"
                             )
                             log.info(f"Snipe position closed: {symbol} ~{change_pct:+.1f}% (ticker only)")
+                            self._record_to_history(detection, extra={
+                                'exit_type': '✅ Closed (ticker estimate)',
+                                'result_pct': round(change_pct, 2),
+                            })
                         return
                 except Exception:
                     pass
