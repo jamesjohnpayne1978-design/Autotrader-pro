@@ -159,6 +159,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 .alloc-row:last-child{border-bottom:none}
 .alloc-bar{height:8px;background:var(--surface2);border-radius:4px;flex:1}
 .alloc-fill{height:100%;border-radius:4px;transition:width 0.8s ease}
+.snipe-row{padding:12px 14px;margin-bottom:8px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;border-left-width:3px}
+.snipe-row.tp{border-left-color:var(--green)}
+.snipe-row.sl{border-left-color:var(--red)}
+.snipe-row.closed{border-left-color:var(--gold)}
+.snipe-row.failed{border-left-color:var(--red)}
+.snipe-row.blocked{border-left-color:var(--text-3)}
 </style>
 </head>
 <body>
@@ -243,8 +249,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div class="section-title">Active Snipes</div>
   <div class="card" id="sniperPositions"><div style="text-align:center;padding:20px;color:var(--text-2);font-size:0.9rem;">Loading positions...</div></div>
 
-  <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 14px"><div class="section-title" style="margin:0">Recent Detections</div><button onclick="testSniper()" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">🧪 Test Sniper</button></div>
-  <div class="card" id="sniperHistory"><div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.95rem;">No new listings detected yet.</div></div>
+  <!-- Snipe History (persistent, with stats) -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 14px"><div class="section-title" style="margin:0">Snipe History</div><div style="display:flex;gap:6px"><button onclick="testSniper()" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.74rem;font-weight:700;padding:7px 12px;cursor:pointer">🧪 Test</button><button onclick="clearSniperHistory()" style="background:transparent;border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text-2);font-family:var(--sans);font-size:0.74rem;font-weight:600;padding:7px 12px;cursor:pointer">🗑 Clear</button></div></div>
+
+  <div id="sniperStatsGrid" style="display:none;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:14px">
+    <div style="background:var(--surface);padding:12px 6px;text-align:center"><div class="stat-label">Total</div><div class="stat-value" id="snipeTotal">0</div></div>
+    <div style="background:var(--surface);padding:12px 6px;text-align:center"><div class="stat-label">Win %</div><div class="stat-value" id="snipeWinRate">—</div></div>
+    <div style="background:var(--surface);padding:12px 6px;text-align:center"><div class="stat-label">TP / SL</div><div class="stat-value" id="snipeTpSl">0/0</div></div>
+    <div style="background:var(--surface);padding:12px 6px;text-align:center"><div class="stat-label">Total P&L</div><div class="stat-value" id="snipeTotalPnl">$0</div></div>
+  </div>
+
+  <div class="card" id="sniperHistory" style="padding:14px"><div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.95rem;">No snipes recorded yet.</div></div>
 </div>
 
 <!-- HISTORY -->
@@ -422,9 +437,6 @@ async function loadChart(){try{const r=await fetch(API_BASE+'/api/portfolio/hist
 async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime();loadFearGreed()}
 
 async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const pnl=d.pnl_today||0;const pct=d.pnl_pct||0;const el=document.getElementById('portfolioPnl');el.textContent='Today: '+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+pct.toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');
-// Overall: prefer backend's real deposit-aware PnL. Falls back to
-// localStorage baseline only if no deposit history is available (e.g.
-// Binance key lacks deposit read permission).
 const overallEl = document.getElementById('portfolioOverall');
 if(overallEl){
   if(d.cost_basis && d.cost_basis > 0 && d.pnl_total !== undefined){
@@ -497,12 +509,8 @@ function renderPairs(pairs){if(!pairs||!pairs.length){document.getElementById('p
 async function loadSignals(){document.getElementById('signalsContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Analysing market...</div>';try{const r=await fetch(API_BASE+'/api/signals');const d=await r.json();renderSignals(d.signals)}catch(e){}}
 function renderSignals(signals){if(!signals||!signals.length){document.getElementById('signalsContainer').innerHTML='<div class="card" style="text-align:center;padding:20px;color:var(--text-2);font-size:0.9rem;">No strong signals. Watching...</div>';return}
 document.getElementById('signalsContainer').innerHTML=signals.map(s=>{
-  // Footer: action buttons in approval mode, status label in auto mode.
-  // In auto mode, only buy/sell actually execute - watch/hold just sit there.
   let footer;
   if(!state.autoMode){
-    // Show Execute/Skip for actionable signals (buy/sell). For watch/hold,
-    // show a Buy button anyway in case the user wants to override the AI.
     if(s.action==='buy'||s.action==='sell'){
       footer='<div class="signal-actions" style="margin-top:14px;"><button class="btn btn-execute" onclick="executeTrade(\''+s.pair+'\',\''+s.action+'\','+s.confidence+')">✓ Execute</button><button class="btn btn-skip" onclick="skipSignal(\''+s.pair+'\')">✕ Skip</button></div>';
     } else {
@@ -510,7 +518,6 @@ document.getElementById('signalsContainer').innerHTML=signals.map(s=>{
     }
   } else {
     if(s.action==='buy'||s.action==='sell'){
-      // Auto mode threshold is 60% - signals below that get skipped server-side
       if(s.confidence>=60){
         footer='<div style="font-size:0.7rem;color:var(--green);margin-top:10px;font-family:var(--mono);">⚡ Will auto-'+s.action+' on next cycle</div>';
       } else {
@@ -711,21 +718,118 @@ async function loadSniperPositions(){
   }
 }
 
+// ============================================================
+// SNIPE HISTORY (persistent across restarts)
+// ============================================================
+// Renders /api/sniper/history into the Sniper section. Each entry shows
+// symbol, exit type badge, entry/exit prices, hold duration, and PnL.
+// Stats grid above shows totals (count, win rate, TP/SL hits, total PnL).
 async function loadSniperHistory(){
+  const list = document.getElementById('sniperHistory');
+  const grid = document.getElementById('sniperStatsGrid');
+  if (!list) return;
+
   try{
-    const r=await fetch(API_BASE+'/api/sniper/status');
-    const d=await r.json();
-    const el=document.getElementById('sniperHistory');
-    if(d.detections&&d.detections.length){
-      el.innerHTML=d.detections.slice().reverse().map(x=>{
-        const mode=x.mode==='SIMULATED'?'<span style="color:var(--gold);font-size:0.7rem;font-family:var(--mono);margin-left:8px">SIMULATED</span>':'';
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)"><div><div style="font-family:var(--mono);font-weight:700;font-size:0.95rem">'+x.symbol+mode+'</div><div style="font-size:0.72rem;color:var(--text-3);font-family:var(--mono);margin-top:3px">'+x.detected_at+'</div></div></div>';
-      }).join('');
-    } else {
-      el.innerHTML='<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.95rem;">No new listings detected yet.</div>';
+    const r = await fetch(API_BASE+'/api/sniper/history?limit=50');
+    const d = await r.json();
+
+    // Stats grid
+    const s = d.stats || {};
+    if (d.count > 0 && grid){
+      grid.style.display = 'grid';
+      document.getElementById('snipeTotal').textContent = s.total_snipes || 0;
+      document.getElementById('snipeWinRate').textContent = s.win_rate != null ? s.win_rate + '%' : '—';
+      document.getElementById('snipeTpSl').textContent = (s.tp_hits || 0) + '/' + (s.sl_hits || 0);
+      const pnlEl = document.getElementById('snipeTotalPnl');
+      const pnl = s.total_pnl || 0;
+      pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+      pnlEl.style.color = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--text)';
+    } else if (grid) {
+      grid.style.display = 'none';
     }
-  }catch(e){}
+
+    // History list
+    if (!d.history || !d.history.length){
+      list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.95rem;">No snipes recorded yet. New listings detected and traded will appear here.</div>';
+      return;
+    }
+
+    list.innerHTML = d.history.map(h => {
+      let cls = 'closed';
+      let badge = '';
+      let badgeColor = 'var(--text-3)';
+      const status = h.status || 'unknown';
+      if (status === 'tp_hit') { cls = 'tp'; badge = '🎯 TP HIT'; badgeColor = 'var(--green)'; }
+      else if (status === 'sl_hit') { cls = 'sl'; badge = '🛑 SL HIT'; badgeColor = 'var(--red)'; }
+      else if (status === 'closed') { cls = 'closed'; badge = '✅ Closed'; badgeColor = 'var(--gold)'; }
+      else if (status === 'failed' || status === 'error') { cls = 'failed'; badge = '❌ Failed'; badgeColor = 'var(--red)'; }
+      else if (status === 'blocked') { cls = 'blocked'; badge = '🚫 Blocked'; badgeColor = 'var(--text-3)'; }
+      else { badge = status.toUpperCase(); }
+
+      const pnl = h.pnl_usdt;
+      const resultPct = h.result_pct;
+      const pnlHtml = (pnl != null && status !== 'failed' && status !== 'blocked')
+        ? ('<div style="font-family:var(--mono);font-weight:700;color:'+(pnl >= 0 ? 'var(--green)' : 'var(--red)')+';font-size:1rem">'
+           +(pnl >= 0 ? '+' : '-')+'$'+Math.abs(pnl).toFixed(2)+'</div>'
+           +'<div style="font-size:0.7rem;color:'+(pnl >= 0 ? 'var(--green)' : 'var(--red)')+';font-family:var(--mono);margin-top:2px">'
+           +(resultPct != null ? (resultPct >= 0 ? '+' : '') + resultPct.toFixed(1) + '%' : '')+'</div>')
+        : '<div style="font-size:0.7rem;color:var(--text-3)">—</div>';
+
+      let meta = '';
+      if (h.entry_price && h.exit_price) {
+        meta = '<div style="font-size:0.7rem;color:var(--text-3);font-family:var(--mono);margin-top:4px">$'
+          +h.entry_price.toPrecision(4)+' → $'+h.exit_price.toPrecision(4);
+        if (h.duration_minutes != null) {
+          const dur = h.duration_minutes;
+          const durStr = dur < 60 ? Math.round(dur) + 'm' : (dur / 60).toFixed(1) + 'h';
+          meta += ' · held '+durStr;
+        }
+        meta += '</div>';
+      } else if (h.error) {
+        meta = '<div style="font-size:0.7rem;color:var(--red);margin-top:4px;font-family:var(--mono)">'+(h.error || '').slice(0, 90)+'</div>';
+      }
+
+      const detectedAt = h.detected_date && h.detected_time
+        ? h.detected_date+' '+h.detected_time
+        : (h.closed_at || '').slice(0, 16);
+      const sourceLabel = h.source === 'news_api' ? '📰 news' : '⚡ exchange';
+
+      return '<div class="snipe-row '+cls+'">'
+        +'<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+              +'<span style="font-family:var(--mono);font-weight:700;font-size:0.95rem">'+(h.symbol || '?')+'</span>'
+              +'<span style="font-size:0.65rem;color:'+badgeColor+';font-weight:700;font-family:var(--mono)">'+badge+'</span>'
+            +'</div>'
+            +'<div style="font-size:0.68rem;color:var(--text-3);margin-top:2px;font-family:var(--mono)">'+detectedAt+' · '+sourceLabel+'</div>'
+            +meta
+          +'</div>'
+          +'<div style="text-align:right;margin-left:10px;flex-shrink:0">'+pnlHtml+'</div>'
+        +'</div>'
+      +'</div>';
+    }).join('');
+  } catch(e){
+    console.error('Sniper history error:', e);
+    list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-3);font-size:0.9rem;">Could not load history. Make sure backend is updated.</div>';
+  }
 }
+
+async function clearSniperHistory(){
+  if (!confirm('Wipe all sniper history? This cannot be undone.')) return;
+  try{
+    const r = await fetch(API_BASE+'/api/sniper/history/clear', { method: 'POST' });
+    const d = await r.json();
+    if (d.success){
+      showToast('History cleared');
+      loadSniperHistory();
+    } else {
+      showToast('Failed: '+(d.error || 'unknown'));
+    }
+  } catch(e){
+    showToast('Could not reach server');
+  }
+}
+
 function toggleAiFilter(){state.aiFilter=toggle('aiFilterToggle')}
 function toggleApproval(){state.approvalMode=toggle('approvalToggle')}
 function toggleAutoMode(){state.autoMode=toggle('autoModeToggle');showToast(state.autoMode?'Full auto mode ON':'Approval mode ON')}
@@ -738,7 +842,6 @@ function toggleTrailingStop(){state.trailingStop=toggle('trailingStopToggle');sh
 function toggleRegimeStrategy(){
   state.regimeStrategy=toggle('regimeStrategyToggle');
   document.getElementById('regimeStrategyStatus').style.display=state.regimeStrategy?'block':'none';
-  // Push the change immediately so it takes effect before Save Settings is tapped
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({regime_strategy_enabled:state.regimeStrategy})}).catch(()=>{});
   if(state.regimeStrategy) loadRegimeStrategyStatus();
   showToast(state.regimeStrategy?'Auto-adaptive ON · TP/SL/trailing will follow regime':'Auto-adaptive OFF · using manual settings');
@@ -788,7 +891,6 @@ async function loadPerPairMultipliers(){
       const color = p.verdict === 'outperforming' ? 'var(--green)'
                   : p.verdict === 'lagging' ? 'var(--red)'
                   : 'var(--text-2)';
-      const pad = (p.multiplier.toFixed(2)+'×').padEnd(6, ' ');
       return '<div style="display:flex;justify-content:space-between;padding:5px 10px;align-items:center">'
         +'<span style="color:'+color+';font-weight:600">'+p.display+'</span>'
         +'<span style="color:'+color+'">'+p.multiplier.toFixed(2)+'×</span>'
@@ -803,9 +905,6 @@ async function loadPerPairMultipliers(){
   }
 }
 
-// ============================================================
-// SAFETY FILTERS - confirmation candle, falling knife, loss cooldown
-// ============================================================
 function toggleConfirmationCandle(){
   state.confirmationCandle = toggle('confirmationCandleToggle');
   fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation_candle_enabled:state.confirmationCandle})}).catch(()=>{});
@@ -994,7 +1093,6 @@ function saveSettings(){
 }
 
 async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.regime_strategy_enabled!==undefined){state.regimeStrategy=d.regime_strategy_enabled;const el=document.getElementById('regimeStrategyToggle');if(el){state.regimeStrategy?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('regimeStrategyStatus');if(statusEl)statusEl.style.display=state.regimeStrategy?'block':'none';if(state.regimeStrategy)loadRegimeStrategyStatus()}if(d.per_pair_adjust_enabled!==undefined){state.perPair=d.per_pair_adjust_enabled;const el=document.getElementById('perPairToggle');if(el){state.perPair?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('perPairMultipliers');if(statusEl)statusEl.style.display=state.perPair?'block':'none';if(state.perPair)loadPerPairMultipliers()}if(d.per_pair_max_boost&&document.getElementById('perPairMaxBoost'))document.getElementById('perPairMaxBoost').value=d.per_pair_max_boost;if(d.per_pair_max_cut&&document.getElementById('perPairMaxCut'))document.getElementById('perPairMaxCut').value=d.per_pair_max_cut;if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.auto_execute_min_confidence&&document.getElementById('autoMinConf'))document.getElementById('autoMinConf').value=d.auto_execute_min_confidence;
-// Safety filter toggles
 ['confirmation_candle_enabled:confirmationCandle:confirmationCandleToggle','falling_knife_filter_enabled:fallingKnife:fallingKnifeToggle','loss_cooldown_enabled:lossCooldown:lossCooldownToggle','daily_summary_enabled:dailySummary:dailySummaryToggle'].forEach(s=>{const [key,sKey,domId]=s.split(':');if(d[key]!==undefined){state[sKey]=d[key];const el=document.getElementById(domId);if(el){d[key]?el.classList.add('on'):el.classList.remove('on')}}});
 if(d.falling_knife_max_drop_pct&&document.getElementById('fallingKnifeDrop'))document.getElementById('fallingKnifeDrop').value=d.falling_knife_max_drop_pct;
 if(d.loss_cooldown_hours&&document.getElementById('lossCooldownHours'))document.getElementById('lossCooldownHours').value=d.loss_cooldown_hours;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
@@ -1063,18 +1161,12 @@ function drawPairChart(trades){
   pairChart2=new Chart(ctx,{type:'line',data:{labels,datasets:[{data:vals,borderColor:'rgba(77,159,255,0.6)',borderWidth:2,pointBackgroundColor:pointColors,pointRadius:pointRadius,pointHoverRadius:7,tension:0.3,fill:false}]},options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:(c)=>{const pt=points[c.dataIndex];return (pt.side==='buy'?'BUY':'SELL')+' $'+c.parsed.y.toLocaleString();}}}},scales:{x:{display:false},y:{display:true,grid:{color:'rgba(100,160,255,0.05)'},ticks:{color:'rgba(136,153,187,0.6)',font:{size:10},callback:(v)=>'$'+v.toLocaleString()}}}}});
 }
 
-// ============================================================
-// MANUAL TRADE MODAL — button-based pair selection
-// ============================================================
-
 function setManualAmount(usd){
   const inp = document.getElementById('manualAmountInput');
   if(inp){ inp.value = usd; inp.focus(); }
 }
 
 async function _refreshManualBalance(){
-  // Show the user how much USDT is free (for buys) or how much they hold of
-  // the selected pair (for sells). Best-effort - silently no-ops if API fails.
   const balEl = document.getElementById('manualAmountBalance');
   if(!balEl) return;
   if(!selectedManualPair){ balEl.textContent = '-'; return; }
@@ -1125,8 +1217,6 @@ async function openTradeModal(preselect){
   const balEl = document.getElementById('manualAmountBalance');
   if(balEl) balEl.textContent = '-';
 
-  // Authoritative source for pairs: the new /api/pairs endpoint. Falls back
-  // to /api/prices if for any reason that fails, then to /api/settings.
   let pairs = [];
   try{
     const r = await fetch(API_BASE+'/api/pairs');
@@ -1177,7 +1267,6 @@ async function submitManualTrade(side){
   }
   const pair = selectedManualPair;
   const pairName = pair.replace('USDT','/USDT');
-  // Parse optional amount. Blank = use default trade size from settings.
   const amountStr = (document.getElementById('manualAmountInput')||{}).value;
   let amount_usdt = null;
   if(amountStr && amountStr.toString().trim() !== ''){
@@ -1223,10 +1312,6 @@ async function manualFromPair(side){
   await openTradeModal(currentPairSymbol);
   setTimeout(()=>submitManualTrade(side), 100);
 }
-
-// ============================================================
-// PAPER TRADING
-// ============================================================
 
 let paperMode = false;
 let paperTrades = [];
@@ -1280,7 +1365,6 @@ async function loadStats(){
       calEl.innerHTML = calHtml;
     }
     const pairEl = document.getElementById('pairStatsCard');
-    // Fetch the richer per-pair data from the new endpoint
     try{
       const sr = await fetch(API_BASE+'/api/pairs/stats');
       const sd = await sr.json();
@@ -1310,7 +1394,6 @@ async function loadStats(){
         pairEl.innerHTML='<div style="text-align:center;padding:16px;color:var(--text-2);font-size:0.85rem;">No trade history yet.</div>';
       }
     }catch(e){
-      // Fall back to /api/stats pair_performance if /api/pairs/stats fails
       if(d.pair_performance&&d.pair_performance.length){
         pairEl.innerHTML = d.pair_performance.map(p=>{
           const ratingColor = p.rating==='good'?'var(--green)':p.rating==='poor'?'var(--red)':'var(--gold)';
@@ -1326,7 +1409,7 @@ async function loadStats(){
   }
 }
 
-window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000);setInterval(()=>{if(document.getElementById('page-sniper')?.classList.contains('active')){loadSniperPositions();}},10000);});
+window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000);setInterval(()=>{if(document.getElementById('page-sniper')?.classList.contains('active')){loadSniperPositions();loadSniperHistory();}},10000);});
 document.getElementById('apiModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show')});
 
 </script>
