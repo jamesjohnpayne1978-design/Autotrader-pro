@@ -1077,6 +1077,43 @@ def trigger_daily_summary():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/summaries')
+def get_daily_summaries():
+    """Return all persisted daily summaries as JSON. Structured data so
+    trends can be spotted over weeks - per-pair PnL, win rate, portfolio
+    value, regime, F&G, etc. per day.
+
+    Query params:
+      limit  - max number of days to return (default: 180, all we keep)
+    """
+    if not signal_engine:
+        return jsonify({'error': 'Signal engine not ready'}), 400
+    try:
+        limit = int(request.args.get('limit', 180))
+    except Exception:
+        limit = 180
+    try:
+        summaries = signal_engine.get_stored_daily_summaries(limit=limit)
+        # Aggregate roll-up so users can see totals at a glance
+        totals = {
+            'days_recorded': len(summaries),
+            'total_pnl': round(sum(s.get('total_pnl', 0) for s in summaries), 2),
+            'total_buys': sum(s.get('buys', 0) for s in summaries),
+            'total_sells': sum(s.get('sells', 0) for s in summaries),
+            'total_wins': sum(s.get('wins', 0) for s in summaries),
+            'total_losses': sum(s.get('losses', 0) for s in summaries),
+            'best_day': max((s.get('total_pnl', 0) for s in summaries), default=0),
+            'worst_day': min((s.get('total_pnl', 0) for s in summaries), default=0),
+        }
+        if totals['total_wins'] + totals['total_losses'] > 0:
+            totals['overall_win_rate'] = round(
+                totals['total_wins'] /
+                (totals['total_wins'] + totals['total_losses']) * 100, 1)
+        return jsonify({'summaries': summaries, 'totals': totals, 'count': len(summaries)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/pairs/multipliers')
 def get_pair_multipliers():
     """Show the current per-pair TP/SL multipliers. When per_pair_adjust is
