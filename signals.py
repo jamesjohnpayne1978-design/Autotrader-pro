@@ -905,8 +905,94 @@ class SignalEngine:
         msg_parts.append("")
         msg_parts.append(f"Portfolio: ${portfolio_value:.2f} · {open_positions} open · regime {self.market_regime}")
 
+        # ============================================================
+        # PERSIST TO DISK for later analysis
+        # ============================================================
+        # Rolling log at /data/daily_summaries.json. Keeps up to 180 days
+        # of history so I can spot trends over weeks. Includes a per-pair
+        # breakdown which the Telegram message doesn't have room for.
+        try:
+            self._persist_daily_summary(date_str, {
+                'date': date_str,
+                'total_pnl': total_pnl,
+                'buys': len(day_buys),
+                'sells': len(day_sells),
+                'wins': len(wins),
+                'losses': len(losses),
+                'win_rate': win_rate,
+                'biggest_win': round(biggest_win, 2),
+                'biggest_loss': round(biggest_loss, 2),
+                'portfolio_value': round(portfolio_value, 2),
+                'open_positions': open_positions,
+                'regime': self.market_regime,
+                'fear_greed': getattr(self, 'fear_greed_index', 50),
+                'per_pair': self._per_pair_breakdown(day_sells),
+                'saved_at': datetime.utcnow().isoformat(),
+            })
+        except Exception as e:
+            log.warning(f"Daily summary persist failed for {date_str}: {e}")
+
         self._tg_send("\n".join(msg_parts), context=f"daily-summary-{date_str}")
         log.info(f"Daily summary sent for {date_str}: pnl=${total_pnl:.2f}")
+
+    _DAILY_SUMMARIES_PATH = '/data/daily_summaries.json'
+    _DAILY_SUMMARIES_MAX = 180  # keep ~6 months of history
+
+    def _per_pair_breakdown(self, day_sells):
+        """Group the day's sells by pair and compute per-pair PnL / count.
+        This is the data I actually need for trend analysis - it tells us
+        which pairs are earning vs bleeding across many days."""
+        agg = {}
+        for t in day_sells:
+            pair = t.get('pair', 'UNKNOWN')
+            pnl = float(t.get('pnl', 0) or 0)
+            rec = agg.setdefault(pair, {'trades': 0, 'wins': 0, 'losses': 0, 'pnl': 0.0})
+            rec['trades'] += 1
+            rec['pnl'] += pnl
+            if pnl > 0:
+                rec['wins'] += 1
+            elif pnl < 0:
+                rec['losses'] += 1
+        # Round for readability
+        for pair, rec in agg.items():
+            rec['pnl'] = round(rec['pnl'], 2)
+        return agg
+
+    def _persist_daily_summary(self, date_str, record):
+        """Append the day's summary record to a rolling on-disk log. Idempotent
+        - if the same date is written twice, the newest wins."""
+        os.makedirs(os.path.dirname(self._DAILY_SUMMARIES_PATH), exist_ok=True)
+        summaries = []
+        if os.path.exists(self._DAILY_SUMMARIES_PATH):
+            try:
+                with open(self._DAILY_SUMMARIES_PATH) as f:
+                    summaries = json.load(f) or []
+            except Exception:
+                summaries = []
+        # Remove any existing entry for this date (idempotency), then append
+        summaries = [s for s in summaries if s.get('date') != date_str]
+        summaries.append(record)
+        summaries.sort(key=lambda s: s.get('date', ''))
+        # Trim to max
+        if len(summaries) > self._DAILY_SUMMARIES_MAX:
+            summaries = summaries[-self._DAILY_SUMMARIES_MAX:]
+        with open(self._DAILY_SUMMARIES_PATH, 'w') as f:
+            json.dump(summaries, f, indent=2)
+        log.info(f"Persisted daily summary for {date_str} (total on disk: {len(summaries)})")
+
+    def get_stored_daily_summaries(self, limit=180):
+        """Return the persisted daily summaries, newest last. Called by
+        /api/summaries so I can pull the whole rolling window in one hit."""
+        try:
+            if not os.path.exists(self._DAILY_SUMMARIES_PATH):
+                return []
+            with open(self._DAILY_SUMMARIES_PATH) as f:
+                data = json.load(f) or []
+            data.sort(key=lambda s: s.get('date', ''))
+            return data[-limit:] if limit else data
+        except Exception as e:
+            log.debug(f"Read daily summaries failed: {e}")
+            return []
 
     def mark_fill_announced(self, order_id):
         """Public hook so app.py /api/trade or trailing-stop code can mark a
