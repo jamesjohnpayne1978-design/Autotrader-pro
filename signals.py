@@ -1166,21 +1166,42 @@ class SignalEngine:
                         self.risk_manager.release_lock(pair)
                         continue
 
-                if action == 'sell' and _trailing_bool('trailing_stop_enabled', False):
+                # ============================================================
+                # BLOCK AI SELLS ON PROFITABLE POSITIONS
+                # ============================================================
+                # If a position is green, the AI should not close it. Exits on
+                # winners should come from OCO Take-Profit or the Trailing Stop,
+                # never from an AI "RSI 70 sell now" signal. This is the fix
+                # for the "buy runs up 1%, AI panics, sell for $0.20" pattern
+                # that was eating most of the winners.
+                #
+                # Threshold is configurable via extras (default 0.5%). Above
+                # this gain, ANY AI sell is blocked regardless of trailing
+                # stop state. Set 'ai_sell_profit_block_pct' to 0 to disable.
+                if action == 'sell':
                     try:
                         base = pair.replace('/USDT', '').replace('/', '')
                         sym = base + 'USDT'
-                        entry = (self.high_water_marks.get(sym, {}).get('entry_price')
-                                 if hasattr(self, 'high_water_marks') else None)
-                        if entry:
+                        # Prefer cached entry from trailing-stop tracker;
+                        # fall back to fresh Binance lookup so this works
+                        # whether trailing is on or not.
+                        entry = None
+                        if hasattr(self, 'high_water_marks'):
+                            entry = self.high_water_marks.get(sym, {}).get('entry_price')
+                        if not entry:
+                            entry = self._get_entry_price_from_binance(sym)
+                        min_block = _extra_float('ai_sell_profit_block_pct', 0.5)
+                        if entry and entry > 0 and min_block > 0:
                             cur = float(self.trader.client.get_symbol_ticker(symbol=sym)['price'])
                             gain_pct = ((cur - entry) / entry) * 100
-                            if gain_pct >= 2.0:
-                                log.info(f"Skipping auto-sell {pair} - up {gain_pct:.1f}%, trailing will handle")
+                            if gain_pct >= min_block:
+                                log.info(f"Skipping auto-sell {pair} - up {gain_pct:.2f}% "
+                                         f"(AI sells blocked above +{min_block}% profit, "
+                                         f"OCO TP / trailing will handle exit)")
                                 self.risk_manager.release_lock(pair)
                                 continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.debug(f"Profit-block check failed for {pair}: {e}")
 
                 if action == 'sell':
                     try:
