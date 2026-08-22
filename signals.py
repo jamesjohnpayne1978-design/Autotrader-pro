@@ -1961,3 +1961,4 @@ class SignalEngine:
         band_range = upper - lower
         position = ((closes[-1] - lower) / band_range * 100) if band_range > 0 else 50
         return {'upper': upper, 'lower': lower, 'mid': mid, 'position': position}
+
