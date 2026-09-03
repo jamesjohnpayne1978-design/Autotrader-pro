@@ -67,6 +67,13 @@ def init_trader():
 
         log.info("init_trader: creating SignalEngine...")
         signal_engine = SignalEngine(config, trader, risk_manager)
+        # Wire regime auto-apply: when signal engine detects a regime change
+        # mid-cycle, this fires _apply_regime_strategy so the new profile
+        # goes live BEFORE the next auto trade, without waiting for a manual
+        # refresh. Without this, auto trades used stale profiles after
+        # regime flips.
+        signal_engine.regime_changed_callback = _apply_regime_strategy
+        log.info("Regime auto-apply callback registered")
 
         log.info("init_trader: creating ListingSniper...")
         sniper = ListingSniper(config, trader, risk_manager)
