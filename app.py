@@ -317,7 +317,25 @@ def get_regime():
     if not signal_engine:
         return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': 'Bot not initialised'})
     try:
-        return jsonify(signal_engine.get_regime())
+        base = signal_engine.get_regime()
+        # HARD OVERRIDE: when regime-adaptive is on, take_profit must come
+        # from the profile dict (source of truth) — NOT from signal_engine
+        # .regime_tp, which can get polluted by the AI's placeholder or
+        # other stale code paths. This is the last line of defense: no
+        # matter what happens elsewhere, /api/regime always returns what
+        # trades will ACTUALLY use.
+        try:
+            if getattr(config, 'regime_strategy_enabled', False):
+                regime = base.get('regime', 'neutral')
+                profile = REGIME_STRATEGIES.get(regime, REGIME_STRATEGIES['neutral'])
+                base['take_profit'] = float(profile['tp_pct'])
+                base['stop_loss'] = float(profile['sl_pct'])
+                base['profile_source'] = 'regime_profile'
+            else:
+                base['profile_source'] = 'ai_or_fallback'
+        except Exception as e:
+            log.debug(f"Regime endpoint profile override skipped: {e}")
+        return jsonify(base)
     except Exception as e:
         return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': str(e)})
 
@@ -2185,6 +2203,8 @@ def _apply_regime_strategy(reason='trade'):
         with open(_REGIME_RUNTIME_PATH, 'w') as f:
             json.dump({
                 'regime': regime,
+                'tp_pct': profile['tp_pct'],
+                'sl_pct': profile['sl_pct'],
                 'trailing_stop_enabled': profile['trailing_stop_enabled'],
                 'trailing_stop_pct': profile['trailing_stop_pct'],
                 'trailing_stop_activate_pct': profile['trailing_stop_activate_pct'],
