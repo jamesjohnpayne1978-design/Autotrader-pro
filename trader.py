@@ -624,9 +624,43 @@ class Trader:
             tp_price = self._round_price(symbol, buy_price * (1 + tp_pct / 100))
             sl_price = self._round_price(symbol, buy_price * (1 - sl_pct / 100))
             sl_limit_price = self._round_price(symbol, sl_price * 0.995)
-            log.info(f"Placing OCO for {symbol}: TP=${tp_price} SL=${sl_price} qty={quantity}")
+
+            # ==========================================================
+            # COMMISSION-SAFE QUANTITY
+            # ==========================================================
+            # Binance charges 0.1% commission (0.075% if paying with BNB)
+            # deducted directly from the asset just bought. So if we bought
+            # 140.2 SUI, our free balance is only ~140.06 SUI. An OCO order
+            # for the full 140.2 fails with -2010 "insufficient balance",
+            # leaving the position entirely unprotected.
+            #
+            # Fix: query the actual free balance and use that (minus a
+            # tiny 0.05% safety margin for rounding), rounded down to
+            # Binance's LOT_SIZE step. This makes OCO placement robust
+            # regardless of commission model (BNB / non-BNB / VIP tier).
+            oco_qty = quantity
+            try:
+                base_asset = symbol.replace('USDT', '')
+                actual_free = self._get_free_balance(base_asset)
+                if actual_free > 0:
+                    # Use the smaller of (ordered qty, actual free), then
+                    # shave 0.05% off for any rounding/settlement noise.
+                    safe_qty = min(quantity, actual_free) * 0.9995
+                    oco_qty = self._adjust_quantity(symbol, safe_qty)
+                    if oco_qty <= 0:
+                        # LOT_SIZE / minQty rejected it - fall back to the
+                        # ordered qty and let Binance decide (better a warning
+                        # than silently placing nothing).
+                        oco_qty = quantity
+                    elif oco_qty < quantity:
+                        log.info(f"OCO qty adjusted for {symbol}: {quantity} -> {oco_qty} "
+                                 f"(free balance {actual_free:.8f}, commission-safe)")
+            except Exception as e:
+                log.debug(f"OCO qty adjustment failed for {symbol}, using ordered qty: {e}")
+
+            log.info(f"Placing OCO for {symbol}: TP=${tp_price} SL=${sl_price} qty={oco_qty}")
             oco = self.client.create_oco_order(
-                symbol=symbol, side='SELL', quantity=quantity,
+                symbol=symbol, side='SELL', quantity=oco_qty,
                 price=str(tp_price), stopPrice=str(sl_price),
                 stopLimitPrice=str(sl_limit_price), stopLimitTimeInForce='GTC'
             )
@@ -636,6 +670,30 @@ class Trader:
             }
             log.info(f"OCO placed for {symbol} - TP: ${tp_price} ({tp_pct}%) | SL: ${sl_price} ({sl_pct}%)")
         except BinanceAPIException as e:
+            # Fallback retry: if we still hit -2010, try once more with the
+            # current free balance minus a bigger 0.2% margin.
+            if 'insufficient balance' in str(e).lower() or '-2010' in str(e):
+                try:
+                    base_asset = symbol.replace('USDT', '')
+                    actual_free = self._get_free_balance(base_asset)
+                    if actual_free > 0:
+                        retry_qty = self._adjust_quantity(symbol, actual_free * 0.998)
+                        if retry_qty > 0:
+                            log.warning(f"OCO retry for {symbol} with reduced qty {retry_qty} "
+                                        f"(free was {actual_free:.8f})")
+                            oco = self.client.create_oco_order(
+                                symbol=symbol, side='SELL', quantity=retry_qty,
+                                price=str(tp_price), stopPrice=str(sl_price),
+                                stopLimitPrice=str(sl_limit_price), stopLimitTimeInForce='GTC'
+                            )
+                            self._open_oco_orders[pair] = {
+                                'orderListId': oco.get('orderListId'),
+                                'symbol': symbol, 'tp_price': tp_price, 'sl_price': sl_price
+                            }
+                            log.info(f"OCO placed on retry for {symbol}")
+                            return
+                except Exception as e2:
+                    log.warning(f"OCO retry also failed for {symbol}: {e2}")
             log.warning(f"OCO order failed for {symbol}: {e}")
         except Exception as e:
             log.warning(f"OCO setup error for {symbol}: {e}")
