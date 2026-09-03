@@ -2207,6 +2207,19 @@ def _apply_regime_strategy(reason='trade'):
     except Exception as e:
         log.warning(f"Could not apply regime strategy: {e}")
 
+    # Sync signal_engine.regime_tp so /api/regime shows the profile's TP
+    # (not the AI's placeholder value). Also reset _last_applied_regime so
+    # the auto-detection callback re-fires if it thinks nothing changed
+    # (e.g. user just toggled the feature back on for a regime that was
+    # already active - without this the runtime file stays stale).
+    try:
+        if signal_engine is not None:
+            signal_engine.regime_tp = float(profile['tp_pct'])
+            signal_engine._last_applied_regime = regime
+            log.info(f"Signal engine regime_tp synced to {profile['tp_pct']}%")
+    except Exception as e:
+        log.debug(f"Signal engine sync skipped: {e}")
+
     return {'regime': regime, **profile}
 
 
@@ -2264,6 +2277,16 @@ def settings():
                     pass
         _save_extra_settings(existing)
         log.info(f"Settings saved - extras: { {k: existing.get(k) for k in _EXTRA_KEYS if k in existing} }")
+
+        # If regime_strategy toggle changed (or any related field), re-apply
+        # so profile takes effect immediately. Without this, the runtime file
+        # only updates on the NEXT actual regime CHANGE detected by the AI -
+        # which may not happen for hours if the current regime is stable.
+        try:
+            if any(k in payload for k in ('regime_strategy_enabled',)):
+                _apply_regime_strategy(reason='settings save')
+        except Exception as e:
+            log.debug(f"Post-save strategy apply skipped: {e}")
 
         if risk_manager:
             risk_manager.reload(config)
