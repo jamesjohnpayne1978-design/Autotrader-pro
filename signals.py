@@ -217,6 +217,15 @@ class SignalEngine:
         # Per-pair TP/SL multipliers, populated by analyse_pair, read by
         # trader._place_oco_order via signal_engine reference.
         self.pair_trend_multipliers = {}
+        # Regime-change hook - app.py registers _apply_regime_strategy here
+        # so a mid-cycle regime flip (e.g. neutral -> bullish detected by AI)
+        # immediately writes the new profile to /data/regime_runtime.json
+        # AND updates config.dynamic_tp / .dynamic_sl. Without this, auto
+        # trades that fire after the flip use the OLD regime's profile until
+        # the next manual refresh or trade. The callback receives the reason
+        # string and returns the applied profile (or None if disabled).
+        self.regime_changed_callback = None
+        self._last_applied_regime = None
 
         openai = bool(_openai_key())
         gemini = bool(_gemini_key())
@@ -706,7 +715,8 @@ class SignalEngine:
                 f"Price vs 14-day MA: {'above' if price > ma14 else 'below'}\n"
                 f"Volume trend: {round(volume_trend, 2)}x\n"
                 f"F&G: {self.fear_greed_index}/100 ({self.fear_greed_label})\n\n"
-                f"Determine market regime and recommended TP.\n"
+                f"Determine market regime. Recommended TP is set by the app's regime profile "
+                f"(NOT by you), so pick any reasonable placeholder for take_profit.\n"
                 f"Return ONLY valid JSON, no markdown:\n"
                 f'{{"regime":"bullish|bearish|neutral","take_profit":6,"reason":"one sentence"}}'
             )
@@ -720,12 +730,41 @@ class SignalEngine:
                 self.regime_reason = result.get('reason', '')
                 self.config.dynamic_tp = self.regime_tp
                 log.info(f"Market regime (AI): {self.market_regime} - TP {self.regime_tp}%")
+                self._notify_regime_change('AI detection')
                 return
 
             self._fallback_regime(rsi, price_7d_change, price, ma7)
+            self._notify_regime_change('rule-based fallback')
         except Exception as e:
             log.warning(f"Regime detection failed: {e}")
             self._fallback_regime_simple()
+            self._notify_regime_change('simple fallback')
+
+    def _notify_regime_change(self, source):
+        """If regime changed since last apply, call the registered callback
+        (app.py's _apply_regime_strategy) to refresh /data/regime_runtime.json
+        and config.dynamic_tp/sl. When the callback returns a profile with a
+        tp_pct, override self.regime_tp so the dashboard shows the ACTUAL
+        TP that will be used on the next trade, not the AI's anchored value."""
+        if self.market_regime == self._last_applied_regime:
+            return
+        self._last_applied_regime = self.market_regime
+        cb = self.regime_changed_callback
+        if not callable(cb):
+            return
+        try:
+            applied = cb(f'auto: regime changed to {self.market_regime} via {source}')
+            # If the callback returned a real profile, sync our display TP
+            # so /api/regime shows what will actually be used
+            if applied and isinstance(applied, dict) and 'tp_pct' in applied:
+                try:
+                    self.regime_tp = float(applied['tp_pct'])
+                    self.config.dynamic_tp = self.regime_tp
+                    log.info(f"Regime TP synced to profile: {self.regime_tp}%")
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f"Regime change callback failed: {e}")
 
     def _fallback_regime(self, rsi, price_change_7d, price, ma7):
         if rsi > 55 and price_change_7d > 3 and price > ma7:
@@ -1961,4 +2000,3 @@ class SignalEngine:
         band_range = upper - lower
         position = ((closes[-1] - lower) / band_range * 100) if band_range > 0 else 50
         return {'upper': upper, 'lower': lower, 'mid': mid, 'position': position}
-
