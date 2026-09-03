@@ -1546,6 +1546,24 @@ class SignalEngine:
             multiplier = 1.0 + (score / 8.0) * (max_boost - 1.0)
         else:
             multiplier = 1.0 + (score / 8.0) * (1.0 - max_cut)
+
+        # ============================================================
+        # REGIME KICKER
+        # ============================================================
+        # Nudge the multiplier by ±0.1 based on regime alignment so the
+        # per-pair adjustment scales with market state:
+        #   - Bullish regime + outperformer (mult > 1.0) -> extra +0.1
+        #     (let winners run wider in a bull market)
+        #   - Bearish regime + lagger (mult < 1.0) -> extra -0.1
+        #     (tighten stops on weakness in a bear market)
+        # Kicks are capped by the user's max_boost / max_cut, so this
+        # never exceeds their configured limits.
+        regime = getattr(self, 'market_regime', 'neutral')
+        if regime == 'bullish' and multiplier > 1.0:
+            multiplier = min(multiplier + 0.1, max_boost)
+        elif regime == 'bearish' and multiplier < 1.0:
+            multiplier = max(multiplier - 0.1, max_cut)
+
         return round(multiplier, 3)
 
     def _ai_analyse(self, symbol, indicators):
