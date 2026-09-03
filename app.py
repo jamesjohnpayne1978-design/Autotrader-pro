@@ -15,7 +15,7 @@ import requests as req
 from trader import Trader
 from sniper import ListingSniper
 from manual_positions import ManualPositionManager
-from signals import SignalEngine
+from signals import SignalEngine, _call_ai as _ai_call_chain, _extract_json_block
 from risk_manager import RiskManager
 from config import Config
 
@@ -1683,70 +1683,206 @@ def get_insights():
         pair_recs = []
         risk_warning = "Check Railway logs - insights data fetch failed."
 
-    gemini_key = os.environ.get('GEMINI_API_KEY', '')
+    # ============================================================
+    # RICH AI INSIGHTS
+    # ============================================================
+    # Uses the working OpenAI-first fallback chain from signals.py
+    # (was Gemini-only before, which broke when Gemini quota ran out).
+    # Feeds the model much richer context - actual holdings, recent
+    # trade PnL, active strategy, safety filter state, engine signals -
+    # so it can produce advice that references YOUR portfolio, not
+    # just generic market colour.
     ai_powered = False
-    if gemini_key and pair_data:
+    try:
+        # 1) Portfolio state
+        portfolio_ctx = ""
+        holdings_ctx = ""
         try:
-            data_summary = f"Live Binance data {datetime.now().strftime('%Y-%m-%d %H:%M')}:\n"
-            for sym, d in list(pair_data.items())[:12]:
-                rsi_str = f" RSI:{d['rsi']}" if d.get('rsi') else ""
-                data_summary += f"{sym}: ${d['price']:.4f} {d['change']:+.1f}%{rsi_str}\n"
-            data_summary += f"Regime: {regime}. TP: {regime_tp}%. Bot pairs: {','.join(analysis_pairs)}"
+            p = trader.get_portfolio() if trader else {}
+            portfolio_ctx = (f"Portfolio: ${p.get('total_usdt', 0):.0f} total, "
+                             f"${p.get('free_usdt', 0):.0f} free USDT, "
+                             f"{p.get('open_positions', 0)} open positions. "
+                             f"Today PnL: ${p.get('pnl_today', 0):.2f} ({p.get('pnl_pct', 0):+.2f}%). "
+                             f"Overall PnL: ${p.get('pnl_total', 0):.2f} on ${p.get('cost_basis', 0):.0f} invested.")
 
-            ai_prompt = (
-                "You are a professional crypto trader analysing live market data. Be specific and direct.\n\n"
-                + data_summary +
-                "\n\nUsing this real data, give specific actionable analysis. Reference actual prices and RSI values. "
-                "Suggest specific coins based on current conditions. Do NOT be generic.\n"
-                "Return ONLY valid JSON, no markdown, no explanation:\n"
-                '{"insights":['
-                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"},'
-                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"},'
-                '{"title":"under 8 words","body":"2 specific sentences with real numbers","type":"bullish|bearish|neutral|warning"}'
-                '],'
-                '"watchlist":['
-                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","reason":"specific reason with price/RSI data","signal":"buy|watch|avoid"}'
-                '],'
-                '"pair_recommendations":['
-                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"},'
-                '{"symbol":"XYZUSDT","name":"CoinName","action":"add|remove|keep","reason":"specific current reason"}'
-                '],'
-                '"risk_warning":"1 specific sentence with actual data"}'
-            )
-
-            r = req_lib.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={gemini_key}",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "contents": [{"parts": [{"text": ai_prompt}]}],
-                    "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1200}
-                },
-                timeout=30
-            )
-
-            if r.status_code == 200:
-                data = r.json()
-                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                text = text.replace("```json", "").replace("```", "").strip()
-                start = text.find("{")
-                end = text.rfind("}") + 1
-                if start != -1 and end > start:
-                    ai_result = json.loads(text[start:end])
-                    insights = ai_result.get("insights", insights)
-                    watchlist = ai_result.get("watchlist", watchlist)
-                    pair_recs = ai_result.get("pair_recommendations", pair_recs)
-                    risk_warning = ai_result.get("risk_warning", risk_warning)
-                    ai_powered = True
-                    log.info("Gemini AI insights generated successfully")
-                else:
-                    log.warning(f"Could not parse Gemini response: {text[:200]}")
-            else:
-                log.warning(f"Gemini API error {r.status_code}: {r.text[:200]}")
+            # Per-position with unrealised PnL (built from the same data
+            # /api/prices returns to the dashboard)
+            positions = []
+            try:
+                account = trader.client.get_account()
+                prices = {pt['symbol']: float(pt['price']) for pt in trader.client.get_all_tickers()}
+                for bal in account['balances']:
+                    asset = bal['asset']
+                    if asset in ('USDT', 'BUSD', 'USDC', 'FDUSD'):
+                        continue
+                    total = float(bal['free']) + float(bal['locked'])
+                    if total <= 0:
+                        continue
+                    sym = f"{asset}USDT"
+                    if sym not in prices:
+                        continue
+                    value = total * prices[sym]
+                    if value < 5:
+                        continue
+                    entry = None
+                    try:
+                        entry = signal_engine._get_entry_price_from_binance(sym) if signal_engine else None
+                    except Exception:
+                        pass
+                    if entry and entry > 0:
+                        gain = ((prices[sym] - entry) / entry) * 100
+                        positions.append(f"{asset} ${value:.0f} @ entry ${entry:.4f} now ${prices[sym]:.4f} ({gain:+.1f}%)")
+                    else:
+                        positions.append(f"{asset} ${value:.0f} @ ${prices[sym]:.4f}")
+            except Exception as e:
+                log.debug(f"Position context build failed: {e}")
+            if positions:
+                holdings_ctx = "Open positions:\n  " + "\n  ".join(positions[:10])
         except Exception as e:
-            log.warning(f"Gemini insights failed: {e}")
+            log.debug(f"Portfolio context build failed: {e}")
+
+        # 2) Recent trade history - last 15 sells with PnL
+        history_ctx = ""
+        try:
+            if trader:
+                trades = trader.get_real_trade_history() or []
+                sells = [t for t in trades if t.get('side') == 'sell'][:15]
+                if sells:
+                    wins = [t for t in sells if t.get('pnl', 0) > 0]
+                    losses = [t for t in sells if t.get('pnl', 0) < 0]
+                    total_pnl = sum(t.get('pnl', 0) for t in sells)
+                    win_rate = round(len(wins) / len(sells) * 100, 1) if sells else 0
+                    # Per-pair aggregation
+                    agg = {}
+                    for t in sells:
+                        pair = t.get('pair', '?')
+                        agg.setdefault(pair, {'n': 0, 'pnl': 0})
+                        agg[pair]['n'] += 1
+                        agg[pair]['pnl'] += t.get('pnl', 0)
+                    pair_lines = [f"{p}: {r['n']} trades, ${r['pnl']:+.2f}"
+                                  for p, r in sorted(agg.items(), key=lambda x: x[1]['pnl'])]
+                    history_ctx = (f"Recent 15 sells: {win_rate}% win rate, "
+                                   f"${total_pnl:+.2f} total. Per pair:\n  "
+                                   + "\n  ".join(pair_lines))
+        except Exception as e:
+            log.debug(f"History context build failed: {e}")
+
+        # 3) Strategy state
+        strategy_ctx = ""
+        try:
+            extras_path = '/data/extra_settings.json'
+            extras = {}
+            if os.path.exists(extras_path):
+                with open(extras_path) as f:
+                    extras = json.load(f) or {}
+            regime_adaptive = extras.get('regime_strategy_enabled', False)
+            per_pair = extras.get('per_pair_adjust_enabled', False)
+            confirmation = extras.get('confirmation_candle_enabled', False)
+            knife = extras.get('falling_knife_filter_enabled', False)
+            cooldown = extras.get('loss_cooldown_enabled', False)
+            trailing = extras.get('trailing_stop_enabled', False)
+            fg = getattr(signal_engine, 'fear_greed_index', 50) if signal_engine else 50
+            fg_label = getattr(signal_engine, 'fear_greed_label', 'Neutral') if signal_engine else 'Neutral'
+            regime_reason = getattr(signal_engine, 'regime_reason', '') if signal_engine else ''
+            strategy_ctx = (
+                f"Regime: {regime} ({regime_reason}). F&G: {fg} ({fg_label}). "
+                f"Auto TP: {regime_tp}%. "
+                f"Toggles: regime-adaptive={regime_adaptive}, per-pair-adjust={per_pair}, "
+                f"trailing-stop={trailing}, confirmation-candle={confirmation}, "
+                f"falling-knife={knife}, loss-cooldown={cooldown}."
+            )
+        except Exception as e:
+            log.debug(f"Strategy context build failed: {e}")
+
+        # 4) Bot's latest signals (RSI/MACD/trend already computed)
+        signals_ctx = ""
+        try:
+            if signal_engine and signal_engine.latest_signals:
+                sig_lines = []
+                for s in signal_engine.latest_signals[:13]:
+                    sig_lines.append(f"{s.get('pair', '?')}: {s.get('action', '?').upper()} "
+                                     f"conf {s.get('confidence', 0)}% "
+                                     f"RSI {s.get('rsi', '?')} MACD {s.get('macd', '?')} "
+                                     f"trend {s.get('trend', '?')}")
+                signals_ctx = "Bot's live signals:\n  " + "\n  ".join(sig_lines)
+        except Exception as e:
+            log.debug(f"Signals context build failed: {e}")
+
+        # 5) Market snapshot
+        market_ctx = ""
+        try:
+            lines = []
+            for sym, d in list(pair_data.items())[:13]:
+                rsi_str = f" RSI:{d['rsi']}" if d.get('rsi') else ""
+                lines.append(f"{sym}: ${d['price']:.4f} {d['change']:+.1f}%{rsi_str}")
+            if lines:
+                market_ctx = "Live market:\n  " + "\n  ".join(lines)
+        except Exception:
+            pass
+
+        # Compose the full prompt
+        ai_prompt = f"""You are a senior crypto trader reviewing a live automated trading bot for the operator.
+You have their actual portfolio, positions, recent trade PnL, active strategy config, and current market indicators.
+Your job: give SPECIFIC, ACTIONABLE analysis - reference their real positions, real PnL, real settings.
+Never generic. Never hypothetical. If something's wrong or good, say so plainly with the numbers.
+
+=== PORTFOLIO ===
+{portfolio_ctx}
+
+{holdings_ctx}
+
+=== RECENT PERFORMANCE ===
+{history_ctx}
+
+=== ACTIVE STRATEGY ===
+{strategy_ctx}
+
+=== BOT SIGNALS (from the bot's own scoring engine) ===
+{signals_ctx}
+
+=== MARKET RIGHT NOW ===
+{market_ctx}
+
+TASK: Produce 3 insights, 3 watchlist entries, 3 pair recommendations, and 1 risk warning.
+- Insights should cite ACTUAL positions/PnL/regime. Examples: "SUI position up 4.2% - trailing stop at ~$0.74, room to run to next resistance." or "You're 40% concentrated in DOGE at $0.088; if BTC turns, this bleeds first."
+- Watchlist: from the market data above, name 3 specific coins to watch and WHY (RSI level, momentum, divergence). Prefer coins NOT already in the bot's active list unless there's a strong new setup on one.
+- Pair recommendations: which of the currently-traded pairs should be added, kept, or removed based on their P&L history and current signal? Cite actual $ figures.
+- Risk warning: name ONE specific real risk given their portfolio right now.
+
+Return ONLY valid JSON, no markdown fences:
+{{"insights":[
+  {{"title":"under 8 words","body":"2 sentences with real numbers from above","type":"bullish|bearish|neutral|warning"}},
+  {{"title":"under 8 words","body":"2 sentences with real numbers from above","type":"bullish|bearish|neutral|warning"}},
+  {{"title":"under 8 words","body":"2 sentences with real numbers from above","type":"bullish|bearish|neutral|warning"}}
+],
+"watchlist":[
+  {{"symbol":"XYZUSDT","name":"Coin","reason":"specific reason citing RSI/price","signal":"buy|watch|avoid"}},
+  {{"symbol":"XYZUSDT","name":"Coin","reason":"specific reason citing RSI/price","signal":"buy|watch|avoid"}},
+  {{"symbol":"XYZUSDT","name":"Coin","reason":"specific reason citing RSI/price","signal":"buy|watch|avoid"}}
+],
+"pair_recommendations":[
+  {{"symbol":"XYZUSDT","name":"Coin","action":"add|remove|keep","reason":"cite their $ PnL history"}},
+  {{"symbol":"XYZUSDT","name":"Coin","action":"add|remove|keep","reason":"cite their $ PnL history"}},
+  {{"symbol":"XYZUSDT","name":"Coin","action":"add|remove|keep","reason":"cite their $ PnL history"}}
+],
+"risk_warning":"one sentence citing an ACTUAL number from their portfolio"}}"""
+
+        # Use the shared OpenAI-first fallback chain from signals.py. This
+        # is the same helper that powers regime detection and signal analysis,
+        # so if OpenAI works there, it works here.
+        text = _ai_call_chain(ai_prompt, max_tokens=1500)
+        ai_result = _extract_json_block(text) if text else None
+        if ai_result:
+            insights = ai_result.get("insights", insights)
+            watchlist = ai_result.get("watchlist", watchlist)
+            pair_recs = ai_result.get("pair_recommendations", pair_recs)
+            risk_warning = ai_result.get("risk_warning", risk_warning)
+            ai_powered = True
+            log.info("AI insights generated successfully (rich context)")
+        else:
+            log.warning("AI insights returned no parseable JSON - using rule-based fallback")
+    except Exception as e:
+        log.warning(f"AI insights generation failed: {e}")
 
     return jsonify({
         "regime": regime,
@@ -2156,4 +2292,3 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     log.info(f"AutoTrader Pro starting Flask on 0.0.0.0:{port}")
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
-
