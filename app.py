@@ -914,7 +914,18 @@ def strategy_status():
     """Shows whether regime-adaptive strategy is on, what the current regime
     is, and the TP/SL/trailing values that will be used on the next trade.
     Also shows the full profile table so you can see what each regime does."""
-    enabled = bool(getattr(config, 'regime_strategy_enabled', False))
+    # Read from BOTH extras file and config attr - OR them together.
+    # This avoids a race where the toggle POST wrote to disk but config
+    # attr hasn't updated yet (was causing "Disabled" label to show even
+    # when the flag was just saved).
+    enabled = False
+    try:
+        extras = _load_extra_settings()
+        enabled = bool(extras.get('regime_strategy_enabled', False))
+    except Exception:
+        pass
+    if not enabled:
+        enabled = bool(getattr(config, 'regime_strategy_enabled', False))
     regime = 'neutral'
     try:
         if signal_engine is not None:
