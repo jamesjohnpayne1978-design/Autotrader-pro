@@ -842,8 +842,11 @@ function toggleTrailingStop(){state.trailingStop=toggle('trailingStopToggle');sh
 function toggleRegimeStrategy(){
   state.regimeStrategy=toggle('regimeStrategyToggle');
   document.getElementById('regimeStrategyStatus').style.display=state.regimeStrategy?'block':'none';
-  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({regime_strategy_enabled:state.regimeStrategy})}).catch(()=>{});
-  if(state.regimeStrategy) loadRegimeStrategyStatus();
+  // Save first, THEN reload status. Without awaiting, loadRegimeStrategyStatus
+  // fires before the POST completes and sees stale "disabled" state.
+  fetch(API_BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({regime_strategy_enabled:state.regimeStrategy})})
+    .then(()=>{ if(state.regimeStrategy) loadRegimeStrategyStatus(); })
+    .catch(()=>{});
   showToast(state.regimeStrategy?'Auto-adaptive ON · TP/SL/trailing will follow regime':'Auto-adaptive OFF · using manual settings');
 }
 
