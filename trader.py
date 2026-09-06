@@ -503,16 +503,22 @@ class Trader:
             'low': float(k[3]), 'close': float(k[4]), 'volume': float(k[5])
         } for k in raw]
 
-    def execute_trade(self, pair, action, pct_of_portfolio, amount_usdt=None):
+    def execute_trade(self, pair, action, pct_of_portfolio, amount_usdt=None, bypass_cooldown=False):
         """Execute a market buy/sell.
 
         amount_usdt: Optional explicit USDT amount to spend (buy) or worth to
                      sell. When provided, overrides pct_of_portfolio. Used by
                      manual trades from the dashboard where the user specifies
                      a dollar amount directly.
+        bypass_cooldown: When True, skip the per-pair cooldown check. Manual
+                     trades set this so the user isn't blocked from acting on
+                     their own decision when the bot recently traded that pair.
+                     Auto-executed trades always leave it False.
         """
-        if self.is_on_cooldown(pair):
+        if not bypass_cooldown and self.is_on_cooldown(pair):
             raise ValueError(f"Trade cooldown active for {pair}")
+        if bypass_cooldown and self.is_on_cooldown(pair):
+            log.info(f"Manual trade bypassing cooldown for {pair}")
 
         symbol = pair.replace('/', '')
         base = symbol.replace('USDT', '')
