@@ -374,7 +374,9 @@ def execute_trade():
         log.debug(f"Could not apply regime strategy: {e}")
 
     try:
-        result = trader.execute_trade(pair, action, config.max_trade_pct, amount_usdt=amount_usdt)
+        result = trader.execute_trade(pair, action, config.max_trade_pct,
+                                       amount_usdt=amount_usdt,
+                                       bypass_cooldown=is_manual)
     except Exception as e:
         log.error(f"Trade execution error: {e}")
         risk_manager.release_lock(pair)
