@@ -608,8 +608,38 @@ class Trader:
 
     def _place_oco_order(self, symbol, pair, quantity, buy_price):
         try:
-            tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
-            sl_pct = getattr(self.config, 'dynamic_sl', None) or self.config.default_sl_pct
+            # Source of truth for TP/SL:
+            # 1) /data/regime_runtime.json if regime-adaptive is on (this is
+            #    what _apply_regime_strategy writes with the current profile)
+            # 2) config.dynamic_tp/sl if regime-adaptive is off but a strategy
+            #    call was made recently
+            # 3) config.default_tp_pct/default_sl_pct as final fallback
+            #
+            # The runtime file wins because Config may silently reject setattr
+            # for dynamic_tp/sl (whitelist), leaving config attrs stale even
+            # when the regime is correctly detected. Reading from disk avoids
+            # that class of bug entirely.
+            tp_pct = None
+            sl_pct = None
+            try:
+                import os, json as _json
+                runtime_path = '/data/regime_runtime.json'
+                if os.path.exists(runtime_path):
+                    with open(runtime_path) as _f:
+                        _rt = _json.load(_f)
+                    if _rt.get('tp_pct') is not None:
+                        tp_pct = float(_rt['tp_pct'])
+                    if _rt.get('sl_pct') is not None:
+                        sl_pct = float(_rt['sl_pct'])
+                    if tp_pct is not None or sl_pct is not None:
+                        log.info(f"OCO TP/SL from runtime profile: TP={tp_pct}% SL={sl_pct}% "
+                                 f"(regime={_rt.get('regime', '?')})")
+            except Exception as _e:
+                log.debug(f"Runtime TP/SL read skipped: {_e}")
+            if tp_pct is None:
+                tp_pct = getattr(self.config, 'dynamic_tp', None) or self.config.default_tp_pct
+            if sl_pct is None:
+                sl_pct = getattr(self.config, 'dynamic_sl', None) or self.config.default_sl_pct
 
             # Per-pair adjustment: if the signal engine has decided this pair
             # is outperforming or lagging the market, widen or tighten TP/SL
