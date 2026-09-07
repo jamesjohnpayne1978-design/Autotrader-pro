@@ -226,6 +226,12 @@ class SignalEngine:
         # string and returns the applied profile (or None if disabled).
         self.regime_changed_callback = None
         self._last_applied_regime = None
+        # Regime stickiness: track what the AI has been saying so we can
+        # require 2 consecutive cycles agreeing before flipping. Prevents
+        # whipsaw where TP for neighbouring trades changes based on a
+        # transient AI opinion. See detect_market_regime().
+        self._pending_regime = None
+        self._pending_regime_count = 0
 
         openai = bool(_openai_key())
         gemini = bool(_gemini_key())
@@ -725,20 +731,71 @@ class SignalEngine:
             result = _extract_json_block(text) if text else None
 
             if result:
-                self.market_regime = result.get('regime', 'neutral')
-                self.regime_tp = float(result.get('take_profit', 6.0))
+                ai_regime = result.get('regime', 'neutral')
+                ai_tp = float(result.get('take_profit', 6.0))
                 self.regime_reason = result.get('reason', '')
-                self.config.dynamic_tp = self.regime_tp
-                log.info(f"Market regime (AI): {self.market_regime} - TP {self.regime_tp}%")
+
+                # ============================================================
+                # REGIME STICKINESS
+                # ============================================================
+                # Require 2 consecutive AI cycles agreeing on a new regime
+                # before actually flipping. Prevents whipsaw where the AI
+                # oscillates between (say) bullish and neutral every 5 min,
+                # causing neighbouring trades to get wildly different TPs.
+                # Cost: regime changes take 5-10 min extra to confirm. Worth
+                # it for consistency.
+                #
+                # State machine:
+                #   AI agrees with current → keep current, clear pending
+                #   AI disagrees, no pending → set pending, count=1, keep current
+                #   AI disagrees, matches pending → count=2 → ACCEPT, flip
+                #   AI disagrees, different from pending → reset pending, count=1
+                if ai_regime == self.market_regime:
+                    if self._pending_regime is not None:
+                        log.info(f"Regime stickiness: pending flip to {self._pending_regime} "
+                                 f"cancelled - AI reverted to {self.market_regime}")
+                    self._pending_regime = None
+                    self._pending_regime_count = 0
+                elif ai_regime == self._pending_regime:
+                    self._pending_regime_count += 1
+                    if self._pending_regime_count >= 2:
+                        log.info(f"Regime stickiness: {self.market_regime} -> {ai_regime} "
+                                 f"CONFIRMED after {self._pending_regime_count} agreeing cycles")
+                        self.market_regime = ai_regime
+                        self._pending_regime = None
+                        self._pending_regime_count = 0
+                    else:
+                        log.info(f"Regime stickiness: {ai_regime} pending "
+                                 f"({self._pending_regime_count}/2) - keeping {self.market_regime}")
+                else:
+                    log.info(f"Regime stickiness: new candidate {ai_regime} (1/2) - "
+                             f"keeping {self.market_regime}")
+                    self._pending_regime = ai_regime
+                    self._pending_regime_count = 1
+
+                # When regime-adaptive is on, the profile's TP owns
+                # regime_tp - don't let the AI's placeholder overwrite it.
+                regime_active = (_read_regime_runtime() is not None) or \
+                                bool(getattr(self.config, 'regime_strategy_enabled', False))
+                if not regime_active:
+                    self.regime_tp = ai_tp
+                    self.config.dynamic_tp = self.regime_tp
+
+                log.info(f"Market regime (AI): {self.market_regime} - TP {self.regime_tp}% "
+                         f"(regime_active={regime_active}, AI wanted {ai_regime}/{ai_tp}%)")
                 self._notify_regime_change('AI detection')
+                # Safety net: if runtime file has a stored tp_pct, use it
+                self._resync_regime_from_runtime()
                 return
 
             self._fallback_regime(rsi, price_7d_change, price, ma7)
             self._notify_regime_change('rule-based fallback')
+            self._resync_regime_from_runtime()
         except Exception as e:
             log.warning(f"Regime detection failed: {e}")
             self._fallback_regime_simple()
             self._notify_regime_change('simple fallback')
+            self._resync_regime_from_runtime()
 
     def _notify_regime_change(self, source):
         """If regime changed since last apply, call the registered callback
@@ -766,29 +823,61 @@ class SignalEngine:
         except Exception as e:
             log.warning(f"Regime change callback failed: {e}")
 
+    def _resync_regime_from_runtime(self):
+        """When regime-adaptive is on, the profile's TP is authoritative -
+        NOT the AI's take_profit value (which is just a placeholder). Read
+        the profile TP from /data/regime_runtime.json and restore it if the
+        AI overwrote it. If no runtime file (regime-adaptive is off), leave
+        the AI value alone. Cheap - no disk write, just a read."""
+        runtime = _read_regime_runtime()
+        if not runtime:
+            return  # regime-adaptive off, AI value stands
+        try:
+            profile_tp = runtime.get('tp_pct')
+            if profile_tp is None:
+                return
+            profile_tp = float(profile_tp)
+            if abs(profile_tp - self.regime_tp) > 0.01:
+                self.regime_tp = profile_tp
+                self.config.dynamic_tp = profile_tp
+                log.info(f"Regime TP restored from profile: {profile_tp}% "
+                         f"(AI value was overriding it)")
+        except Exception as e:
+            log.debug(f"Regime resync failed: {e}")
+
     def _fallback_regime(self, rsi, price_change_7d, price, ma7):
         if rsi > 55 and price_change_7d > 3 and price > ma7:
             self.market_regime = 'bullish'
-            self.regime_tp = 15.0
+            fallback_tp = 15.0
             self.regime_reason = f"RSI {round(rsi)} above 55, price up {round(price_change_7d, 1)}%."
         elif rsi < 45 and price_change_7d < -3 and price < ma7:
             self.market_regime = 'bearish'
-            self.regime_tp = 8.0
+            fallback_tp = 8.0
             self.regime_reason = f"RSI {round(rsi)} below 45, price down {round(abs(price_change_7d), 1)}%."
         else:
             self.market_regime = 'neutral'
-            self.regime_tp = 6.0
+            fallback_tp = 6.0
             self.regime_reason = f"Mixed signals - RSI {round(rsi)}."
-        self.config.dynamic_tp = self.regime_tp
+        # Same profile-wins rule as AI path - don't overwrite regime_tp
+        # when regime-adaptive is on (profile owns it).
+        regime_active = (_read_regime_runtime() is not None) or \
+                        bool(getattr(self.config, 'regime_strategy_enabled', False))
+        if not regime_active:
+            self.regime_tp = fallback_tp
+            self.config.dynamic_tp = self.regime_tp
         log.info(f"Market regime (rule-based): {self.market_regime} - TP {self.regime_tp}%")
 
     def _fallback_regime_simple(self):
         self.market_regime = 'neutral'
         self.fear_greed_index = 50
         self.fear_greed_label = 'Neutral'
-        self.regime_tp = 6.0
+        # Only overwrite regime_tp if regime-adaptive isn't running
+        regime_active = (_read_regime_runtime() is not None) or \
+                        bool(getattr(self.config, 'regime_strategy_enabled', False))
+        if not regime_active:
+            self.regime_tp = 6.0
+            self.config.dynamic_tp = self.regime_tp
         self.regime_reason = "Using default settings."
-        self.config.dynamic_tp = self.regime_tp
 
     def get_regime(self):
         return {'regime': self.market_regime, 'take_profit': self.regime_tp, 'reason': self.regime_reason}
