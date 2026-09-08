@@ -2125,6 +2125,8 @@ _EXTRA_KEYS = [
     'loss_cooldown_enabled',        # Block re-buy after a stop-loss hit
     'loss_cooldown_hours',          # How long to block (default 4)
     'daily_summary_enabled',        # Send daily Telegram PnL recap
+    'trade_cooldown_minutes',       # Min gap between auto-buys of same pair (default 60)
+    'max_pair_concentration_pct',   # Hard cap on any single pair as % of portfolio (default 25)
 ]
 
 
