@@ -1253,6 +1253,25 @@ class SignalEngine:
                 return
         except Exception:
             pass
+        # Same hard concentration cap as regular auto-buys - a pyramid add
+        # is still a buy and shouldn't push past the ceiling.
+        try:
+            cap_pct = _extra_float('max_pair_concentration_pct', 25.0)
+            if cap_pct > 0 and cap_pct < 100:
+                base = pair.replace('/USDT', '').replace('/', '')
+                sym = base + 'USDT'
+                acct = self.trader.client.get_account()
+                held = next((float(b['free']) + float(b['locked'])
+                             for b in acct['balances'] if b['asset'] == base), 0.0)
+                cur = float(self.trader.client.get_symbol_ticker(symbol=sym)['price'])
+                pair_value = held * cur
+                portfolio = self.trader.get_portfolio()
+                total = float(portfolio.get('total_usdt', 0) or 0)
+                if total > 0 and (pair_value / total) * 100 >= cap_pct:
+                    log.info(f"Pyramid blocked for {pair}: at concentration cap")
+                    return
+        except Exception as e:
+            log.debug(f"Pyramid concentration check failed: {e}")
         try:
             sym = pair.replace('/', '')
             prices = self.trader.client.get_symbol_ticker(symbol=sym)
@@ -1371,6 +1390,52 @@ class SignalEngine:
                         try: self.risk_manager.release_lock(pair)
                         except Exception: pass
                     continue
+
+                # ============================================================
+                # HARD CONCENTRATION CAP
+                # ============================================================
+                # Prevent auto-buys from stacking into a single pair beyond
+                # the user's configured ceiling. This is the hard block that
+                # complements the soft concentration_alert. Reads current
+                # value USDT of that pair vs total portfolio; if already at
+                # or above the cap, skip this buy.
+                try:
+                    cap_pct = _extra_float('max_pair_concentration_pct', 25.0)
+                    if cap_pct > 0 and cap_pct < 100:
+                        base = pair.replace('/USDT', '').replace('/', '')
+                        sym = base + 'USDT'
+                        acct = self.trader.client.get_account()
+                        held = next((float(b['free']) + float(b['locked'])
+                                     for b in acct['balances']
+                                     if b['asset'] == base), 0.0)
+                        cur = float(self.trader.client.get_symbol_ticker(symbol=sym)['price'])
+                        pair_value = held * cur
+                        portfolio = self.trader.get_portfolio()
+                        total = float(portfolio.get('total_usdt', 0) or 0)
+                        if total > 0:
+                            concentration = (pair_value / total) * 100
+                            if concentration >= cap_pct:
+                                log.info(f"Concentration cap blocked {pair}: "
+                                         f"already {concentration:.1f}% of portfolio "
+                                         f"(cap: {cap_pct}%)")
+                                # Send a one-off Telegram so user knows to
+                                # take manual action if they want more
+                                try:
+                                    self._tg_send(
+                                        f"⚠️ *Auto-buy blocked - concentration*\n"
+                                        f"{pair} is already {concentration:.1f}% of your "
+                                        f"portfolio (cap {cap_pct}%).\n"
+                                        f"Bot will not add more until this drops.",
+                                        context=f'concentration-cap-{pair}'
+                                    )
+                                except Exception:
+                                    pass
+                                if self.risk_manager:
+                                    try: self.risk_manager.release_lock(pair)
+                                    except Exception: pass
+                                continue
+                except Exception as e:
+                    log.debug(f"Concentration cap check failed for {pair}: {e}")
 
             try:
                 if action == 'sell':
