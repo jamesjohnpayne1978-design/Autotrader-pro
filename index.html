@@ -730,10 +730,20 @@ async function loadRankings(){
       const barColor = rank.total_score >= 60 ? 'var(--green)'
                     : rank.total_score >= 35 ? 'var(--gold)'
                     : 'var(--text-3)';
-      // Score breakdown as tiny stacked labels
+      // Score breakdown as tiny stacked labels. New model has penalties too -
+      // show them separately so user sees WHY a coin scored low.
       const s = rank.scores;
-      const breakdown = `M:${s.momentum} · T:${s.trend} · V:${s.volume} · R:${s.relative} · C:${s.consistency}`
-        + (s.btc_bonus > 0 ? ' · BTC+' + s.btc_bonus : '');
+      const positives = `M:${s.momentum} · L:${s.long_term} · T:${s.trend} · V:${s.volume} · R:${s.relative} · C:${s.consistency}`;
+      const penalties = [];
+      if (s.overheat_penalty && s.overheat_penalty < 0) penalties.push(`overheat ${s.overheat_penalty}`);
+      if (s.parabolic_penalty && s.parabolic_penalty < 0) penalties.push(`parabolic ${s.parabolic_penalty}`);
+      if (s.reversion_penalty && s.reversion_penalty < 0) penalties.push(`reversion ${s.reversion_penalty}`);
+      const bonusPart = s.btc_bonus > 0 ? ` · BTC+${s.btc_bonus}` : '';
+      const rsiPart = rank.rsi_14d != null ? ` · RSI ${rank.rsi_14d}` : '';
+      const penaltyLine = penalties.length > 0
+        ? `<div style="font-size:0.6rem;color:var(--red);font-family:var(--mono);margin-top:2px;line-height:1.3">⚠ ${penalties.join(' · ')}</div>`
+        : '';
+      const breakdown = `${positives}${bonusPart}${rsiPart}`;
       const isConcentrationPick = i < 3;
       const cardBg = isConcentrationPick ? 'var(--surface2)' : 'var(--surface)';
       const cardBorder = i === 0 ? '1px solid var(--gold)' : '1px solid var(--border)';
@@ -760,6 +770,7 @@ async function loadRankings(){
             <div style="height:100%;width:${barWidth}%;background:${barColor};transition:width 0.6s ease"></div>
           </div>
           <div style="font-size:0.62rem;color:var(--text-3);font-family:var(--mono);margin-top:6px;line-height:1.3">${breakdown}</div>
+          ${penaltyLine}
         </div>
       `;
     }).join('');
