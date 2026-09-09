@@ -690,7 +690,7 @@ async function refreshDeposits(){
 }
 
 async function loadPrices(){try{const r=await fetch(API_BASE+'/api/prices');const d=await r.json();renderPairs(d.pairs)}catch(e){}}
-function renderPairs(pairs){if(!pairs||!pairs.length){document.getElementById('pairsCard').innerHTML='<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.9rem;">No pairs loaded.</div>';return}const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',RENDER:'R',LINK:'🔗',ARB:'A'};document.getElementById('pairsCard').innerHTML=pairs.map(p=>{let gainHtml='';if(p.gain_pct!==null&&p.gain_pct!==undefined&&p.value_usdt>=1.0){const g=p.gain_pct;const toTp=p.to_tp;const gainCls=g>=0?'up':'down';const tpColor=toTp!==null&&toTp<=1?'var(--green)':toTp!==null&&toTp<=3?'var(--gold)':'var(--text-2)';gainHtml='<div style="font-size:0.72rem;margin-top:4px;font-family:var(--mono);display:flex;gap:8px;"><span class="'+gainCls+'">'+(g>=0?'+':'')+g.toFixed(2)+'%</span><span style="color:var(--text-3)">·</span><span style="color:'+tpColor+'">'+(toTp!==null?'TP in '+toTp.toFixed(2)+'%':'')+'</span></div>'}return'<div class="pair-row" onclick="openPairModal(\''+p.symbol+'\',\''+p.base+'\')" style="cursor:pointer"><div class="pair-info"><div class="pair-icon">'+(icons[p.base]||'●')+'</div><div><div class="pair-name">'+p.symbol+'</div><div class="pair-holdings">'+p.holdings+' '+p.base+' · $'+p.value_usdt+'</div>'+gainHtml+'</div></div><div class="pair-prices"><div class="pair-price">$'+Number(p.price).toLocaleString()+'</div><div class="pair-change '+(p.change>=0?'up':'down')+'">'+(p.change>=0?'+':'')+p.change+'%</div></div></div>'}).join('')}
+function renderPairs(pairs){if(!pairs||!pairs.length){document.getElementById('pairsCard').innerHTML='<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.9rem;">No pairs loaded.</div>';return}const icons={BTC:'₿',ETH:'Ξ',BNB:'B',SOL:'◎',RENDER:'R',LINK:'🔗',ARB:'A'};const concMode=!!state.concentrationMode;document.getElementById('pairsCard').innerHTML=pairs.map(p=>{let gainHtml='';if(p.gain_pct!==null&&p.gain_pct!==undefined&&p.value_usdt>=1.0){const g=p.gain_pct;const toTp=p.to_tp;const gainCls=g>=0?'up':'down';const tpColor=toTp!==null&&toTp<=1?'var(--green)':toTp!==null&&toTp<=3?'var(--gold)':'var(--text-2)';const tpPart=concMode?'<span style="color:var(--text-3);font-size:0.68rem">HOLD</span>':'<span style="color:'+tpColor+'">'+(toTp!==null?'TP in '+toTp.toFixed(2)+'%':'')+'</span>';gainHtml='<div style="font-size:0.72rem;margin-top:4px;font-family:var(--mono);display:flex;gap:8px;"><span class="'+gainCls+'">'+(g>=0?'+':'')+g.toFixed(2)+'%</span><span style="color:var(--text-3)">·</span>'+tpPart+'</div>'}return'<div class="pair-row" onclick="openPairModal(\''+p.symbol+'\',\''+p.base+'\')" style="cursor:pointer"><div class="pair-info"><div class="pair-icon">'+(icons[p.base]||'●')+'</div><div><div class="pair-name">'+p.symbol+'</div><div class="pair-holdings">'+p.holdings+' '+p.base+' · $'+p.value_usdt+'</div>'+gainHtml+'</div></div><div class="pair-prices"><div class="pair-price">$'+Number(p.price).toLocaleString()+'</div><div class="pair-change '+(p.change>=0?'up':'down')+'">'+(p.change>=0?'+':'')+p.change+'%</div></div></div>'}).join('')}
 
 async function loadSignals(){document.getElementById('signalsContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Analysing market...</div>';try{const r=await fetch(API_BASE+'/api/signals');const d=await r.json();renderSignals(d.signals)}catch(e){}}
 function renderSignals(signals){if(!signals||!signals.length){document.getElementById('signalsContainer').innerHTML='<div class="card" style="text-align:center;padding:20px;color:var(--text-2);font-size:0.9rem;">No strong signals. Watching...</div>';return}
@@ -759,7 +759,29 @@ async function loadConcentrationStatus(){
     const nextForceHrs = d.next_scheduled_check_hours;
     const lastRebal = d.last_rebalance_at ? new Date(d.last_rebalance_at).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'never';
 
-    let html = '<div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:8px">Target vs Current</div>';
+    let html = '';
+    // Performance since concentration mode was first turned on
+    const perf = d.performance;
+    if (perf && perf.baseline_value > 0) {
+      const pct = perf.change_pct;
+      const usd = perf.change_usdt;
+      const isUp = pct >= 0;
+      const color = isUp ? 'var(--green)' : 'var(--red)';
+      const sign = isUp ? '+' : '';
+      const days = perf.days_elapsed;
+      const timeLabel = days >= 1 ? days + 'd' : perf.hours_elapsed + 'h';
+      html += `
+        <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px">
+          <div style="font-size:0.6rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:4px">Since Concentration Enabled · ${timeLabel}</div>
+          <div style="display:flex;align-items:baseline;gap:10px">
+            <span style="font-family:var(--mono);font-size:1.25rem;font-weight:800;color:${color}">${sign}${pct.toFixed(2)}%</span>
+            <span style="font-family:var(--mono);font-size:0.85rem;color:${color}">${sign}$${Math.abs(usd).toFixed(2)}</span>
+          </div>
+          <div style="font-size:0.65rem;color:var(--text-3);font-family:var(--mono);margin-top:2px">Baseline $${perf.baseline_value} → Now $${perf.current_value}</div>
+        </div>
+      `;
+    }
+    html += '<div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:8px">Target vs Current</div>';
     targets.forEach(t => {
       const driftColor = Math.abs(t.drift_pct) > d.drift_threshold_pct ? 'var(--gold)' : 'var(--text-2)';
       const driftSign = t.drift_pct >= 0 ? '+' : '';
