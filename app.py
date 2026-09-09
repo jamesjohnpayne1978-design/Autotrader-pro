@@ -17,6 +17,7 @@ from sniper import ListingSniper
 from manual_positions import ManualPositionManager
 from signals import SignalEngine, _call_ai as _ai_call_chain, _extract_json_block
 import ranker
+from winners_allocator import WinnersAllocator
 from risk_manager import RiskManager
 from config import Config
 
@@ -32,6 +33,7 @@ sniper = None
 signal_engine = None
 manual_manager = None
 ranker_thread = None
+winners_allocator = None
 risk_manager = RiskManager(config)
 
 
@@ -105,7 +107,16 @@ def init_trader():
         ranker_thread = ranker.RankerThread(trader)
         ranker_thread.start()
 
-        log.info("Trader, Sniper, Signal Engine, Manual Position Manager and Ranker initialised.")
+        # Phase 2: winners concentration allocator. Rebalances portfolio
+        # to SUI/BNB/BTC target percentages based on proven win rates.
+        # Only ACTS when config.concentration_mode_enabled is True; safe
+        # to run the scheduler regardless (checks flag every cycle).
+        log.info("init_trader: starting winners concentration allocator...")
+        global winners_allocator
+        winners_allocator = WinnersAllocator(trader, config, signal_engine)
+        winners_allocator.start()
+
+        log.info("Trader, Sniper, Signal Engine, Manual Position Manager, Ranker and Concentration Allocator initialised.")
         send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
     except Exception as e:
         log.error(f"Failed to initialise trader: {e}", exc_info=True)
@@ -416,6 +427,35 @@ def refresh_rankings():
         })
     except Exception as e:
         log.error(f"Ranking refresh failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/concentration/status')
+def concentration_status():
+    """Return current vs target allocation, drift, last rebalance, upcoming
+    forced rebalance clock. Dashboard polls this to display the panel."""
+    if not winners_allocator:
+        return jsonify({'error': 'Allocator not initialised'}), 400
+    try:
+        return jsonify(winners_allocator.get_status())
+    except Exception as e:
+        log.error(f"Concentration status failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/concentration/rebalance', methods=['POST'])
+def concentration_rebalance():
+    """Force a rebalance NOW, bypassing rate limit / drift threshold checks.
+    User-triggered override for the auto scheduler."""
+    if not winners_allocator:
+        return jsonify({'error': 'Allocator not initialised'}), 400
+    if not winners_allocator.is_enabled():
+        return jsonify({'error': 'Concentration mode must be enabled first'}), 400
+    try:
+        result = winners_allocator.execute_rebalance(reason='manual user trigger')
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        log.error(f"Manual rebalance failed: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -2206,6 +2246,7 @@ _EXTRA_KEYS = [
     'daily_summary_enabled',        # Send daily Telegram PnL recap
     'trade_cooldown_minutes',       # Min gap between auto-buys of same pair (default 60)
     'max_pair_concentration_pct',   # Hard cap on any single pair as % of portfolio (default 25)
+    'concentration_mode_enabled',   # Phase 2: winners_allocator drives allocation
 ]
 
 
