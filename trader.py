@@ -321,17 +321,23 @@ class Trader:
                 price = float(ticker['price'])
                 pair_name = f"{base}/USDT"
 
-                # Find most recent buy price - only show gain if position is open
+                # Find most recent buy price. Previously used only the very
+                # latest trade and skipped if it was a sell - but that broke
+                # display after partial sells (e.g. concentration rebalance
+                # trims a position; user still holds coin but latest trade
+                # is now a sell). Instead: find the most recent BUY, use its
+                # price as the reference. Approximate but always populated
+                # while we still hold inventory.
                 buy_price = None
                 try:
                     pair_trades = [t for t in history if t.get('pair') == pair_name]
-                    if pair_trades:
-                        latest = pair_trades[0]  # History is newest first
-                        # Only show gain% if most recent trade is a buy (position open)
-                        if latest.get('side') == 'buy':
-                            bp = latest.get('price', 0)
+                    # History is newest first - walk it and grab first buy
+                    for t in pair_trades:
+                        if t.get('side') == 'buy':
+                            bp = t.get('price', 0)
                             if bp and float(bp) > 0:
                                 buy_price = float(bp)
+                                break
                 except Exception:
                     buy_price = None
 
