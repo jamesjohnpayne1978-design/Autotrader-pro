@@ -47,7 +47,16 @@ _RANKING_INTERVAL_SECONDS = 4 * 60 * 60  # 4 hours
 # rotate into a random alt just because it pumped 20% overnight while BTC
 # was flat - that's usually a chase trade. BTC has to be materially weaker
 # than an alt for the alt to win.
-BTC_SCORE_BONUS = 15.0
+#
+# Reduced from 15 -> 10 after the anti-froth rewrite because momentum weights
+# were rebalanced away from raw price change (which BTC often loses on).
+BTC_SCORE_BONUS = 10.0
+
+# Blacklist - pairs that never rank, no matter how they score. Prevents
+# the ranker from suggesting coins the user has removed for cause (bad
+# fill quality, bad win rate history, delisted, tokenized stocks, etc.)
+# Extend this list from user settings later if we want it configurable.
+BLACKLIST = {'NEARUSDT', 'INJUSDT'}
 
 # Universe - large-cap USDT pairs with sufficient liquidity and history.
 # Curated list; we don't blindly scan Binance because that would pull in
@@ -77,19 +86,56 @@ def _pct(a, b):
     return ((b - a) / a) * 100.0
 
 
+def _compute_rsi(closes, period=14):
+    """Standard Wilder RSI on a series of closes. Returns 50 if not enough
+    data (neutral - won't trigger any penalty or bonus)."""
+    if len(closes) < period + 1:
+        return 50.0
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(0.0, delta))
+        losses.append(max(0.0, -delta))
+    # Use last `period` values
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
 def _score_momentum(price_30d_ago, price_now):
-    """0-40 points. Uses 30d price change, sqrt-scaled to reward strong
-    trends without letting outliers dominate the ranking entirely."""
+    """0-25 points (REDUCED from 40). Uses 30d price change, sqrt-scaled
+    to reward strong trends without letting outliers dominate. Also HARD
+    CAPPED so a parabolic 200% pump doesn't get max score. Beyond 60%
+    gain, additional gain gives diminishing returns - and by 100%+ we
+    apply a soft penalty (see _score_reversion_penalty below)."""
     change = _pct(price_30d_ago, price_now)
     if change <= 0:
         return 0.0
-    # Sqrt scale: 25% change -> 20 pts, 100% change -> 40 pts (capped)
-    scaled = (change ** 0.5) * 4.0
-    return min(40.0, scaled)
+    # Sqrt scale: 25% -> ~12, 50% -> ~18, 100%+ -> 25 (capped)
+    scaled = (change ** 0.5) * 2.5
+    return min(25.0, scaled)
+
+
+def _score_long_term_trend(closes):
+    """0-15 points (NEW). Rewards coins with steady multi-week uptrends,
+    not just parabolic short-term pumps. Uses 60d/90d change if we have
+    the history. Coins with strong 90d trends are much less likely to
+    mean-revert than coins with only strong 30d trends."""
+    if len(closes) < 60:
+        return 0.0
+    change_60d = _pct(closes[-60], closes[-1])
+    if change_60d <= 0:
+        return 0.0
+    # 20% over 60d -> ~7 pts, 50% -> ~12, 100%+ -> 15 (capped)
+    return min(15.0, (change_60d ** 0.5) * 1.5)
 
 
 def _score_trend(closes, ma_period=50):
-    """0-25 points. Distance above MA + slope of MA."""
+    """0-20 points (REDUCED from 25). Distance above MA + slope of MA."""
     if len(closes) < ma_period + 5:
         return 0.0
     ma_now = sum(closes[-ma_period:]) / ma_period
@@ -97,18 +143,17 @@ def _score_trend(closes, ma_period=50):
     price = closes[-1]
     if ma_now <= 0:
         return 0.0
-    # Points for price above MA (0-15)
+    # Points for price above MA (0-12)
     distance_pct = _pct(ma_now, price)
-    distance_score = min(15.0, max(0.0, distance_pct * 0.75))
-    # Points for MA rising (0-10)
+    distance_score = min(12.0, max(0.0, distance_pct * 0.6))
+    # Points for MA rising (0-8)
     slope_pct = _pct(ma_prev, ma_now)
-    slope_score = min(10.0, max(0.0, slope_pct * 2.0))
+    slope_score = min(8.0, max(0.0, slope_pct * 1.6))
     return distance_score + slope_score
 
 
 def _score_volume(volumes):
-    """0-15 points. Recent 7d avg volume vs 30d avg volume. Rising volume
-    on a coin often precedes price moves - it's a leading indicator."""
+    """0-10 points (REDUCED from 15). Recent 7d avg volume vs 30d avg."""
     if len(volumes) < 30:
         return 0.0
     vol_7d = sum(volumes[-7:]) / 7
@@ -117,24 +162,24 @@ def _score_volume(volumes):
         return 0.0
     ratio = vol_7d / vol_30d
     if ratio < 1.0:
-        return 0.0  # Volume falling - skip
-    # 1.0x -> 0, 1.5x -> 7.5, 2x+ -> 15
-    return min(15.0, (ratio - 1.0) * 15.0)
+        return 0.0
+    return min(10.0, (ratio - 1.0) * 10.0)
 
 
 def _score_relative_to_btc(coin_change_30d, btc_change_30d):
-    """0-15 points. How much did this coin outperform BTC over 30d?
-    This is the alpha signal - what's genuinely leading the market."""
+    """0-10 points (REDUCED from 15). Outperformance vs BTC over 30d."""
     if coin_change_30d <= btc_change_30d:
         return 0.0
     outperformance = coin_change_30d - btc_change_30d
-    # 10pp outperformance -> 5, 30pp -> 15
-    return min(15.0, outperformance * 0.5)
+    return min(10.0, outperformance * 0.33)
 
 
 def _score_consistency(closes):
-    """0-5 points. Sharpe-like: mean daily return / stdev. Rewards smooth
-    uptrends over choppy ones with the same net gain."""
+    """0-20 points (INCREASED from 5). This is now MUCH more important.
+    Sharpe-like: mean daily return / stdev. Rewards smooth uptrends over
+    parabolic pumps with the same net gain. A coin that went up 50% in
+    a straight line scores much higher than one that went 0-0-0-0-50 in
+    one day. Parabolic moves reverse. Steady moves persist."""
     if len(closes) < 15:
         return 0.0
     returns = []
@@ -149,8 +194,87 @@ def _score_consistency(closes):
     if stdev <= 0:
         return 0.0
     sharpe_like = mean / stdev
-    # Clip: sharpe of 0.1 -> 2.5, 0.2+ -> 5
-    return max(0.0, min(5.0, sharpe_like * 25))
+    # 0.05 -> 5, 0.1 -> 10, 0.2+ -> 20
+    return max(0.0, min(20.0, sharpe_like * 100))
+
+
+def _overheat_penalty(rsi_14d):
+    """0 to -30 points. Applies a growing penalty when daily RSI enters
+    overbought territory. This is the KEY anti-froth guardrail - a coin
+    at RSI 85 is statistically very likely to correct within 2 weeks.
+
+    RSI < 65: no penalty
+    RSI 65-70: -5 (early warning)
+    RSI 70-75: -12 (overbought)
+    RSI 75-80: -20 (extended)
+    RSI 80+: -30 (extreme, likely reversion soon)
+    """
+    if rsi_14d < 65:
+        return 0.0
+    if rsi_14d < 70:
+        return -5.0
+    if rsi_14d < 75:
+        return -12.0
+    if rsi_14d < 80:
+        return -20.0
+    return -30.0
+
+
+def _parabolic_penalty(closes):
+    """0 to -25 points. Detects coins where most of the 30d gain came
+    in the last 7 days - classic parabolic profile that mean-reverts.
+
+    Ratio = 7d_change / 30d_change:
+      < 0.35: healthy distribution, no penalty
+      0.35-0.55: -5
+      0.55-0.75: -15
+      > 0.75: -25 (nearly all gains in last week = extreme parabolic)
+
+    Also penalizes if 7d change alone > 40% (regardless of 30d) since
+    that's parabolic on its own.
+    """
+    if len(closes) < 30:
+        return 0.0
+    change_7d = _pct(closes[-8], closes[-1])
+    change_30d = _pct(closes[-30], closes[-1])
+
+    # Only apply if there IS a positive 30d trend to distribute
+    if change_30d <= 5:
+        return 0.0
+
+    # Standalone parabolic: 7d gain > 40%
+    if change_7d > 40:
+        return -25.0
+
+    # Ratio-based
+    ratio = change_7d / change_30d if change_30d > 0 else 0
+    if ratio < 0.35:
+        return 0.0
+    if ratio < 0.55:
+        return -5.0
+    if ratio < 0.75:
+        return -15.0
+    return -25.0
+
+
+def _reversion_penalty(change_30d):
+    """0 to -20 points. Direct penalty for coins that have already run
+    hard - the higher the 30d gain, the more likely near-term reversion.
+    Complements the parabolic penalty (which looks at distribution) with
+    a raw magnitude check.
+
+    30d change < 50%: no penalty (still normal upside)
+    50-80%: -5
+    80-120%: -12
+    >120%: -20 (definitely due to correct)
+    """
+    if change_30d < 50:
+        return 0.0
+    if change_30d < 80:
+        return -5.0
+    if change_30d < 120:
+        return -12.0
+    return -20.0
 
 
 def _fetch_klines(client, symbol, interval='1d', limit=60):
@@ -167,8 +291,26 @@ def score_pair(client, symbol, btc_change_30d):
     """Compute a full score for one symbol. Returns dict or None on failure.
 
     btc_change_30d is passed in so we don't refetch it 40 times.
+
+    Post anti-froth rewrite: scoring is now a mix of POSITIVE factors
+    (max ~100) and NEGATIVE penalties (max ~-75). A parabolic pump like
+    ARB +106% will score:
+      + momentum 25 (capped) + relative 10 (capped) + volume ~8 = ~43
+      - reversion 20 (>120%) - parabolic 25 - overheat 20 (RSI 80+) = -65
+      Net: ~-22 -> falls out of top 10, correctly avoided.
+
+    Meanwhile BTC +25% steady trend scores:
+      + momentum ~12 + long-term 12 + trend 15 + consistency 15 +
+        relative 0 + volume 5 + BTC bonus 10 = ~69
+      - no penalties
+      Net: 69 -> stays near the top, correctly rewarded.
     """
-    klines = _fetch_klines(client, symbol, interval='1d', limit=60)
+    # Blacklist check first - skip entirely, don't waste API calls
+    if symbol in BLACKLIST:
+        return None
+
+    # Fetch 90d of data so we can compute the long-term trend factor
+    klines = _fetch_klines(client, symbol, interval='1d', limit=95)
     if not klines or len(klines) < 30:
         return None
     closes = [float(k[4]) for k in klines]
@@ -176,17 +318,32 @@ def score_pair(client, symbol, btc_change_30d):
 
     price_now = closes[-1]
     price_30d_ago = closes[-30]
-
-    momentum = _score_momentum(price_30d_ago, price_now)
-    trend = _score_trend(closes)
-    volume = _score_volume(volumes)
     coin_change_30d = _pct(price_30d_ago, price_now)
-    relative = _score_relative_to_btc(coin_change_30d, btc_change_30d)
-    consistency = _score_consistency(closes)
 
-    total = momentum + trend + volume + relative + consistency
-    if symbol == 'BTCUSDT':
-        total += BTC_SCORE_BONUS
+    # Positive scoring factors (max ~100)
+    momentum = _score_momentum(price_30d_ago, price_now)          # 0-25
+    long_term = _score_long_term_trend(closes)                    # 0-15
+    trend = _score_trend(closes)                                  # 0-20
+    volume = _score_volume(volumes)                               # 0-10
+    relative = _score_relative_to_btc(coin_change_30d, btc_change_30d)  # 0-10
+    consistency = _score_consistency(closes)                      # 0-20
+
+    positive = momentum + long_term + trend + volume + relative + consistency
+
+    # Penalty factors (max ~-75)
+    rsi_14d = _compute_rsi(closes, period=14)
+    overheat = _overheat_penalty(rsi_14d)              # 0 to -30
+    parabolic = _parabolic_penalty(closes)             # 0 to -25
+    reversion = _reversion_penalty(coin_change_30d)    # 0 to -20
+
+    penalties = overheat + parabolic + reversion
+
+    # BTC bonus - keeps BTC competitive in stable markets
+    btc_bonus = BTC_SCORE_BONUS if symbol == 'BTCUSDT' else 0.0
+
+    total = positive + penalties + btc_bonus
+    # Never let score go negative (dashboard rendering assumes 0-100 range)
+    total = max(0.0, total)
 
     return {
         'symbol': symbol,
@@ -194,13 +351,18 @@ def score_pair(client, symbol, btc_change_30d):
         'price': price_now,
         'change_30d_pct': round(coin_change_30d, 2),
         'vs_btc_pct': round(coin_change_30d - btc_change_30d, 2),
+        'rsi_14d': round(rsi_14d, 1),
         'scores': {
             'momentum': round(momentum, 1),
+            'long_term': round(long_term, 1),
             'trend': round(trend, 1),
             'volume': round(volume, 1),
             'relative': round(relative, 1),
             'consistency': round(consistency, 1),
-            'btc_bonus': BTC_SCORE_BONUS if symbol == 'BTCUSDT' else 0,
+            'overheat_penalty': round(overheat, 1),
+            'parabolic_penalty': round(parabolic, 1),
+            'reversion_penalty': round(reversion, 1),
+            'btc_bonus': btc_bonus,
         },
         'total_score': round(total, 1),
     }
