@@ -2421,6 +2421,65 @@ def _apply_extras_to_config():
     return extras
 
 
+# =============================================================================
+# Concentration mode: trading_pairs auto-management
+# =============================================================================
+# When concentration mode toggles ON, shrink the active trading_pairs list
+# to just the 3 target coins. Original list is backed up so toggling OFF
+# restores it. Prevents dashboard clutter and stops the signal engine from
+# wasting cycles generating signals for pairs concentration ignores.
+_CONCENTRATION_TARGETS = ['BTCUSDT', 'BNBUSDT', 'SUIUSDT']
+_PAIRS_BACKUP_PATH = '/data/pairs_backup_before_concentration.json'
+
+
+def _handle_concentration_pairs_transition(new_state):
+    """Called from settings POST when concentration_mode_enabled changes.
+    new_state: True if turning ON, False if turning OFF.
+
+    ON:  backup current pairs, replace with 3 targets
+    OFF: restore original pairs from backup (if backup exists)
+
+    Idempotent: safe to call even if already in the requested state.
+    Only backs up on the first ON transition (won't overwrite an existing
+    backup with the concentration-only list).
+    """
+    current_pairs = list(getattr(config, 'trading_pairs', []))
+
+    if new_state:
+        # Turning ON - backup + shrink
+        # Only backup if we don't already have one (protects against
+        # ON→OFF→ON overwriting the original with just target pairs)
+        if not os.path.exists(_PAIRS_BACKUP_PATH):
+            try:
+                os.makedirs(os.path.dirname(_PAIRS_BACKUP_PATH), exist_ok=True)
+                with open(_PAIRS_BACKUP_PATH, 'w') as f:
+                    json.dump(current_pairs, f)
+                log.info(f"Concentration ON: backed up {len(current_pairs)} pairs to {_PAIRS_BACKUP_PATH}")
+            except Exception as e:
+                log.warning(f"Concentration: pairs backup failed: {e}")
+        # Now shrink to target pairs (only if not already there)
+        if set(current_pairs) != set(_CONCENTRATION_TARGETS):
+            config.trading_pairs = list(_CONCENTRATION_TARGETS)
+            _save_pairs_override(_CONCENTRATION_TARGETS)
+            log.info(f"Concentration ON: trading_pairs shrunk to {_CONCENTRATION_TARGETS}")
+    else:
+        # Turning OFF - restore from backup if present
+        if os.path.exists(_PAIRS_BACKUP_PATH):
+            try:
+                with open(_PAIRS_BACKUP_PATH) as f:
+                    original = json.load(f)
+                if isinstance(original, list) and original:
+                    config.trading_pairs = original
+                    _save_pairs_override(original)
+                    log.info(f"Concentration OFF: restored {len(original)} pairs from backup")
+                # Remove backup so next ON transition backs up cleanly
+                os.remove(_PAIRS_BACKUP_PATH)
+            except Exception as e:
+                log.warning(f"Concentration: pairs restore failed: {e}")
+        else:
+            log.info("Concentration OFF: no pairs backup found, leaving trading_pairs unchanged")
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     if request.method == 'POST':
@@ -2449,6 +2508,17 @@ def settings():
         _save_extra_settings(existing)
         log.info(f"Settings saved - extras: { {k: existing.get(k) for k in _EXTRA_KEYS if k in existing} }")
 
+        # Concentration mode transitions: shrink trading_pairs to just the
+        # 3 target coins (BTC/BNB/SUI) when turning ON, restore original
+        # list when turning OFF. Prevents the Active Pairs list from being
+        # cluttered with coins the concentration strategy ignores.
+        try:
+            if 'concentration_mode_enabled' in payload:
+                new_state = bool(existing.get('concentration_mode_enabled'))
+                _handle_concentration_pairs_transition(new_state)
+        except Exception as e:
+            log.warning(f"Concentration pairs transition failed: {e}")
+
         # If regime_strategy toggle changed (or any related field), re-apply
         # so profile takes effect immediately. Without this, the runtime file
         # only updates on the NEXT actual regime CHANGE detected by the AI -
@@ -2476,6 +2546,15 @@ def settings():
 try:
     _apply_extras_to_config()
     log.info("Extra settings (trailing stop / concentration) loaded from disk")
+    # If concentration mode is already ON but trading_pairs is still bloated
+    # with non-target pairs, shrink it now. Handles the case where this
+    # feature was added after concentration mode was first enabled - the
+    # pairs list would otherwise stay stale until the user re-toggled.
+    try:
+        if getattr(config, 'concentration_mode_enabled', False):
+            _handle_concentration_pairs_transition(True)
+    except Exception as _e2:
+        log.debug(f"Startup concentration pairs sync skipped: {_e2}")
 except Exception as _e:
     log.debug(f"No extra settings to load: {_e}")
 
