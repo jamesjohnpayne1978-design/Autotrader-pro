@@ -228,6 +228,21 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 <div class="page" id="page-insights">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><div class="section-title" style="margin:0">AI Market Insights</div><div style="font-size:0.75rem;color:var(--text-3);font-family:var(--mono)" id="insightsUpdated">-</div></div>
   <div id="insightsContainer"><div class="loading-row"><div class="spinner"></div> Analysing...</div></div>
+
+  <!-- ============================================================ -->
+  <!-- Momentum Rankings - Phase 1 of concentration strategy pivot -->
+  <!-- Purely observational: shows what a concentration bot WOULD pick -->
+  <!-- ============================================================ -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 8px">
+    <div class="section-title" style="margin:0">🏆 Momentum Rankings</div>
+    <button onclick="refreshRankings()" id="refreshRankingsBtn" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.72rem;font-weight:700;padding:6px 12px;cursor:pointer">🔄 Refresh</button>
+  </div>
+  <div style="background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;font-size:0.72rem;color:var(--blue-bright);line-height:1.5">
+    <strong>Phase 1 · observational only</strong> - what a concentration bot would pick. Current bot trading unchanged.
+  </div>
+  <div id="rankingsUpdated" style="font-size:0.68rem;color:var(--text-3);font-family:var(--mono);margin-bottom:10px;text-align:right">-</div>
+  <div id="rankingsContainer"><div class="loading-row"><div class="spinner"></div> Loading rankings...</div></div>
+
   <div class="section-title">Watchlist</div>
   <div id="watchlistContainer"><div class="loading-row"><div class="spinner"></div> Loading...</div></div>
   <div class="section-title">Pair Recommendations</div>
@@ -414,7 +429,7 @@ let portfolioChart=null,chartRange='24h',allSnapshots=[],btcSnapshots=[];
 let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false,regimeStrategy:false};
 let selectedManualPair='';
 
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights')loadInsights();if(n==='stats')loadStats();if(n==='settings'){loadPairs();loadActiveCooldowns();}if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights'){loadInsights();loadRankings();}if(n==='stats')loadStats();if(n==='settings'){loadPairs();loadActiveCooldowns();}if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
 function showApiModal(){document.getElementById('apiModal').classList.add('show')}
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
@@ -675,6 +690,104 @@ document.getElementById('signalsContainer').innerHTML=signals.map(s=>{
 
 async function loadHistory(){try{const r=await fetch(API_BASE+'/api/history');const d=await r.json();renderHistory(d.trades)}catch(e){}}
 function renderHistory(trades){if(!trades||!trades.length){document.getElementById('historyCard').innerHTML='<div style="text-align:center;padding:24px;color:var(--text-2);font-size:0.9rem;">No trades yet.</div>';return}document.getElementById('historyCard').innerHTML=trades.map(t=>{const val=(t.usdt_value||0).toFixed(2);const pr=t.price||0;const qty=t.quantity||0;const prFmt=pr>1000?pr.toFixed(0):pr>1?pr.toFixed(2):pr.toFixed(4);const detail=t.side==='buy'?('$'+val+' @ $'+prFmt):(qty.toFixed(qty>10?2:4)+' sold');const pnl=t.pnl||0;return'<div class="trade-row"><div class="trade-left"><div class="trade-type '+t.side+'">'+(t.side==='buy'?'B':'S')+'</div><div><div class="trade-pair">'+t.pair+'</div><div class="trade-time">'+t.time+'</div><div style="font-size:0.68rem;color:var(--text-3);font-family:var(--mono)">'+detail+'</div></div></div><div class="trade-right"><div class="trade-pnl '+(pnl>=0?'up':'down')+'">'+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+'</div><div class="trade-trigger">'+t.trigger+'</div></div></div>'}).join('')}
+
+// ============================================================
+// MOMENTUM RANKINGS (Phase 1 of concentration strategy)
+// ============================================================
+// Reads /api/rankings which is a purely observational scoring of ~40
+// large-cap pairs by multi-factor momentum. Current bot trading is
+// completely unaffected - this shows what a concentration strategy WOULD
+// pick if we flipped to that mode.
+async function loadRankings(){
+  const listEl = document.getElementById('rankingsContainer');
+  const updatedEl = document.getElementById('rankingsUpdated');
+  if (!listEl) return;
+  try {
+    const r = await fetch(API_BASE + '/api/rankings');
+    const d = await r.json();
+    if (!d.rankings || d.rankings.length === 0) {
+      listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-2);font-size:0.9rem;">'
+        + (d.message || 'No rankings yet - tap Refresh to run now.') + '</div>';
+      if (updatedEl) updatedEl.textContent = 'never run';
+      return;
+    }
+    if (updatedEl && d.updated_at) {
+      const t = new Date(d.updated_at);
+      updatedEl.textContent = 'Updated ' + t.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+        + ' · scored ' + d.scored_count + '/' + d.universe_size + ' pairs';
+    }
+    // Render top 15, with medal icons for top 3
+    const top = d.rankings.slice(0, 15);
+    listEl.innerHTML = top.map((rank, i) => {
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '<span style="color:var(--text-3);font-family:var(--mono);font-size:0.78rem">#' + (i+1) + '</span>';
+      const vsBtc = rank.vs_btc_pct;
+      const vsBtcColor = vsBtc > 0 ? 'var(--green)' : 'var(--red)';
+      const vsBtcSign = vsBtc >= 0 ? '+' : '';
+      const changeColor = rank.change_30d_pct >= 0 ? 'var(--green)' : 'var(--red)';
+      const changeSign = rank.change_30d_pct >= 0 ? '+' : '';
+      // Score bar - visual proportional to total score (max ~100)
+      const barWidth = Math.min(100, rank.total_score);
+      const barColor = rank.total_score >= 60 ? 'var(--green)'
+                    : rank.total_score >= 35 ? 'var(--gold)'
+                    : 'var(--text-3)';
+      // Score breakdown as tiny stacked labels
+      const s = rank.scores;
+      const breakdown = `M:${s.momentum} · T:${s.trend} · V:${s.volume} · R:${s.relative} · C:${s.consistency}`
+        + (s.btc_bonus > 0 ? ' · BTC+' + s.btc_bonus : '');
+      const isConcentrationPick = i < 3;
+      const cardBg = isConcentrationPick ? 'var(--surface2)' : 'var(--surface)';
+      const cardBorder = i === 0 ? '1px solid var(--gold)' : '1px solid var(--border)';
+      return `
+        <div style="background:${cardBg};border:${cardBorder};border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1">
+              <div style="font-size:1.1rem;min-width:24px;text-align:center">${medal}</div>
+              <div style="min-width:0;flex:1">
+                <div style="font-family:var(--mono);font-weight:700;font-size:0.95rem">${rank.display}</div>
+                <div style="font-size:0.68rem;color:var(--text-3);font-family:var(--mono);margin-top:2px">
+                  <span style="color:${changeColor}">${changeSign}${rank.change_30d_pct}%</span>
+                  <span style="color:var(--text-3)"> 30d · vs BTC </span>
+                  <span style="color:${vsBtcColor}">${vsBtcSign}${vsBtc}%</span>
+                </div>
+              </div>
+            </div>
+            <div style="text-align:right;flex-shrink:0;margin-left:12px">
+              <div style="font-family:var(--mono);font-weight:800;font-size:1.05rem;color:${barColor}">${rank.total_score}</div>
+              <div style="font-size:0.6rem;color:var(--text-3);font-family:var(--mono)">score</div>
+            </div>
+          </div>
+          <div style="height:3px;background:var(--surface3);border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${barWidth}%;background:${barColor};transition:width 0.6s ease"></div>
+          </div>
+          <div style="font-size:0.62rem;color:var(--text-3);font-family:var(--mono);margin-top:6px;line-height:1.3">${breakdown}</div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    console.error('Rankings error:', e);
+    listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-3);font-size:0.85rem">Could not load rankings. Backend may need redeploy.</div>';
+  }
+}
+
+async function refreshRankings(){
+  const btn = document.getElementById('refreshRankingsBtn');
+  if (btn){ btn.disabled = true; btn.textContent = '⏳ Scoring...'; btn.style.opacity = '0.6'; }
+  showToast('🔄 Scoring ~40 pairs, takes ~15 seconds...');
+  try {
+    const r = await fetch(API_BASE + '/api/rankings/refresh', {method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'});
+    const d = await r.json();
+    if (d.success) {
+      showToast('✅ Ranked ' + d.scored_count + ' pairs. Top: ' + (d.top_3 || []).join(', '));
+      loadRankings();
+    } else {
+      showToast('Rank failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) {
+    showToast('Could not reach server');
+  } finally {
+    if (btn){ btn.disabled = false; btn.textContent = '🔄 Refresh'; btn.style.opacity = '1'; }
+  }
+}
 
 async function loadInsights(){
   document.getElementById('insightsContainer').innerHTML='<div class="loading-row"><div class="spinner"></div> Analysing market with AI...</div>';
