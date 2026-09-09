@@ -209,7 +209,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
         <button class="range-btn active" id="btn24h" onclick="setChartRange('24h')">24H</button>
         <button class="range-btn" id="btn7d" onclick="setChartRange('7d')">7D</button>
         <button class="range-btn" id="btn30d" onclick="setChartRange('30d')">30D</button>
-        <button class="range-btn" id="btn90d" onclick="setChartRange('90d')">90D</button>
         <button class="range-btn" id="btn1y" onclick="setChartRange('1y')">1Y</button>
       </div>
     </div>
@@ -434,7 +433,7 @@ async function loadFearGreed(){try{
 
 async function loadRegime(){try{const r=await fetch(API_BASE+'/api/regime');const d=await r.json();const regime=d.regime||'neutral';const tp=d.take_profit||6;const reason=d.reason||'';const icons={bullish:'🚀',bearish:'🔴',neutral:'📊'};const labels={bullish:'BULL MARKET',bearish:'BEAR MARKET',neutral:'NEUTRAL MARKET'};document.getElementById('regimeCard').className='regime-card '+regime;document.getElementById('regimeIcon').textContent=icons[regime];document.getElementById('regimeTitle').className='regime-title '+regime;document.getElementById('regimeTitle').textContent=labels[regime];document.getElementById('regimeReason').textContent=reason;document.getElementById('regimeTp').className='regime-tp '+regime;document.getElementById('regimeTp').textContent='Auto Take Profit: '+tp+'%';const adj=document.getElementById('regimeAdjust');if(adj){if(regime==='bearish')adj.textContent='Bear: -3 buy / -5 sell';else if(regime==='bullish')adj.textContent='Bull: +3 buy / +3 sell';else adj.textContent='Neutral: no adjustment'}}catch(e){}}
 
-function setChartRange(r){chartRange=r;['24h','7d','30d','90d','1y'].forEach(x=>{const b=document.getElementById('btn'+x);if(b)b.className='range-btn'+(x===r?' active':'')});renderChart()}
+function setChartRange(r){chartRange=r;['24h','7d','30d','1y'].forEach(x=>{const b=document.getElementById('btn'+x);if(b)b.className='range-btn'+(x===r?' active':'')});renderChart()}
 function renderChart(){
   const pctEl=document.getElementById('chartPctChange');
   if(pctEl){pctEl.textContent='-';pctEl.style.color='var(--text-3)';}
@@ -447,7 +446,7 @@ function renderChart(){
   document.getElementById('portfolioChart').style.display='block';
 
   const now=new Date();
-  const hrs={'24h':24,'7d':168,'30d':720,'90d':2160,'1y':8760}[chartRange]||24;
+  const hrs={'24h':24,'7d':168,'30d':720,'1y':8760}[chartRange]||24;
   const cut=new Date(now-hrs*3600000);
 
   // Portfolio filter
@@ -1564,4 +1563,3 @@ document.getElementById('apiModal').addEventListener('click',function(e){if(e.ta
 </script>
 </body>
 </html>
-
