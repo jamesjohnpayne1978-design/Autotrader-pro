@@ -633,6 +633,13 @@ class SignalEngine:
     def _check_position_concentration(self):
         if not self.trader:
             return
+        # When concentration mode is ON, the whole point of the strategy is
+        # to be concentrated in target coins (SUI 40% / BNB 25% / BTC 20%).
+        # The "you're too concentrated" alert becomes actively wrong - it
+        # would fire non-stop on SUI which sits above any reasonable
+        # threshold by design. Skip the check entirely in that mode.
+        if getattr(self.config, 'concentration_mode_enabled', False):
+            return
         threshold_pct = _extra_float('concentration_alert_pct', 25.0)
         cooldown_hours = 4
         if not hasattr(self, '_last_concentration_alert'):
