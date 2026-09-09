@@ -227,6 +227,39 @@ class WinnersAllocator:
             log.warning(f"Concentration current alloc fetch failed: {e}")
         return result
 
+    # ---------- OCO management ----------
+
+    def _cancel_target_ocos(self):
+        """Cancel any open orders on target pairs. Concentration mode holds
+        positions long-term - it exits/sizes via rebalance drift, not via
+        TP/SL. Any OCO on target coins would fire at 6% and force a costly
+        re-entry loop (sell → drift alert → rebuy at market). Removing them
+        lets positions ride freely; rebalance handles all sizing.
+
+        Called BEFORE rebalance (to free locked balances for selling) and
+        AFTER (to remove the new OCOs that trader.execute_trade auto-places
+        on every buy).
+        """
+        cancelled = 0
+        for sym in self.targets:
+            try:
+                open_orders = self.trader.client.get_open_orders(symbol=sym)
+                for order in open_orders:
+                    try:
+                        self.trader.client.cancel_order(
+                            symbol=sym,
+                            orderId=order['orderId']
+                        )
+                        cancelled += 1
+                        log.info(f"Concentration: cancelled order {order['orderId']} on {sym}")
+                    except Exception as e:
+                        log.debug(f"Cancel order failed for {sym}/{order.get('orderId')}: {e}")
+            except Exception as e:
+                log.debug(f"Get open orders failed for {sym}: {e}")
+        if cancelled:
+            log.info(f"Concentration: cancelled {cancelled} open OCO orders on target pairs")
+        return cancelled
+
     # ---------- Rebalance decision ----------
 
     def _can_rebalance_now(self):
@@ -289,6 +322,15 @@ class WinnersAllocator:
 
         target_bases = {s.replace('USDT', '') for s in self.targets}
         current = self._compute_current_allocation(total_value)
+
+        # ---- Phase 0: cancel any existing OCOs on target pairs ----
+        # Otherwise our sell orders would fail (asset is locked by OCO) and
+        # the OCO's own take-profit could fire during the rebalance window.
+        try:
+            self._cancel_target_ocos()
+            time.sleep(1)  # brief pause for Binance to release locked balances
+        except Exception as e:
+            log.warning(f"Pre-rebalance OCO cancel failed (continuing): {e}")
 
         # ---- Phase 1: SELLS ----
         # (a) Non-target assets: sell 100%
@@ -363,6 +405,19 @@ class WinnersAllocator:
             except Exception as e:
                 trades.append({'pair': m['pair'], 'action': 'buy', 'success': False, 'error': str(e)[:200]})
                 log.warning(f"Concentration BUY failed for {m['pair']}: {e}")
+
+        # ---- Phase 3: cancel OCOs created by the buys ----
+        # trader.execute_trade() auto-places OCO orders on every buy (using
+        # regime TP/SL, currently 6%/4%). For concentration we want those
+        # positions to HOLD - rebalance manages sizing via drift, not TP.
+        # Wait briefly for OCOs to actually appear on Binance before cancel.
+        try:
+            time.sleep(2)
+            n = self._cancel_target_ocos()
+            if n:
+                log.info(f"Concentration: removed {n} auto-OCOs so positions can hold")
+        except Exception as e:
+            log.warning(f"Post-rebalance OCO cancel failed: {e}")
 
         # Persist state
         now_iso = datetime.utcnow().isoformat() + 'Z'
@@ -455,6 +510,16 @@ class WinnersAllocator:
     def _run(self):
         # Wait 60s on startup so trader is fully initialized before first check
         time.sleep(60)
+        # If concentration mode is already on when we boot (e.g. after a
+        # redeploy), there may be leftover 6% OCOs from a previous rebalance.
+        # Cancel them right away so positions can hold from now on.
+        if self.is_enabled():
+            try:
+                n = self._cancel_target_ocos()
+                if n:
+                    log.info(f"Concentration startup: removed {n} stale OCOs from previous rebalance")
+            except Exception as e:
+                log.debug(f"Startup OCO cleanup failed: {e}")
         while not self._stop:
             try:
                 if self.is_enabled():
