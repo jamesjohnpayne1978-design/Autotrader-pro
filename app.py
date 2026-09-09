@@ -17,7 +17,20 @@ from sniper import ListingSniper
 from manual_positions import ManualPositionManager
 from signals import SignalEngine, _call_ai as _ai_call_chain, _extract_json_block
 import ranker
-from winners_allocator import WinnersAllocator
+# Safe import - if winners_allocator.py hasn't been pushed to the repo yet,
+# the app still starts. Concentration mode simply won't be available until
+# the file is deployed. This prevents a single missing file from crashing
+# the entire bot in a restart loop.
+try:
+    from winners_allocator import WinnersAllocator
+    _HAS_ALLOCATOR = True
+except ImportError as _e:
+    _HAS_ALLOCATOR = False
+    WinnersAllocator = None  # sentinel so references don't NameError
+    logging.getLogger(__name__).warning(
+        f"winners_allocator.py not found - concentration mode disabled. "
+        f"Push the file to the repo to enable Phase 2 strategy. ({_e})"
+    )
 from risk_manager import RiskManager
 from config import Config
 
@@ -111,10 +124,13 @@ def init_trader():
         # to SUI/BNB/BTC target percentages based on proven win rates.
         # Only ACTS when config.concentration_mode_enabled is True; safe
         # to run the scheduler regardless (checks flag every cycle).
-        log.info("init_trader: starting winners concentration allocator...")
         global winners_allocator
-        winners_allocator = WinnersAllocator(trader, config, signal_engine)
-        winners_allocator.start()
+        if _HAS_ALLOCATOR:
+            log.info("init_trader: starting winners concentration allocator...")
+            winners_allocator = WinnersAllocator(trader, config, signal_engine)
+            winners_allocator.start()
+        else:
+            log.warning("Skipping concentration allocator - winners_allocator.py not deployed")
 
         log.info("Trader, Sniper, Signal Engine, Manual Position Manager, Ranker and Concentration Allocator initialised.")
         send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
