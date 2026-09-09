@@ -1339,6 +1339,14 @@ class SignalEngine:
             log.warning(f"Pending signal notification failed: {e}")
 
     def _auto_execute(self, signals):
+        # Concentration mode takes precedence: when on, the winners_allocator
+        # drives allocation and the signal engine must not fire its own
+        # trades (they'd fight the target allocation). We still let signals
+        # ANALYZE and log for observability, just no execution.
+        if getattr(self.config, 'concentration_mode_enabled', False):
+            log.info("Auto-execute SKIPPED - concentration mode is ON (allocator drives trades).")
+            return
+
         if _extra_bool('approval_mode', False):
             self._notify_pending_signals(signals)
             log.info("Auto-execute SKIPPED - approval mode is ON.")
