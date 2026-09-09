@@ -16,6 +16,7 @@ from trader import Trader
 from sniper import ListingSniper
 from manual_positions import ManualPositionManager
 from signals import SignalEngine, _call_ai as _ai_call_chain, _extract_json_block
+import ranker
 from risk_manager import RiskManager
 from config import Config
 
@@ -30,6 +31,7 @@ trader = None
 sniper = None
 signal_engine = None
 manual_manager = None
+ranker_thread = None
 risk_manager = RiskManager(config)
 
 
@@ -94,7 +96,16 @@ def init_trader():
         log.info("init_trader: starting manual position monitor thread...")
         threading.Thread(target=manual_manager.run, daemon=True, name="manual_monitor").start()
 
-        log.info("Trader, Sniper, Signal Engine and Manual Position Manager initialised.")
+        # Phase 1 of concentration strategy: read-only momentum ranker.
+        # Runs every 4h, scores 40+ pairs, writes to /data/ranked_pairs.json.
+        # Purely observational - does not affect trading. Dashboard reads
+        # this to show what a concentration strategy WOULD pick.
+        log.info("init_trader: starting momentum ranker thread...")
+        global ranker_thread
+        ranker_thread = ranker.RankerThread(trader)
+        ranker_thread.start()
+
+        log.info("Trader, Sniper, Signal Engine, Manual Position Manager and Ranker initialised.")
         send_telegram("✅ *AutoTrader Pro Started*\nBot is live and monitoring markets.")
     except Exception as e:
         log.error(f"Failed to initialise trader: {e}", exc_info=True)
@@ -372,7 +383,43 @@ def get_regime():
         return jsonify({'regime': 'neutral', 'take_profit': 6.0, 'reason': str(e)})
 
 
-@app.route('/api/trade', methods=['POST'])
+@app.route('/api/rankings')
+def get_rankings():
+    """Return the current momentum rankings. Read-only observational data
+    from the Phase 1 ranker - shows what a concentration strategy would
+    currently pick as the leader(s). Does NOT affect live trading."""
+    try:
+        data = ranker.load_rankings()
+        if not data:
+            return jsonify({
+                'rankings': [],
+                'updated_at': None,
+                'message': 'Ranker has not run yet - first cycle within 4 hours of startup'
+            })
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'rankings': [], 'error': str(e)}), 500
+
+
+@app.route('/api/rankings/refresh', methods=['POST'])
+def refresh_rankings():
+    """Force a fresh ranking cycle right now instead of waiting 4 hours.
+    Takes ~10-20 seconds (fetches 40 sets of klines from Binance)."""
+    if not trader:
+        return jsonify({'error': 'Not connected'}), 400
+    try:
+        rankings = ranker.run_once(trader)
+        return jsonify({
+            'success': True,
+            'scored_count': len(rankings),
+            'top_3': [r['symbol'] for r in rankings[:3]]
+        })
+    except Exception as e:
+        log.error(f"Ranking refresh failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+
 def execute_trade():
     if not trader:
         return jsonify({'error': 'Not connected'}), 400
