@@ -215,6 +215,23 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <canvas id="portfolioChart" height="160"></canvas>
     <div class="loading-row" id="chartLoading"><div class="spinner"></div> Loading chart...</div>
   </div>
+
+  <!-- ============================================================ -->
+  <!-- Concentration Mode Panel - Phase 2 of strategy pivot -->
+  <!-- When enabled, allocator drives trades. Signal engine goes silent -->
+  <!-- ============================================================ -->
+  <div class="card" id="concentrationCard" style="display:none;margin-bottom:16px;border:1px solid var(--gold-border);background:linear-gradient(145deg,rgba(240,180,41,0.04),var(--surface))">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div class="section-title" style="margin:0;color:var(--gold)">🎯 Concentration Mode</div>
+      <div id="concentrationStatusBadge" style="font-size:0.65rem;font-family:var(--mono);padding:4px 10px;border-radius:12px;background:var(--green-dim);color:var(--green)">ACTIVE</div>
+    </div>
+    <div id="concentrationBody"><div class="loading-row"><div class="spinner"></div> Loading allocation...</div></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button onclick="triggerRebalance()" id="rebalanceBtn" style="flex:1;background:var(--gold);color:#000;border:none;border-radius:var(--radius-sm);font-family:var(--sans);font-size:0.85rem;font-weight:700;padding:11px;cursor:pointer">⚡ Rebalance Now</button>
+      <button onclick="showConcentrationHistory()" style="background:var(--surface2);border:1px solid var(--border2);color:var(--text-2);border-radius:var(--radius-sm);font-family:var(--sans);font-size:0.85rem;font-weight:600;padding:11px 16px;cursor:pointer">History</button>
+    </div>
+  </div>
+
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
     <div class="section-title" style="margin:0">Active Pairs</div>
     <button onclick="openTradeModal()" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.78rem;font-weight:700;padding:8px 16px;cursor:pointer">+ Manual Trade</button>
@@ -334,6 +351,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <div class="card">
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Full Auto Mode</div><div class="setting-desc">Execute signals without approval</div></div><div class="toggle" id="autoModeToggle" onclick="toggleAutoMode()"><div class="toggle-thumb"></div></div></div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Telegram Alerts</div><div class="setting-desc">Notify on every trade</div></div><div class="toggle on" id="telegramToggle" onclick="toggleTelegram()"><div class="toggle-thumb"></div></div></div>
+  </div>
+
+  <div class="section-title">🎯 Winners Concentration</div>
+  <div class="card">
+    <div style="background:rgba(240,180,41,0.06);border:1px solid var(--gold-border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:0.82rem;color:var(--gold);line-height:1.5">
+      <strong>Phase 2 strategy.</strong> When ON, portfolio auto-rebalances to <strong>SUI 40% · BNB 25% · BTC 20% · USDT 15%</strong>. Signal engine's auto-buys and auto-sells are suspended. Manual trades still work. Rebalances on drift &gt;5% or every 7 days.
+    </div>
+    <div style="background:var(--red-dim);border:1px solid rgba(255,77,109,0.3);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--red);line-height:1.5">
+      ⚠️ On first enable, your non-target holdings (ETH, DOGE, XRP, LINK, SOL, UNI, etc.) will be SOLD to fund the target allocation. You'll get a Telegram preview before any trades execute.
+    </div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Concentration Mode</div><div class="setting-desc">Allocator drives all trades</div></div><div class="toggle" id="concentrationModeToggle" onclick="toggleConcentrationMode()"><div class="toggle-thumb"></div></div></div>
   </div>
 
   <div class="section-title">Auto-Adaptive Strategy</div>
@@ -592,7 +620,7 @@ function renderChart(){
 }
 async function loadChart(){try{const r=await fetch(API_BASE+'/api/portfolio/history');const d=await r.json();allSnapshots=d.history||[];btcSnapshots=d.btc_history||[];renderChart()}catch(e){document.getElementById('chartLoading').style.display='none'}}
 
-async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime();loadFearGreed()}
+async function loadDashboard(){loadPrices();loadSignals();loadPortfolio();loadChart();loadRegime();loadFearGreed();loadConcentrationStatus();}
 
 async function loadPortfolio(){try{const r=await fetch(API_BASE+'/api/portfolio');const d=await r.json();if(d.error)return;document.getElementById('portfolioValue').textContent='$'+d.total_usdt.toFixed(2);const pnl=d.pnl_today||0;const pct=d.pnl_pct||0;const el=document.getElementById('portfolioPnl');el.textContent='Today: '+(pnl>=0?'+':'')+' $'+pnl.toFixed(2)+' ('+pct.toFixed(2)+'%)';el.className='portfolio-pnl '+(pnl>=0?'up':'down');
 const overallEl = document.getElementById('portfolioOverall');
@@ -698,6 +726,139 @@ function renderHistory(trades){if(!trades||!trades.length){document.getElementBy
 // large-cap pairs by multi-factor momentum. Current bot trading is
 // completely unaffected - this shows what a concentration strategy WOULD
 // pick if we flipped to that mode.
+// ============================================================
+// CONCENTRATION MODE (Phase 2 - winners_allocator drives allocation)
+// ============================================================
+async function loadConcentrationStatus(){
+  const card = document.getElementById('concentrationCard');
+  const body = document.getElementById('concentrationBody');
+  const badge = document.getElementById('concentrationStatusBadge');
+  if (!card || !body) return;
+  try {
+    const r = await fetch(API_BASE + '/api/concentration/status');
+    const d = await r.json();
+    // Only show panel when enabled - otherwise stays hidden (available in Settings)
+    if (!d.enabled) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = 'block';
+    if (badge) {
+      if (d.needs_rebalance) {
+        badge.textContent = 'DRIFT ' + d.max_drift_pct + '%';
+        badge.style.background = 'var(--gold-dim)';
+        badge.style.color = 'var(--gold)';
+      } else {
+        badge.textContent = 'BALANCED';
+        badge.style.background = 'var(--green-dim)';
+        badge.style.color = 'var(--green)';
+      }
+    }
+    const targets = d.targets || [];
+    const nonTarget = d.non_target_holdings || [];
+    const nextForceHrs = d.next_scheduled_check_hours;
+    const lastRebal = d.last_rebalance_at ? new Date(d.last_rebalance_at).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'never';
+
+    let html = '<div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:8px">Target vs Current</div>';
+    targets.forEach(t => {
+      const driftColor = Math.abs(t.drift_pct) > d.drift_threshold_pct ? 'var(--gold)' : 'var(--text-2)';
+      const driftSign = t.drift_pct >= 0 ? '+' : '';
+      const barPct = Math.min(100, Math.max(0, t.current_pct));
+      const targetMarkerPct = Math.min(100, Math.max(0, t.target_pct));
+      html += `
+        <div style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+            <span style="font-family:var(--mono);font-weight:700;font-size:0.9rem">${t.asset}</span>
+            <span style="font-family:var(--mono);font-size:0.75rem;color:var(--text-2)">
+              ${t.current_pct}% <span style="color:var(--text-3)">/</span> <span style="color:var(--gold)">${t.target_pct}%</span>
+              <span style="color:${driftColor};margin-left:6px">(${driftSign}${t.drift_pct}%)</span>
+            </span>
+          </div>
+          <div style="height:6px;background:var(--surface2);border-radius:3px;position:relative;overflow:hidden">
+            <div style="height:100%;width:${barPct}%;background:var(--green);border-radius:3px"></div>
+            <div style="position:absolute;top:-2px;bottom:-2px;left:${targetMarkerPct}%;width:2px;background:var(--gold);opacity:0.8"></div>
+          </div>
+        </div>
+      `;
+    });
+
+    if (nonTarget.length > 0) {
+      html += '<div style="font-size:0.65rem;color:var(--red);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin:14px 0 6px">Will be sold on next rebalance</div>';
+      html += '<div style="font-size:0.75rem;font-family:var(--mono);color:var(--text-2);line-height:1.7">';
+      html += nonTarget.map(x => `${x.asset} $${x.value_usdt.toFixed(0)}`).join(' · ');
+      html += '</div>';
+    }
+
+    html += `<div style="font-size:0.68rem;color:var(--text-3);font-family:var(--mono);margin-top:14px;padding-top:10px;border-top:1px solid var(--border);line-height:1.5">
+      Last rebalance: ${lastRebal}<br>
+      Next forced rebalance in ~${nextForceHrs}h · drift threshold ${d.drift_threshold_pct}%
+    </div>`;
+
+    body.innerHTML = html;
+  } catch (e) {
+    console.error('Concentration status error:', e);
+    body.innerHTML = '<div style="text-align:center;padding:16px;color:var(--text-3);font-size:0.85rem">Could not load allocation.</div>';
+  }
+}
+
+async function triggerRebalance(){
+  if (!confirm('Trigger a concentration rebalance NOW?\n\nThis will sell non-target coins and top up target coins to their percentages. You will receive a Telegram preview and result.\n\nProceed?')) return;
+  const btn = document.getElementById('rebalanceBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Rebalancing...'; btn.style.opacity = '0.6'; }
+  showToast('🎯 Rebalancing... check Telegram for progress');
+  try {
+    const r = await fetch(API_BASE + '/api/concentration/rebalance', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d = await r.json();
+    if (d.success && d.executed) {
+      const succ = (d.trades || []).filter(t => t.success).length;
+      const total = (d.trades || []).length;
+      showToast('✅ Rebalance complete: ' + succ + '/' + total + ' trades', 5000);
+      setTimeout(loadConcentrationStatus, 2000);
+      setTimeout(loadDashboard, 3000);
+    } else if (d.skipped) {
+      showToast('Skipped: ' + d.reason);
+    } else if (d.error) {
+      showToast('Failed: ' + d.error, 5000);
+    }
+  } catch (e) {
+    showToast('Could not reach server');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Rebalance Now'; btn.style.opacity = '1'; }
+  }
+}
+
+async function showConcentrationHistory(){
+  try {
+    const r = await fetch(API_BASE + '/api/concentration/status');
+    const d = await r.json();
+    const history = d.history || [];
+    if (history.length === 0) {
+      alert('No rebalance history yet.');
+      return;
+    }
+    const lines = history.slice().reverse().map(h => {
+      const dt = new Date(h.at).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+      return `${dt} · ${h.trades_succeeded}/${h.trades_count} trades · $${h.total_value.toFixed(0)}\n  → ${h.reason}`;
+    });
+    alert('Rebalance History:\n\n' + lines.join('\n\n'));
+  } catch (e) {
+    showToast('Could not load history');
+  }
+}
+
+function toggleConcentrationMode(){
+  const newState = toggle('concentrationModeToggle');
+  state.concentrationMode = newState;
+  fetch(API_BASE + '/api/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({concentration_mode_enabled: newState})})
+    .then(() => {
+      loadConcentrationStatus();
+      showToast(newState
+        ? '🎯 Concentration mode ON · rebalance within 1 hour'
+        : 'Concentration mode OFF · signal engine resumes');
+    })
+    .catch(() => showToast('Save failed'));
+}
+
 async function loadRankings(){
   const listEl = document.getElementById('rankingsContainer');
   const updatedEl = document.getElementById('rankingsUpdated');
@@ -1365,6 +1526,7 @@ function saveSettings(){
 async function loadSettings(){try{const r=await fetch(API_BASE+'/api/settings');const d=await r.json();if(d.auto_mode!==undefined){state.autoMode=d.auto_mode;const el=document.getElementById('autoModeToggle');state.autoMode?el.classList.add('on'):el.classList.remove('on')}if(d.ma_cross!==undefined){state.maCross=d.ma_cross;const el=document.getElementById('maCrossToggle');state.maCross?el.classList.add('on'):el.classList.remove('on')}if(d.macd!==undefined){state.macd=d.macd;const el=document.getElementById('macdToggle');state.macd?el.classList.add('on'):el.classList.remove('on')}if(d.trailing_stop_enabled!==undefined){state.trailingStop=d.trailing_stop_enabled;const el=document.getElementById('trailingStopToggle');if(el){state.trailingStop?el.classList.add('on'):el.classList.remove('on')}}if(d.regime_strategy_enabled!==undefined){state.regimeStrategy=d.regime_strategy_enabled;const el=document.getElementById('regimeStrategyToggle');if(el){state.regimeStrategy?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('regimeStrategyStatus');if(statusEl)statusEl.style.display=state.regimeStrategy?'block':'none';if(state.regimeStrategy)loadRegimeStrategyStatus()}if(d.per_pair_adjust_enabled!==undefined){state.perPair=d.per_pair_adjust_enabled;const el=document.getElementById('perPairToggle');if(el){state.perPair?el.classList.add('on'):el.classList.remove('on')}const statusEl=document.getElementById('perPairMultipliers');if(statusEl)statusEl.style.display=state.perPair?'block':'none';if(state.perPair)loadPerPairMultipliers()}if(d.per_pair_max_boost&&document.getElementById('perPairMaxBoost'))document.getElementById('perPairMaxBoost').value=d.per_pair_max_boost;if(d.per_pair_max_cut&&document.getElementById('perPairMaxCut'))document.getElementById('perPairMaxCut').value=d.per_pair_max_cut;if(d.approval_mode!==undefined){state.approvalMode=d.approval_mode;const el=document.getElementById('approvalToggle');if(el){state.approvalMode?el.classList.add('on'):el.classList.remove('on')}}if(d.trailing_stop_activate_pct&&document.getElementById('trailActivate'))document.getElementById('trailActivate').value=d.trailing_stop_activate_pct;if(d.trailing_stop_pct&&document.getElementById('trailDistance'))document.getElementById('trailDistance').value=d.trailing_stop_pct;if(d.trailing_breakeven_trigger&&document.getElementById('trailBreakeven'))document.getElementById('trailBreakeven').value=d.trailing_breakeven_trigger;if(d.concentration_alert_pct&&document.getElementById('concentrationPct'))document.getElementById('concentrationPct').value=d.concentration_alert_pct;if(d.max_trade_size)document.getElementById('maxTradeSize').value=d.max_trade_size;if(d.daily_loss_limit)document.getElementById('dailyLossLimit').value=d.daily_loss_limit;if(d.auto_execute_min_confidence&&document.getElementById('autoMinConf'))document.getElementById('autoMinConf').value=d.auto_execute_min_confidence;
 if(d.trade_cooldown_minutes&&document.getElementById('tradeCooldownMinutes'))document.getElementById('tradeCooldownMinutes').value=d.trade_cooldown_minutes;
 if(d.max_pair_concentration_pct&&document.getElementById('maxPairConcentration'))document.getElementById('maxPairConcentration').value=d.max_pair_concentration_pct;
+if(d.concentration_mode_enabled!==undefined){state.concentrationMode=d.concentration_mode_enabled;const el=document.getElementById('concentrationModeToggle');if(el){d.concentration_mode_enabled?el.classList.add('on'):el.classList.remove('on')}}
 ['confirmation_candle_enabled:confirmationCandle:confirmationCandleToggle','falling_knife_filter_enabled:fallingKnife:fallingKnifeToggle','loss_cooldown_enabled:lossCooldown:lossCooldownToggle','daily_summary_enabled:dailySummary:dailySummaryToggle'].forEach(s=>{const [key,sKey,domId]=s.split(':');if(d[key]!==undefined){state[sKey]=d[key];const el=document.getElementById(domId);if(el){d[key]?el.classList.add('on'):el.classList.remove('on')}}});
 if(d.falling_knife_max_drop_pct&&document.getElementById('fallingKnifeDrop'))document.getElementById('fallingKnifeDrop').value=d.falling_knife_max_drop_pct;
 if(d.loss_cooldown_hours&&document.getElementById('lossCooldownHours'))document.getElementById('lossCooldownHours').value=d.loss_cooldown_hours;if(d.default_sl)document.getElementById('defaultSL').value=d.default_sl;if(d.default_tp)document.getElementById('defaultTP').value=d.default_tp;if(d.sniper_budget)document.getElementById('sniperBudget').value=d.sniper_budget;if(d.sniper_tp)document.getElementById('sniperTP').value=d.sniper_tp;if(d.sniper_sl)document.getElementById('sniperSL').value=d.sniper_sl}catch(e){}}
