@@ -112,6 +112,49 @@ class WinnersAllocator:
         every cycle - user can toggle mid-run and the next cycle picks it up."""
         return bool(getattr(self.config, 'concentration_mode_enabled', False))
 
+    def _ensure_baseline(self, total_value):
+        """First time concentration mode is enabled, capture the current
+        portfolio value as the baseline. All subsequent performance tracking
+        measures against this. If user toggles OFF then ON again, we keep
+        the ORIGINAL baseline so the metric represents the full concentration
+        experiment, not just the latest session.
+
+        Passing total_value in so we don't fetch portfolio twice per call.
+        """
+        if self._state.get('baseline_value') is not None:
+            return
+        if total_value <= 0:
+            return
+        self._state['baseline_value'] = round(total_value, 2)
+        self._state['baseline_at'] = datetime.utcnow().isoformat() + 'Z'
+        _save_state(self._state)
+        log.info(f"Concentration baseline captured: ${total_value:.2f} at "
+                 f"{self._state['baseline_at']}")
+
+    def _compute_performance(self, total_value):
+        """Return performance stats vs the baseline captured when
+        concentration was first enabled. Returns None if no baseline set."""
+        baseline = self._state.get('baseline_value')
+        baseline_at = self._state.get('baseline_at')
+        if not baseline or baseline <= 0 or not baseline_at:
+            return None
+        try:
+            dt = datetime.fromisoformat(baseline_at.replace('Z', ''))
+            hours_elapsed = (datetime.utcnow() - dt).total_seconds() / 3600.0
+        except Exception:
+            hours_elapsed = 0
+        change_usdt = total_value - baseline
+        change_pct = (change_usdt / baseline) * 100 if baseline > 0 else 0
+        return {
+            'baseline_value': baseline,
+            'baseline_at': baseline_at,
+            'current_value': round(total_value, 2),
+            'change_usdt': round(change_usdt, 2),
+            'change_pct': round(change_pct, 2),
+            'hours_elapsed': round(hours_elapsed, 1),
+            'days_elapsed': round(hours_elapsed / 24, 1),
+        }
+
     # ---------- State inspection (for API) ----------
 
     def get_status(self):
@@ -126,6 +169,15 @@ class WinnersAllocator:
             total_value = 0.0
 
         current = self._compute_current_allocation(total_value)
+
+        # Capture baseline on first call when concentration is enabled.
+        # (Called from get_status() which is polled frequently, so we get
+        # this within seconds of the mode being turned on.)
+        if enabled and total_value > 0:
+            self._ensure_baseline(total_value)
+
+        performance = self._compute_performance(total_value) if enabled else None
+
         rows = []
         max_drift = 0.0
         for sym, tgt_pct in self.targets.items():
@@ -182,6 +234,7 @@ class WinnersAllocator:
             'last_rebalance_at': last_rebalance,
             'next_scheduled_check_hours': self._hours_until_next_forced_rebalance(),
             'history': history,
+            'performance': performance,
         }
 
     def _hours_until_next_forced_rebalance(self):
@@ -531,4 +584,3 @@ class WinnersAllocator:
             except Exception as e:
                 log.warning(f"Concentration scheduler tick failed: {e}")
             time.sleep(_CHECK_INTERVAL_SECONDS)
-
