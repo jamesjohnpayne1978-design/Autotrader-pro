@@ -141,9 +141,41 @@ def get_portfolio():
 def portfolio_history():
     try:
         history = config.load_portfolio_history()
-        return jsonify({'history': history})
+        # BTC benchmark overlay: fetch BTC/USDT klines covering the same time
+        # window so the frontend can overlay "what if you'd just held BTC?"
+        # for a proper alpha comparison. Uses interval that produces ~200
+        # points across the requested range for a smooth line.
+        btc_history = []
+        if trader and history:
+            try:
+                # Determine range from oldest snapshot
+                oldest_ms = int(datetime.fromisoformat(history[0]['time'].replace('Z', '+00:00')).timestamp() * 1000) if history else None
+                if oldest_ms:
+                    span_hours = (datetime.now().timestamp() * 1000 - oldest_ms) / 3600000
+                    # Pick interval that gives 100-300 candles across the span
+                    if span_hours <= 48:
+                        interval = '15m'
+                    elif span_hours <= 24 * 14:
+                        interval = '1h'
+                    elif span_hours <= 24 * 90:
+                        interval = '4h'
+                    else:
+                        interval = '1d'
+                    klines = trader.client.get_klines(
+                        symbol='BTCUSDT',
+                        interval=interval,
+                        startTime=oldest_ms,
+                        limit=1000
+                    )
+                    btc_history = [{
+                        'time': datetime.utcfromtimestamp(k[0] / 1000).isoformat() + 'Z',
+                        'price': float(k[4])  # close price
+                    } for k in klines]
+            except Exception as e:
+                log.debug(f"BTC benchmark fetch failed: {e}")
+        return jsonify({'history': history, 'btc_history': btc_history})
     except Exception as e:
-        return jsonify({'history': [], 'error': str(e)})
+        return jsonify({'history': [], 'btc_history': [], 'error': str(e)})
 
 
 @app.route('/api/portfolio/refresh-deposits', methods=['POST'])
