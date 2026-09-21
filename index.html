@@ -222,7 +222,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
   <!-- ============================================================ -->
   <div class="card" id="concentrationCard" style="display:none;margin-bottom:16px;border:1px solid var(--gold-border);background:linear-gradient(145deg,rgba(240,180,41,0.04),var(--surface))">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div class="section-title" style="margin:0;color:var(--gold)">🎯 Concentration Mode</div>
+      <div class="section-title" id="concentrationTitle" style="margin:0;color:var(--gold)">🎯 Concentration Mode</div>
       <div id="concentrationStatusBadge" style="font-size:0.65rem;font-family:var(--mono);padding:4px 10px;border-radius:12px;background:var(--green-dim);color:var(--green)">ACTIVE</div>
     </div>
     <div id="concentrationBody"><div class="loading-row"><div class="spinner"></div> Loading allocation...</div></div>
@@ -248,14 +248,14 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
   <!-- ============================================================ -->
   <!-- Momentum Rankings - Phase 1 of concentration strategy pivot -->
-  <!-- Purely observational: shows what a concentration bot WOULD pick -->
+  <!-- Observational unless Auto Targets is ON (Settings) -->
   <!-- ============================================================ -->
   <div style="display:flex;align-items:center;justify-content:space-between;margin:22px 0 8px">
     <div class="section-title" style="margin:0">🏆 Momentum Rankings</div>
     <button onclick="refreshRankings()" id="refreshRankingsBtn" style="background:var(--gold-dim);border:1px solid var(--gold-border);border-radius:var(--radius-sm);color:var(--gold);font-family:var(--sans);font-size:0.72rem;font-weight:700;padding:6px 12px;cursor:pointer">🔄 Refresh</button>
   </div>
   <div style="background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;font-size:0.72rem;color:var(--blue-bright);line-height:1.5">
-    <strong>Phase 1 · observational only</strong> - what a concentration bot would pick. Current bot trading unchanged.
+    <strong>Observational</strong> - what a concentration bot would pick. These scores only move real money if <strong>Auto Targets</strong> is ON (Settings → Winners Concentration).
   </div>
   <div id="rankingsUpdated" style="font-size:0.68rem;color:var(--text-3);font-family:var(--mono);margin-bottom:10px;text-align:right">-</div>
   <div id="rankingsContainer"><div class="loading-row"><div class="spinner"></div> Loading rankings...</div></div>
@@ -362,6 +362,12 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
       ⚠️ On first enable, your non-target holdings (ETH, DOGE, XRP, LINK, SOL, UNI, etc.) will be SOLD to fund the target allocation. You'll get a Telegram preview before any trades execute.
     </div>
     <div class="setting-row"><div class="setting-info"><div class="setting-label">Concentration Mode</div><div class="setting-desc">Allocator drives all trades</div></div><div class="toggle" id="concentrationModeToggle" onclick="toggleConcentrationMode()"><div class="toggle-thumb"></div></div></div>
+    <div class="setting-row"><div class="setting-info"><div class="setting-label">Auto Targets</div><div class="setting-desc">Ranker picks the two rotating coins (40% + 25% slots). BTC stays a fixed 20% anchor. Starts as SUI + BNB.</div></div><div class="toggle" id="autoTargetsToggle" onclick="toggleAutoTargets()"><div class="toggle-thumb"></div></div></div>
+    <div id="autoTargetsInfo" style="display:none;margin-top:14px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;font-size:0.75rem;color:var(--text-2);line-height:1.6">
+      <div style="color:var(--gold);font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.08em;font-size:0.65rem">Rotation rules</div>
+      A new coin must beat your weakest pick by 8+ points on 2 rankings in a row (~8h). Picks are held 48h minimum. New coins need score 45+, RSI under 72, and no pump penalty. A pick scoring under 30 for 2 rankings is dropped to cash. Stale ranker data freezes picks. Turning this on trades nothing by itself.
+      <div style="margin-top:8px"><a href="/api/concentration/auto-targets" style="color:var(--blue-bright);text-decoration:none">Open detail page →</a></div>
+    </div>
   </div>
 
   <div class="section-title">Auto-Adaptive Strategy</div>
@@ -454,10 +460,10 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
 
 const API_BASE=window.location.origin;
 let portfolioChart=null,chartRange='24h',allSnapshots=[],btcSnapshots=[];
-let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false,regimeStrategy:false};
+let state={apiConnected:false,sniperActive:true,aiFilter:true,approvalMode:true,autoMode:false,telegram:true,maCross:true,macd:true,pyramid:true,trailingStop:false,regimeStrategy:false,autoTargets:false};
 let selectedManualPair='';
 
-function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights'){loadInsights();loadRankings();}if(n==='stats')loadStats();if(n==='settings'){loadPairs();loadActiveCooldowns();}if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
+function showPage(n){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));document.getElementById('page-'+n).classList.add('active');document.getElementById('nav-'+n)?.classList.add('active');if(n==='home')loadDashboard();if(n==='history')loadHistory();if(n==='insights'){loadInsights();loadRankings();}if(n==='stats')loadStats();if(n==='settings'){loadPairs();loadActiveCooldowns();loadAutoTargetsState();}if(n==='sniper'){loadSniperHistory();loadSniperPositions();}}
 function showToast(m,d=2500){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),d)}
 function showApiModal(){document.getElementById('apiModal').classList.add('show')}
 function saveApiKeys(){const k=document.getElementById('apiKey').value.trim();const s=document.getElementById('apiSecret').value.trim();if(!k||!s){showToast('Enter both key and secret');return}localStorage.setItem('binance_api_key',k);localStorage.setItem('binance_api_secret',s);document.getElementById('apiModal').classList.remove('show');showToast('API keys saved');fetch(API_BASE+'/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:k,api_secret:s})}).then(()=>{state.apiConnected=true;updateApiStatus(true);loadDashboard()}).catch(()=>showToast('Backend not reachable'))}
@@ -722,13 +728,64 @@ function renderHistory(trades){if(!trades||!trades.length){document.getElementBy
 // ============================================================
 // MOMENTUM RANKINGS (Phase 1 of concentration strategy)
 // ============================================================
-// Reads /api/rankings which is a purely observational scoring of ~40
-// large-cap pairs by multi-factor momentum. Current bot trading is
-// completely unaffected - this shows what a concentration strategy WOULD
-// pick if we flipped to that mode.
+// Reads /api/rankings which is a scoring of ~40 large-cap pairs by
+// multi-factor momentum. With Auto Targets OFF it is purely observational;
+// with Auto Targets ON the allocator uses the same scores to pick the
+// two rotating concentration slots (BTC stays a fixed anchor).
 // ============================================================
 // CONCENTRATION MODE (Phase 2 - winners_allocator drives allocation)
 // ============================================================
+
+// Auto Targets block shown inside the Home concentration panel.
+function renderAutoTargetsBlock(a){
+  if(!a) return '';
+  const fmtTime=function(iso){try{return new Date(iso).toLocaleString([],{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}catch(e){return ''}};
+  const rules=a.rules||{};
+  const need=rules.confirm_rankings||2;
+  let h='<div style="background:var(--surface2);border:1px solid var(--gold-border);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px">';
+  h+='<div style="font-size:0.6rem;color:var(--gold);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:8px">Auto Targets · ranker picks</div>';
+  h+='<div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:0.8rem;padding:4px 0"><span>BTC <span style="color:var(--text-3)">(anchor)</span></span><span style="color:var(--gold)">'+a.anchor_weight_pct+'%</span></div>';
+  (a.slots||[]).forEach(function(s){
+    const name=s.asset||'cash';
+    let detail='';
+    if(s.asset){
+      const parts=[];
+      if(s.score!=null)parts.push('score '+s.score);
+      if(s.rank!=null)parts.push('rank #'+s.rank);
+      parts.push('held '+s.held_hours+'h');
+      if(s.min_hold_remaining_hours>0)parts.push('locked '+s.min_hold_remaining_hours+'h');
+      detail=parts.join(' · ');
+      if(s.below_exit_floor_count>0)detail+=' · <span style="color:var(--red)">below floor '+s.below_exit_floor_count+'/'+need+'</span>';
+    }else{
+      detail='empty slot - held in cash until a coin qualifies';
+    }
+    h+='<div style="padding:4px 0"><div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:0.8rem"><span>'+name+'</span><span style="color:var(--gold)">'+s.weight_pct+'%</span></div><div style="font-size:0.65rem;color:var(--text-3);font-family:var(--mono);margin-top:1px">'+detail+'</div></div>';
+  });
+  const streaks=a.challenger_streaks||{};
+  const sk=Object.keys(streaks);
+  if(sk.length){
+    h+='<div style="font-size:0.68rem;color:var(--blue-bright);font-family:var(--mono);margin-top:8px">Challenger: '+sk.map(function(k){return k.replace('USDT','')+' '+streaks[k]+'/'+need}).join(', ')+'</div>';
+  }
+  if(a.pending_rebalance){
+    h+='<div style="font-size:0.68rem;color:var(--gold);font-family:var(--mono);margin-top:6px">Rotation queued - rebalances on the next check</div>';
+  }
+  if(a.ranking_stale){
+    h+='<div style="font-size:0.68rem;color:var(--red);font-family:var(--mono);margin-top:6px">⚠ Ranker data is stale - picks frozen</div>';
+  }else if(a.ranking_age_hours!=null){
+    h+='<div style="font-size:0.65rem;color:var(--text-3);font-family:var(--mono);margin-top:6px">Ranker updated '+a.ranking_age_hours+'h ago</div>';
+  }
+  const rc=(a.recent_changes||[]).slice(-2).reverse();
+  if(rc.length){
+    h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">';
+    rc.forEach(function(c){
+      h+='<div style="font-size:0.65rem;color:var(--text-2);font-family:var(--mono);line-height:1.6">'+fmtTime(c.at)+' · '+String(c.type||'').replace('_',' ')+': '+String(c.out||'-').replace('USDT','')+' → '+String(c.in||'cash').replace('USDT','')+'</div>';
+    });
+    h+='</div>';
+  }
+  h+='</div>';
+  return h;
+}
+
 async function loadConcentrationStatus(){
   const card = document.getElementById('concentrationCard');
   const body = document.getElementById('concentrationBody');
@@ -743,6 +800,9 @@ async function loadConcentrationStatus(){
       return;
     }
     card.style.display = 'block';
+    state.autoTargets = (d.mode === 'auto');
+    const titleEl = document.getElementById('concentrationTitle');
+    if (titleEl) titleEl.textContent = state.autoTargets ? '🎯 Concentration · Auto Targets' : '🎯 Concentration Mode';
     if (badge) {
       if (d.needs_rebalance) {
         badge.textContent = 'DRIFT ' + d.max_drift_pct + '%';
@@ -780,6 +840,9 @@ async function loadConcentrationStatus(){
           <div style="font-size:0.65rem;color:var(--text-3);font-family:var(--mono);margin-top:2px">Baseline $${perf.baseline_value} → Now $${perf.current_value}</div>
         </div>
       `;
+    }
+    if (d.mode === 'auto' && d.auto) {
+      html += renderAutoTargetsBlock(d.auto);
     }
     html += '<div style="font-size:0.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:8px">Target vs Current</div>';
     targets.forEach(t => {
@@ -879,6 +942,50 @@ function toggleConcentrationMode(){
         : 'Concentration mode OFF · signal engine resumes');
     })
     .catch(() => showToast('Save failed'));
+}
+
+// Auto Targets toggle (Settings -> Winners Concentration).
+// State lives in the allocator (not /api/settings), so read/write it via
+// /api/concentration/auto-targets.
+async function loadAutoTargetsState(){
+  try{
+    const r=await fetch(API_BASE+'/api/concentration/auto-targets?json=1');
+    const d=await r.json();
+    if(d.auto_targets_enabled===undefined)return;
+    state.autoTargets=!!d.auto_targets_enabled;
+    const el=document.getElementById('autoTargetsToggle');
+    if(el){state.autoTargets?el.classList.add('on'):el.classList.remove('on')}
+    const info=document.getElementById('autoTargetsInfo');
+    if(info)info.style.display=state.autoTargets?'block':'none';
+  }catch(e){}
+}
+
+async function toggleAutoTargets(){
+  const el=document.getElementById('autoTargetsToggle');
+  if(!el)return;
+  const turningOn=!el.classList.contains('on');
+  const msg=turningOn
+    ? 'Turn on Auto Targets?\n\nBTC stays a fixed 20% anchor. The 40% and 25% slots start as SUI and BNB and only change when the ranker confirms a clearly better coin (2 rankings in a row, 48h minimum hold).\n\nTurning this on does not trade by itself.'
+    : 'Turn off Auto Targets?\n\nAllocation returns to the fixed SUI 40% / BNB 25% / BTC 20% split. If you currently hold a rotated-in coin, it will be sold at the next rebalance.';
+  if(!confirm(msg))return;
+  try{
+    const r=await fetch(API_BASE+'/api/concentration/auto-targets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:turningOn})});
+    const d=await r.json();
+    if(d.success){
+      state.autoTargets=!!d.auto_targets_enabled;
+      state.autoTargets?el.classList.add('on'):el.classList.remove('on');
+      const info=document.getElementById('autoTargetsInfo');
+      if(info)info.style.display=state.autoTargets?'block':'none';
+      let t=state.autoTargets?'🎯 Auto Targets ON · starts as SUI + BNB':'Auto Targets OFF · fixed SUI/BNB/BTC split';
+      if(state.autoTargets&&!state.concentrationMode)t+=' · turn on Concentration Mode for it to act';
+      showToast(t,4000);
+      loadConcentrationStatus();
+    }else{
+      showToast('Failed: '+(d.error||'unknown'),4000);
+    }
+  }catch(e){
+    showToast('Could not reach server');
+  }
 }
 
 async function loadRankings(){
@@ -1865,7 +1972,7 @@ async function loadStats(){
   }
 }
 
-window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadDashboard();setInterval(loadDashboard,30000);setInterval(()=>{if(document.getElementById('page-sniper')?.classList.contains('active')){loadSniperPositions();loadSniperHistory();}},10000);});
+window.addEventListener('load',()=>{const k=localStorage.getItem('binance_api_key');if(k){state.apiConnected=true;updateApiStatus(true)}else{setTimeout(showApiModal,800)}loadSettings();loadAutoTargetsState();loadDashboard();setInterval(loadDashboard,30000);setInterval(()=>{if(document.getElementById('page-sniper')?.classList.contains('active')){loadSniperPositions();loadSniperHistory();}},10000);});
 document.getElementById('apiModal').addEventListener('click',function(e){if(e.target===this)this.classList.remove('show')});
 
 </script>
