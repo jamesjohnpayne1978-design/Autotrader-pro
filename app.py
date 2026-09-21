@@ -2,6 +2,7 @@
 AutoTrader Pro - Main Flask Server
 Added: market regime endpoint
 Added: sniper history endpoints + missing toggle_sniper route decorator
+Added: ranker-driven concentration targets (auto_targets_routes) + restored /api/trade route
 """
 
 from flask import Flask, jsonify, request, send_file
@@ -475,7 +476,17 @@ def concentration_rebalance():
         return jsonify({'error': str(e)}), 500
 
 
+# Ranker-driven concentration targets (BTC anchor + 2 rotating slots).
+# Registers GET/POST /api/concentration/auto-targets. Wrapped so a missing
+# auto_targets_routes.py can never crash the app into a restart loop.
+try:
+    from auto_targets_routes import register_auto_targets_routes
+    register_auto_targets_routes(app, lambda: winners_allocator)
+except Exception as _e:
+    log.warning(f"auto_targets_routes not loaded: {_e}")
 
+
+@app.route('/api/trade', methods=['POST'])
 def execute_trade():
     if not trader:
         return jsonify({'error': 'Not connected'}), 400
@@ -2428,6 +2439,10 @@ def _apply_extras_to_config():
 # to just the 3 target coins. Original list is backed up so toggling OFF
 # restores it. Prevents dashboard clutter and stops the signal engine from
 # wasting cycles generating signals for pairs concentration ignores.
+#
+# With auto targets ON, the allocator keeps trading_pairs synced to the
+# current rotating targets itself (see WinnersAllocator._sync_trading_pairs),
+# so the list here is just the starting point.
 _CONCENTRATION_TARGETS = ['BTCUSDT', 'BNBUSDT', 'SUIUSDT']
 _PAIRS_BACKUP_PATH = '/data/pairs_backup_before_concentration.json'
 
