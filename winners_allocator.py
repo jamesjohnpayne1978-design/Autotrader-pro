@@ -1,43 +1,58 @@
 """
-winners_allocator.py - Concentration allocator based on proven win rates.
+winners_allocator.py - Concentration allocator with optional ranker-driven targets.
 
-Strategy (Phase 2 of the pivot from diversified swing-trading to concentrated
-winners-focus). No momentum ranking, no signals - just target percentages
-that get maintained.
+Two modes (both only act when concentration_mode_enabled is True):
 
-Default targets (from user's actual 4-week trade history):
-    SUI   40%  (88.9% historical win rate)
-    BNB   25%  (83.3%)
-    BTC   20%  (80.0%)
-    USDT  15%  (dry powder)
+FIXED (default)
+    SUI 40% / BNB 25% / BTC 20% / USDT 15%  - the original winners-by-win-rate
+    split. Unchanged behaviour.
 
-Rebalance triggers (whichever hits first):
-    - Any target pair drifts >5% (absolute) from its target percentage
+AUTO TARGETS (toggle: /api/concentration/auto-targets)
+    BTC stays a permanent 20% anchor. The two other slots (40% and 25%) are
+    filled by the momentum ranker (ranker.py) instead of being hard-coded.
+    The ranker only ever *proposes*; these rules decide whether to act:
+
+      * Seeding      - turning it on starts from the current fixed picks
+                       (SUI / BNB), so enabling it trades nothing by itself.
+      * Once/ranking - each ranker snapshot is evaluated once (not once per
+                       hourly wake-up), so confirmation counts are real.
+      * Hysteresis   - a challenger must beat the weakest held coin by
+                       AUTO_SWAP_MARGIN points on AUTO_CONFIRM_RANKINGS
+                       consecutive rankings before it can replace it.
+      * Min hold     - a coin must have been held AUTO_MIN_HOLD_HOURS before it
+                       can be voluntarily swapped out.
+      * One change   - at most one slot changes per ranking.
+      * Entry filter - challengers need a minimum score, RSI below a cap and no
+                       parabolic-pump penalty (anti-froth, on top of the ranker's).
+      * Exit floor   - a held coin scoring below AUTO_EXIT_SCORE for
+                       AUTO_CONFIRM_RANKINGS rankings is dropped (min-hold does
+                       not apply). If nothing eligible replaces it, the slot
+                       sits in cash until something qualifies.
+      * Stale data   - if the ranking file is older than AUTO_STALE_HOURS the
+                       current picks are frozen (no rotation, no forced exit).
+      * Slot-tied weights - a swap hands the leaving coin's weight to the new
+                       coin; picks are never reshuffled between the 40%/25%
+                       slots (that would be pure fee churn).
+
+Rebalance triggers (unchanged):
+    - Any target drifts >5% (absolute) from its target percentage
     - OR 7 days elapsed since the last rebalance
     - AND at least 6 hours since the previous rebalance (rate limit)
+    - NEW: a rotation that just changed targets rebalances immediately
+      (bypasses the 6h rate limit once).
 
-Runs as a background thread alongside the existing signal engine. When
-concentration_mode_enabled is True, the signal engine's auto-execute is
-suppressed so the two don't fight each other. Manual trades still work.
-
-Rebalance mechanics:
+Rebalance mechanics (unchanged):
     1. Compute portfolio value + current allocation (from Binance balances)
-    2. Compute deltas: target_value - current_value per asset
-    3. Cancel open OCOs on all affected pairs (else sells will fail)
-    4. Execute SELLS first: pairs not in targets get 100% sold, over-target
-       target pairs get trimmed to target
-    5. Wait a beat for USDT balance to settle
-    6. Execute BUYS: under-target target pairs get topped up
-    7. Send a single Telegram summary with all moves
+    2. Cancel open OCOs on target pairs AND on any pair about to be sold
+    3. SELL non-target holdings (100%) and trim over-target pairs
+    4. BUY under-target pairs
+    5. Cancel the auto-OCOs the buys created (positions hold; rebalance sizes)
+    6. Telegram preview before, summary after
 
 Safety:
-    - Skips if disabled
-    - Skips if no drift over threshold and <7d elapsed
-    - Rate-limited to 1 rebalance per 6h
     - Every trade goes through trader.execute_trade with bypass_cooldown=True
-    - Individual trade failures do NOT abort the whole rebalance; they log
-      and move on so partial rebalances still make progress
-    - Telegram sent BEFORE execution (so user is warned even if a trade fails)
+    - Individual trade failures do NOT abort the whole rebalance
+    - Telegram preview is sent BEFORE execution
 """
 
 import os
@@ -47,17 +62,25 @@ import logging
 import threading
 from datetime import datetime, timedelta
 
+try:
+    import ranker as _ranker
+except Exception:  # pragma: no cover - ranker missing must not break the bot
+    _ranker = None
+
 log = logging.getLogger(__name__)
 
 _STATE_PATH = '/data/concentration_state.json'
+_PAIRS_OVERRIDE_PATH = '/data/trading_pairs.json'   # same file app.py uses
 _MIN_TRADE_USDT = 10.0            # Skip rebalance moves below this ($)
 _MIN_INTERVAL_SECONDS = 6 * 3600   # Rate limit: 6h between rebalances
 _MAX_INTERVAL_SECONDS = 7 * 86400  # Force rebalance if 7 days elapsed
 _CHECK_INTERVAL_SECONDS = 3600     # How often the scheduler wakes to check
 _STABLECOINS = {'USDT', 'BUSD', 'USDC', 'FDUSD', 'TUSD', 'DAI'}
 
+_STATE_LOCK = threading.RLock()
 
-# Target allocations - fraction of total portfolio value.
+
+# Fixed target allocations - fraction of total portfolio value.
 # Sum of these + implied cash = 1.0. Cash is whatever's left.
 DEFAULT_TARGETS = {
     'BTCUSDT': 0.20,
@@ -69,6 +92,40 @@ DEFAULT_TARGETS = {
 # Drift threshold: rebalance if any target pair is off by more than this
 # (as absolute percentage points, not relative)
 DEFAULT_DRIFT_THRESHOLD_PCT = 5.0
+
+# ---------------------------------------------------------------------------
+# Auto-targets tuning knobs. All in one place so they're easy to adjust.
+# ---------------------------------------------------------------------------
+AUTO_ANCHOR = 'BTCUSDT'            # permanent anchor, never rotated out
+AUTO_ANCHOR_WEIGHT = 0.20
+AUTO_SLOT_WEIGHTS = [0.40, 0.25]   # rotating slots, in order
+AUTO_ENTRY_MIN_SCORE = 45.0        # challenger needs at least this ranker score
+AUTO_EXIT_SCORE = 30.0             # held coin below this (confirmed) is dropped
+AUTO_SWAP_MARGIN = 8.0             # challenger must beat weakest held by this
+AUTO_CONFIRM_RANKINGS = 2          # consecutive rankings required (4h apart)
+AUTO_MIN_HOLD_HOURS = 48.0         # min hold before a voluntary swap
+AUTO_STALE_HOURS = 8.0             # ranking older than this => freeze picks
+AUTO_ENTRY_MAX_RSI = 72.0          # don't enter coins at/above this daily RSI
+AUTO_ENTRY_MAX_PARABOLIC = -15.0   # parabolic_penalty must be ABOVE this
+
+
+def _utcnow():
+    return datetime.utcnow()
+
+
+def _iso(dt):
+    return dt.isoformat() + 'Z'
+
+
+def _parse_iso(s):
+    try:
+        return datetime.fromisoformat(str(s).replace('Z', ''))
+    except Exception:
+        return None
+
+
+def _short(sym):
+    return str(sym).replace('USDT', '') if sym else '-'
 
 
 def _load_state():
@@ -83,12 +140,13 @@ def _load_state():
 
 
 def _save_state(state):
-    try:
-        os.makedirs(os.path.dirname(_STATE_PATH), exist_ok=True)
-        with open(_STATE_PATH, 'w') as f:
-            json.dump(state, f, indent=2)
-    except Exception as e:
-        log.warning(f"Concentration state save failed: {e}")
+    with _STATE_LOCK:
+        try:
+            os.makedirs(os.path.dirname(_STATE_PATH), exist_ok=True)
+            with open(_STATE_PATH, 'w') as f:
+                json.dump(state, f, indent=2)
+        except Exception as e:
+            log.warning(f"Concentration state save failed: {e}")
 
 
 class WinnersAllocator:
@@ -103,7 +161,9 @@ class WinnersAllocator:
         self.drift_threshold_pct = DEFAULT_DRIFT_THRESHOLD_PCT
         self._stop = False
         self._thread = None
+        self._lock = threading.RLock()
         self._state = _load_state()
+        self._refresh_targets()
 
     # ---------- Enable / disable ----------
 
@@ -111,6 +171,30 @@ class WinnersAllocator:
         """Read the toggle from config. Kept as a method so it's re-checked
         every cycle - user can toggle mid-run and the next cycle picks it up."""
         return bool(getattr(self.config, 'concentration_mode_enabled', False))
+
+    def auto_enabled(self):
+        """Ranker-driven targets toggle. Stored in the allocator's own state
+        file so it survives restarts without touching app.py settings."""
+        return bool(self._state.get('auto_targets_enabled', False))
+
+    def set_auto_enabled(self, enabled):
+        """Flip auto targets on/off. ON seeds from the current fixed picks
+        (so nothing trades by itself). OFF discards auto state and returns to
+        the fixed split."""
+        enabled = bool(enabled)
+        with self._lock:
+            self._state['auto_targets_enabled'] = enabled
+            if not enabled:
+                self._state.pop('auto', None)
+            _save_state(self._state)
+            self._refresh_targets()
+        log.info(f"Concentration auto targets {'ENABLED' if enabled else 'DISABLED'}")
+        return enabled
+
+    def target_symbols(self):
+        """Current target symbols (for syncing trading_pairs)."""
+        self._refresh_targets()
+        return list(self.targets.keys())
 
     def _ensure_baseline(self, total_value):
         """First time concentration mode is enabled, capture the current
@@ -126,7 +210,7 @@ class WinnersAllocator:
         if total_value <= 0:
             return
         self._state['baseline_value'] = round(total_value, 2)
-        self._state['baseline_at'] = datetime.utcnow().isoformat() + 'Z'
+        self._state['baseline_at'] = _iso(_utcnow())
         _save_state(self._state)
         log.info(f"Concentration baseline captured: ${total_value:.2f} at "
                  f"{self._state['baseline_at']}")
@@ -140,7 +224,7 @@ class WinnersAllocator:
             return None
         try:
             dt = datetime.fromisoformat(baseline_at.replace('Z', ''))
-            hours_elapsed = (datetime.utcnow() - dt).total_seconds() / 3600.0
+            hours_elapsed = (_utcnow() - dt).total_seconds() / 3600.0
         except Exception:
             hours_elapsed = 0
         change_usdt = total_value - baseline
@@ -155,11 +239,304 @@ class WinnersAllocator:
             'days_elapsed': round(hours_elapsed / 24, 1),
         }
 
+    # =====================================================================
+    # AUTO TARGETS
+    # =====================================================================
+
+    def _ensure_auto_seeded(self):
+        """Return the auto-state dict, creating it (seeded from the fixed
+        split's non-anchor coins, biggest weight first) if missing."""
+        auto = self._state.get('auto')
+        if isinstance(auto, dict) and isinstance(auto.get('slots'), list) and auto['slots']:
+            return auto
+        seeds = sorted(((s, w) for s, w in DEFAULT_TARGETS.items() if s != AUTO_ANCHOR),
+                       key=lambda x: -x[1])
+        now = _iso(_utcnow())
+        slots = []
+        for i, weight in enumerate(AUTO_SLOT_WEIGHTS):
+            slots.append({
+                'symbol': seeds[i][0] if i < len(seeds) else None,
+                'weight': weight,
+                'since': now,
+            })
+        auto = {
+            'slots': slots,
+            'streaks': {},
+            'low_counts': {},
+            'history': [],
+            'last_ranking_at': None,
+            'pending_rebalance': False,
+            'stale_notified': False,
+            'started_at': now,
+        }
+        self._state['auto'] = auto
+        _save_state(self._state)
+        log.info(f"Auto targets seeded: {[s['symbol'] for s in slots]}")
+        return auto
+
+    @staticmethod
+    def _targets_from_slots(slots):
+        targets = {AUTO_ANCHOR: AUTO_ANCHOR_WEIGHT}
+        for s in slots:
+            if s.get('symbol'):
+                targets[s['symbol']] = s['weight']
+        return targets
+
+    def _refresh_targets(self):
+        """Recompute self.targets from persisted state. Cheap; called often."""
+        with self._lock:
+            if not self.auto_enabled():
+                self.targets = dict(DEFAULT_TARGETS)
+                return self.targets
+            auto = self._ensure_auto_seeded()
+            self.targets = self._targets_from_slots(auto['slots'])
+            return self.targets
+
+    @staticmethod
+    def _eligible_entry(r):
+        """Anti-froth gate for NEW picks (held coins are judged by the exit
+        floor instead)."""
+        try:
+            scores = r.get('scores') or {}
+            return (
+                float(r.get('total_score', 0)) >= AUTO_ENTRY_MIN_SCORE
+                and float(r.get('rsi_14d', 50)) < AUTO_ENTRY_MAX_RSI
+                and float(scores.get('parabolic_penalty', 0)) > AUTO_ENTRY_MAX_PARABOLIC
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _ranking_age_hours(ts):
+        dt = _parse_iso(ts) if ts else None
+        if not dt:
+            return None
+        return (_utcnow() - dt).total_seconds() / 3600.0
+
+    @staticmethod
+    def _hours_since(ts):
+        dt = _parse_iso(ts) if ts else None
+        if not dt:
+            return 0.0
+        return max(0.0, (_utcnow() - dt).total_seconds() / 3600.0)
+
+    def _apply_slot_change(self, auto, slot, best, kind, by_sym):
+        """Mutate a slot in place and record the event."""
+        out_sym = slot.get('symbol')
+        in_sym = best['symbol'] if best else None
+        now = _utcnow()
+        slot['symbol'] = in_sym
+        slot['since'] = _iso(now)
+        auto.setdefault('low_counts', {}).pop(out_sym, None)
+        auto['streaks'] = {}
+        event = {
+            'at': _iso(now),
+            'type': kind,                      # swap | forced_exit | fill
+            'slot_weight_pct': round(slot['weight'] * 100, 1),
+            'out': out_sym,
+            'in': in_sym,
+            'out_score': by_sym.get(out_sym, {}).get('total_score') if out_sym else None,
+            'in_score': best.get('total_score') if best else None,
+        }
+        hist = auto.setdefault('history', [])
+        hist.append(event)
+        auto['history'] = hist[-20:]
+        return event
+
+    def _process_ranking(self, auto, rankings):
+        """Evaluate one ranker snapshot against the current picks. Mutates
+        `auto`; returns a list with at most one event."""
+        by_sym = {r['symbol']: r for r in rankings if r.get('symbol')}
+        slots = auto['slots']
+        held = {s['symbol'] for s in slots if s.get('symbol')}
+        streaks_old = auto.get('streaks', {}) or {}
+        low = auto.setdefault('low_counts', {})
+
+        # Consecutive-rankings-below-exit-floor counters for held coins.
+        # A coin missing from this ranking (data hiccup) is left untouched.
+        for s in slots:
+            sym = s.get('symbol')
+            r = by_sym.get(sym) if sym else None
+            if r is None:
+                continue
+            if float(r['total_score']) < AUTO_EXIT_SCORE:
+                low[sym] = low.get(sym, 0) + 1
+            else:
+                low[sym] = 0
+        for k in list(low):
+            if k not in held:
+                del low[k]
+
+        challengers = sorted(
+            (r for r in rankings
+             if r.get('symbol') and r['symbol'] != AUTO_ANCHOR
+             and r['symbol'] not in held and self._eligible_entry(r)),
+            key=lambda r: r['total_score'], reverse=True)
+        best = challengers[0] if challengers else None
+
+        event = None
+        new_streaks = {}
+
+        # 1) Forced exit: confirmed below the floor. Lowest score goes first.
+        forced = [s for s in slots
+                  if s.get('symbol') in by_sym and low.get(s['symbol'], 0) >= AUTO_CONFIRM_RANKINGS]
+        if forced:
+            slot = min(forced, key=lambda s: by_sym[s['symbol']]['total_score'])
+            event = self._apply_slot_change(auto, slot, best, 'forced_exit', by_sym)
+        else:
+            empty = next((s for s in slots if not s.get('symbol')), None)
+            if empty is not None:
+                # 2) Fill an empty slot (left in cash by an earlier forced exit)
+                if best:
+                    n = streaks_old.get(best['symbol'], 0) + 1
+                    if n >= AUTO_CONFIRM_RANKINGS:
+                        event = self._apply_slot_change(auto, empty, best, 'fill', by_sym)
+                    else:
+                        new_streaks[best['symbol']] = n
+            elif best:
+                # 3) Voluntary swap: best challenger vs weakest known held coin
+                known = [s for s in slots if s.get('symbol') in by_sym]
+                if known:
+                    weakest = min(known, key=lambda s: by_sym[s['symbol']]['total_score'])
+                    margin = float(best['total_score']) - float(by_sym[weakest['symbol']]['total_score'])
+                    if margin >= AUTO_SWAP_MARGIN:
+                        n = streaks_old.get(best['symbol'], 0) + 1
+                        held_h = self._hours_since(weakest.get('since'))
+                        if n >= AUTO_CONFIRM_RANKINGS and held_h >= AUTO_MIN_HOLD_HOURS:
+                            event = self._apply_slot_change(auto, weakest, best, 'swap', by_sym)
+                        else:
+                            new_streaks[best['symbol']] = n
+
+        if event is None:
+            auto['streaks'] = new_streaks
+            return []
+        auto['pending_rebalance'] = True
+        return [event]
+
+    def _update_auto_targets(self):
+        """Evaluate the latest ranker snapshot (once per snapshot). Persists
+        state, refreshes targets, syncs trading_pairs and sends Telegram if a
+        slot changed. Returns the list of change events."""
+        if not self.auto_enabled() or _ranker is None:
+            return []
+        stale_msg = None
+        events = []
+        with self._lock:
+            auto = self._ensure_auto_seeded()
+            data = _ranker.load_rankings()
+            if not data or not data.get('rankings'):
+                return []
+            ts = data.get('updated_at')
+            age_h = self._ranking_age_hours(ts)
+            if age_h is None or age_h > AUTO_STALE_HOURS:
+                # Freeze: never rotate or force-exit on stale data
+                if not auto.get('stale_notified'):
+                    auto['stale_notified'] = True
+                    _save_state(self._state)
+                    age_txt = 'unknown age' if age_h is None else f"{age_h:.1f}h old"
+                    stale_msg = (f"⚠️ *Auto targets frozen* - ranker data is {age_txt}. "
+                                 f"Keeping current picks until it refreshes.")
+                events = []
+            else:
+                if auto.get('stale_notified'):
+                    auto['stale_notified'] = False
+                if ts == auto.get('last_ranking_at'):
+                    _save_state(self._state)
+                    return []
+                events = self._process_ranking(auto, data['rankings'])
+                auto['last_ranking_at'] = ts
+                self.targets = self._targets_from_slots(auto['slots'])
+                _save_state(self._state)
+
+        if stale_msg:
+            try:
+                self._tg_send(stale_msg, context='conc-auto-stale')
+            except Exception:
+                pass
+        for ev in events:
+            log.info(f"Auto targets change: {ev}")
+            try:
+                self._tg_rotation(ev)
+            except Exception as e:
+                log.debug(f"Rotation telegram failed: {e}")
+        return events
+
+    def _auto_status(self):
+        """Dashboard block describing the auto-target state."""
+        auto = self._state.get('auto') or {}
+        data = None
+        try:
+            data = _ranker.load_rankings() if _ranker else None
+        except Exception:
+            data = None
+        rankings = (data or {}).get('rankings') or []
+        by_sym = {r['symbol']: r for r in rankings if r.get('symbol')}
+        rank_pos = {r['symbol']: i + 1 for i, r in enumerate(rankings) if r.get('symbol')}
+        age_h = self._ranking_age_hours((data or {}).get('updated_at'))
+
+        slots_out = []
+        for s in auto.get('slots', []):
+            sym = s.get('symbol')
+            r = by_sym.get(sym) if sym else None
+            held_h = self._hours_since(s.get('since')) if sym else 0.0
+            slots_out.append({
+                'symbol': sym,
+                'asset': _short(sym) if sym else None,
+                'weight_pct': round(s.get('weight', 0) * 100, 1),
+                'held_hours': round(held_h, 1),
+                'min_hold_remaining_hours': round(max(0.0, AUTO_MIN_HOLD_HOURS - held_h), 1) if sym else 0,
+                'score': r.get('total_score') if r else None,
+                'rank': rank_pos.get(sym),
+                'rsi_14d': r.get('rsi_14d') if r else None,
+                'below_exit_floor_count': (auto.get('low_counts') or {}).get(sym, 0) if sym else 0,
+            })
+        return {
+            'anchor': AUTO_ANCHOR,
+            'anchor_weight_pct': round(AUTO_ANCHOR_WEIGHT * 100, 1),
+            'slots': slots_out,
+            'challenger_streaks': auto.get('streaks', {}),
+            'ranking_updated_at': (data or {}).get('updated_at'),
+            'ranking_age_hours': round(age_h, 1) if age_h is not None else None,
+            'ranking_stale': (age_h is None) or (age_h > AUTO_STALE_HOURS),
+            'pending_rebalance': bool(auto.get('pending_rebalance')),
+            'recent_changes': (auto.get('history') or [])[-5:],
+            'rules': {
+                'entry_min_score': AUTO_ENTRY_MIN_SCORE,
+                'exit_score': AUTO_EXIT_SCORE,
+                'swap_margin': AUTO_SWAP_MARGIN,
+                'confirm_rankings': AUTO_CONFIRM_RANKINGS,
+                'min_hold_hours': AUTO_MIN_HOLD_HOURS,
+                'stale_hours': AUTO_STALE_HOURS,
+                'entry_max_rsi': AUTO_ENTRY_MAX_RSI,
+            },
+        }
+
+    def _sync_trading_pairs(self):
+        """Keep config.trading_pairs (and its on-disk override) equal to the
+        current targets while concentration mode is on, so rotated-in coins
+        are known to the rest of the bot. No-op when already in sync."""
+        try:
+            if not self.is_enabled():
+                return
+            targets = list(self.targets.keys())
+            current = list(getattr(self.config, 'trading_pairs', []) or [])
+            if set(current) == set(targets):
+                return
+            self.config.trading_pairs = targets
+            os.makedirs(os.path.dirname(_PAIRS_OVERRIDE_PATH), exist_ok=True)
+            with open(_PAIRS_OVERRIDE_PATH, 'w') as f:
+                json.dump(targets, f)
+            log.info(f"Concentration: trading_pairs synced to targets {targets}")
+        except Exception as e:
+            log.warning(f"Concentration pairs sync failed: {e}")
+
     # ---------- State inspection (for API) ----------
 
     def get_status(self):
         """Return a snapshot for /api/concentration/status - dashboard reads
         this to show current vs target allocation, drift, and history."""
+        self._refresh_targets()
+        targets = dict(self.targets)
         enabled = self.is_enabled()
         try:
             portfolio = self.trader.get_portfolio()
@@ -180,7 +557,7 @@ class WinnersAllocator:
 
         rows = []
         max_drift = 0.0
-        for sym, tgt_pct in self.targets.items():
+        for sym, tgt_pct in targets.items():
             base = sym.replace('USDT', '')
             cur_val = current.get(base, 0.0)
             cur_pct = (cur_val / total_value * 100) if total_value > 0 else 0.0
@@ -196,7 +573,7 @@ class WinnersAllocator:
                 'drift_pct': round(drift, 1),
             })
         # Add implied cash target
-        cash_target_pct = (1.0 - sum(self.targets.values())) * 100
+        cash_target_pct = (1.0 - sum(targets.values())) * 100
         cash_current = current.get('USDT', 0.0)
         cash_current_pct = (cash_current / total_value * 100) if total_value > 0 else 0.0
         cash_drift = cash_current_pct - cash_target_pct
@@ -213,7 +590,7 @@ class WinnersAllocator:
 
         # List non-target assets currently held (would be sold next rebalance)
         non_target = []
-        target_bases = {s.replace('USDT', '') for s in self.targets}
+        target_bases = {s.replace('USDT', '') for s in targets}
         for asset, val in current.items():
             if asset in target_bases or asset in _STABLECOINS:
                 continue
@@ -225,6 +602,7 @@ class WinnersAllocator:
 
         return {
             'enabled': enabled,
+            'mode': 'auto' if self.auto_enabled() else 'fixed',
             'total_portfolio_value': round(total_value, 2),
             'drift_threshold_pct': self.drift_threshold_pct,
             'max_drift_pct': round(max_drift, 1),
@@ -235,6 +613,7 @@ class WinnersAllocator:
             'next_scheduled_check_hours': self._hours_until_next_forced_rebalance(),
             'history': history,
             'performance': performance,
+            'auto': self._auto_status() if self.auto_enabled() else None,
         }
 
     def _hours_until_next_forced_rebalance(self):
@@ -244,7 +623,7 @@ class WinnersAllocator:
             return 0
         try:
             last_dt = datetime.fromisoformat(last.replace('Z', ''))
-            elapsed = (datetime.utcnow() - last_dt).total_seconds()
+            elapsed = (_utcnow() - last_dt).total_seconds()
             remaining = _MAX_INTERVAL_SECONDS - elapsed
             return max(0, round(remaining / 3600, 1))
         except Exception:
@@ -282,19 +661,21 @@ class WinnersAllocator:
 
     # ---------- OCO management ----------
 
-    def _cancel_target_ocos(self):
-        """Cancel any open orders on target pairs. Concentration mode holds
-        positions long-term - it exits/sizes via rebalance drift, not via
-        TP/SL. Any OCO on target coins would fire at 6% and force a costly
-        re-entry loop (sell → drift alert → rebuy at market). Removing them
-        lets positions ride freely; rebalance handles all sizing.
+    def _cancel_target_ocos(self, extra_symbols=()):
+        """Cancel any open orders on target pairs (plus any extra symbols,
+        e.g. coins about to be sold). Concentration mode holds positions
+        long-term - it exits/sizes via rebalance drift, not via TP/SL. Any
+        OCO on target coins would fire at 6% and force a costly re-entry loop
+        (sell -> drift alert -> rebuy at market). Removing them lets positions
+        ride freely; rebalance handles all sizing.
 
         Called BEFORE rebalance (to free locked balances for selling) and
         AFTER (to remove the new OCOs that trader.execute_trade auto-places
         on every buy).
         """
         cancelled = 0
-        for sym in self.targets:
+        symbols = list(dict.fromkeys(list(self.targets.keys()) + list(extra_symbols)))
+        for sym in symbols:
             try:
                 open_orders = self.trader.client.get_open_orders(symbol=sym)
                 for order in open_orders:
@@ -310,7 +691,7 @@ class WinnersAllocator:
             except Exception as e:
                 log.debug(f"Get open orders failed for {sym}: {e}")
         if cancelled:
-            log.info(f"Concentration: cancelled {cancelled} open OCO orders on target pairs")
+            log.info(f"Concentration: cancelled {cancelled} open OCO orders")
         return cancelled
 
     # ---------- Rebalance decision ----------
@@ -322,7 +703,7 @@ class WinnersAllocator:
             return True
         try:
             last_dt = datetime.fromisoformat(last.replace('Z', ''))
-            elapsed = (datetime.utcnow() - last_dt).total_seconds()
+            elapsed = (_utcnow() - last_dt).total_seconds()
             return elapsed >= _MIN_INTERVAL_SECONDS
         except Exception:
             return True
@@ -334,26 +715,43 @@ class WinnersAllocator:
             return True
         try:
             last_dt = datetime.fromisoformat(last.replace('Z', ''))
-            elapsed = (datetime.utcnow() - last_dt).total_seconds()
+            elapsed = (_utcnow() - last_dt).total_seconds()
             return elapsed >= _MAX_INTERVAL_SECONDS
         except Exception:
             return True
 
     def maybe_rebalance(self):
         """Called by scheduler thread. Decides whether to actually rebalance
-        based on: enabled, rate limit, drift, and time-since-last."""
+        based on: enabled, rotation, rate limit, drift, and time-since-last."""
         if not self.is_enabled():
             return {'skipped': True, 'reason': 'disabled'}
-        if not self._can_rebalance_now():
+
+        self._refresh_targets()
+        pending = False
+        if self.auto_enabled():
+            try:
+                self._update_auto_targets()
+            except Exception as e:
+                log.warning(f"Auto targets update failed: {e}")
+            pending = bool((self._state.get('auto') or {}).get('pending_rebalance'))
+        self._sync_trading_pairs()
+
+        # A rotation that just changed the targets bypasses the 6h rate limit.
+        if not pending and not self._can_rebalance_now():
             return {'skipped': True, 'reason': 'rate limit (6h min between rebalances)'}
 
         status = self.get_status()
         force = self._should_force_rebalance()
 
-        if not status['needs_rebalance'] and not force:
+        if not status['needs_rebalance'] and not force and not pending:
             return {'skipped': True, 'reason': f"drift {status['max_drift_pct']}% below threshold {self.drift_threshold_pct}%"}
 
-        reason = 'weekly forced rebalance' if force else f"drift {status['max_drift_pct']}% > threshold {self.drift_threshold_pct}%"
+        if pending:
+            reason = 'auto-target rotation'
+        elif force:
+            reason = 'weekly forced rebalance'
+        else:
+            reason = f"drift {status['max_drift_pct']}% > threshold {self.drift_threshold_pct}%"
         return self.execute_rebalance(reason=reason)
 
     # ---------- Execute ----------
@@ -363,6 +761,8 @@ class WinnersAllocator:
         Individual trade failures are logged but don't abort the whole run.
         Returns a summary dict with all trades attempted."""
         log.info(f"Concentration REBALANCE starting - reason: {reason}")
+        self._refresh_targets()
+        self._sync_trading_pairs()
         status = self.get_status()
         total_value = status['total_portfolio_value']
         if total_value < 50:
@@ -370,33 +770,36 @@ class WinnersAllocator:
             log.warning(msg)
             return {'skipped': True, 'reason': msg}
 
+        targets = dict(self.targets)
         moves = []      # list of planned actions (for logging / telegram)
         trades = []     # list of executed trade results
 
-        target_bases = {s.replace('USDT', '') for s in self.targets}
+        target_bases = {s.replace('USDT', '') for s in targets}
         current = self._compute_current_allocation(total_value)
+
+        # Coins we're about to sell entirely (rotated out / never targets)
+        sell_all_assets = [a for a, v in current.items()
+                           if a not in target_bases and a not in _STABLECOINS and v >= _MIN_TRADE_USDT]
 
         # ---- Phase 0: cancel any existing OCOs on target pairs ----
         # Otherwise our sell orders would fail (asset is locked by OCO) and
         # the OCO's own take-profit could fire during the rebalance window.
+        # Also covers coins about to be sold (e.g. rotated out).
         try:
-            self._cancel_target_ocos()
+            self._cancel_target_ocos(extra_symbols=[a + 'USDT' for a in sell_all_assets])
             time.sleep(1)  # brief pause for Binance to release locked balances
         except Exception as e:
             log.warning(f"Pre-rebalance OCO cancel failed (continuing): {e}")
 
         # ---- Phase 1: SELLS ----
         # (a) Non-target assets: sell 100%
-        for asset, val in list(current.items()):
-            if asset in target_bases or asset in _STABLECOINS:
-                continue
-            if val < _MIN_TRADE_USDT:
-                continue
+        for asset in sell_all_assets:
+            val = current[asset]
             pair = f"{asset}/USDT"
             moves.append({'action': 'sell_all', 'pair': pair, 'value_usdt': round(val, 2), 'reason': 'not in targets'})
 
         # (b) Over-target target pairs: sell down to target
-        for sym, tgt_pct in self.targets.items():
+        for sym, tgt_pct in targets.items():
             base = sym.replace('USDT', '')
             cur_val = current.get(base, 0.0)
             tgt_val = tgt_pct * total_value
@@ -437,7 +840,7 @@ class WinnersAllocator:
         # only distribution). Fine to reuse.
 
         buy_moves = []
-        for sym, tgt_pct in self.targets.items():
+        for sym, tgt_pct in targets.items():
             base = sym.replace('USDT', '')
             cur_val = current_after.get(base, 0.0)
             tgt_val = tgt_pct * total_value
@@ -472,8 +875,9 @@ class WinnersAllocator:
         except Exception as e:
             log.warning(f"Post-rebalance OCO cancel failed: {e}")
 
-        # Persist state
-        now_iso = datetime.utcnow().isoformat() + 'Z'
+        # Persist state. NOTE: update in place - replacing the whole dict
+        # would wipe the performance baseline and the auto-target state.
+        now_iso = _iso(_utcnow())
         history = self._state.get('history', [])
         history.append({
             'at': now_iso,
@@ -482,11 +886,12 @@ class WinnersAllocator:
             'trades_count': len(trades),
             'trades_succeeded': sum(1 for t in trades if t.get('success')),
         })
-        self._state = {
-            'last_rebalance_at': now_iso,
-            'history': history[-50:],  # keep last 50
-        }
-        _save_state(self._state)
+        with self._lock:
+            self._state['last_rebalance_at'] = now_iso
+            self._state['history'] = history[-50:]  # keep last 50
+            if isinstance(self._state.get('auto'), dict):
+                self._state['auto']['pending_rebalance'] = False
+            _save_state(self._state)
 
         # Post-execution telegram
         try:
@@ -520,6 +925,40 @@ class WinnersAllocator:
         except Exception:
             pass
 
+    def _tg_rotation(self, ev):
+        out_s, in_s = _short(ev.get('out')), _short(ev.get('in'))
+        w = ev.get('slot_weight_pct')
+        kind = ev.get('type')
+        os_ = ev.get('out_score')
+        is_ = ev.get('in_score')
+        if kind == 'swap':
+            lines = [
+                "🔄 *Concentration rotation*",
+                f"{out_s} → {in_s} ({w}% slot)",
+                f"Ranker score: {os_} → {is_} (+{round((is_ or 0) - (os_ or 0), 1)})",
+                "Rebalance runs now.",
+            ]
+        elif kind == 'forced_exit':
+            if ev.get('in'):
+                lines = [
+                    "🔄 *Concentration rotation*",
+                    f"{out_s} fell below the score floor ({os_}) - replaced by {in_s} ({w}% slot)",
+                    "Rebalance runs now.",
+                ]
+            else:
+                lines = [
+                    "⚠️ *Concentration: slot moved to cash*",
+                    f"{out_s} fell below the score floor ({os_}) and nothing eligible can replace it.",
+                    f"The {w}% slot stays in USDT until a coin qualifies.",
+                ]
+        else:  # fill
+            lines = [
+                "🔄 *Concentration rotation*",
+                f"Empty {w}% slot filled with {in_s} (score {is_})",
+                "Rebalance runs now.",
+            ]
+        self._tg_send("\n".join(lines), context=f"conc-rotation-{ev.get('at')}")
+
     def _tg_summary_preview(self, reason, moves, status):
         if not moves:
             return
@@ -534,7 +973,7 @@ class WinnersAllocator:
         for m in moves:
             emoji = '🔴' if m['action'].startswith('sell') else '🟢'
             lines.append(f"{emoji} {m['action']} {m['pair']} ${m['value_usdt']} ({m['reason']})")
-        self._tg_send("\n".join(lines), context=f'conc-preview-{datetime.utcnow().isoformat()}')
+        self._tg_send("\n".join(lines), context=f'conc-preview-{_utcnow().isoformat()}')
 
     def _tg_summary_result(self, reason, trades):
         if not trades:
@@ -546,7 +985,7 @@ class WinnersAllocator:
             lines.append(f"⚠️ {len(failed)} failed:")
             for t in failed[:5]:
                 lines.append(f"  - {t.get('pair')}: {t.get('error', '')[:80]}")
-        self._tg_send("\n".join(lines), context=f'conc-result-{datetime.utcnow().isoformat()}')
+        self._tg_send("\n".join(lines), context=f'conc-result-{_utcnow().isoformat()}')
 
     # ---------- Background scheduler ----------
 
@@ -568,6 +1007,8 @@ class WinnersAllocator:
         # Cancel them right away so positions can hold from now on.
         if self.is_enabled():
             try:
+                self._refresh_targets()
+                self._sync_trading_pairs()
                 n = self._cancel_target_ocos()
                 if n:
                     log.info(f"Concentration startup: removed {n} stale OCOs from previous rebalance")
